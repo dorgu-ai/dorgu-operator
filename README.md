@@ -92,23 +92,40 @@ the project, i.e.:
 kubectl apply -f https://raw.githubusercontent.com/<org>/dorgu-operator/<tag or branch>/dist/install.yaml
 ```
 
-### By providing a Helm Chart
+### Install with Helm (OCI)
 
-1. Build the chart using the optional helm plugin
+The operator is published as a Helm chart to GitHub Container Registry (OCI). After a release tag (e.g. `v0.1.0`) is pushed, the chart is available at:
 
-```sh
-kubebuilder edit --plugins=helm/v2-alpha
+```bash
+# Install the operator (replace <org> with your GitHub org, e.g. dorgu-ai)
+helm install dorgu-operator oci://ghcr.io/dorgu-ai/dorgu-operator-charts/dorgu-operator \
+  --version 0.1.0 \
+  --namespace dorgu-system \
+  --create-namespace
 ```
 
-2. See that a chart was generated under 'dist/chart', and users
-can obtain this solution from there.
+If the chart is **private**, log in first:
 
-**NOTE:** If you change the project, you need to update the Helm Chart
-using the same command above to sync the latest changes. Furthermore,
-if you create webhooks, you need to use the above command with
-the '--force' flag and manually ensure that any custom configuration
-previously added to 'dist/chart/values.yaml' or 'dist/chart/manager/manager.yaml'
-is manually re-applied afterwards.
+```bash
+echo $GITHUB_TOKEN | helm registry login ghcr.io -u YOUR_GITHUB_USER --password-stdin
+```
+
+To enable the optional Deployment validating webhook:
+
+```bash
+helm install dorgu-operator oci://ghcr.io/dorgu-ai/dorgu-operator-charts/dorgu-operator \
+  --version 0.1.0 \
+  --namespace dorgu-system \
+  --create-namespace \
+  --set webhook.enabled=true \
+  --set webhook.mode=advisory
+```
+
+**Uninstall:**
+
+```bash
+helm uninstall dorgu-operator -n dorgu-system
+```
 
 ## Contributing
 // TODO(user): Add detailed information on how you would like others to contribute to this project
