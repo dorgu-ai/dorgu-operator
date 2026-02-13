@@ -19,8 +19,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"strconv"
-	"strings"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -46,6 +44,12 @@ const (
 	// Condition types
 	conditionTypeReady     = "Ready"
 	conditionTypeValidated = "Validated"
+
+	// Phase values for ApplicationPersona status
+	phasePending  = "Pending"
+	phaseActive   = "Active"
+	phaseDegraded = "Degraded"
+	phaseFailed   = "Failed"
 )
 
 // ApplicationPersonaReconciler reconciles an ApplicationPersona object.
@@ -93,7 +97,7 @@ func (r *ApplicationPersonaReconciler) Reconcile(ctx context.Context, req ctrl.R
 
 	// 3. No matching Deployment found -> Pending
 	if len(deployments.Items) == 0 {
-		persona.Status.Phase = "Pending"
+		persona.Status.Phase = phasePending
 		persona.Status.LastUpdated = &now
 		persona.Status.Health = &dorguv1.HealthStatus{
 			Status:    "Unknown",
@@ -153,18 +157,18 @@ func (r *ApplicationPersonaReconciler) Reconcile(ctx context.Context, req ctrl.R
 
 	// 8. Set phase
 	if persona.Status.Health.Status == "Healthy" && !hasErrors {
-		persona.Status.Phase = "Active"
+		persona.Status.Phase = phaseActive
 	} else if hasErrors {
-		persona.Status.Phase = "Degraded"
+		persona.Status.Phase = phaseDegraded
 	} else if persona.Status.Health.Status == "Unhealthy" {
-		persona.Status.Phase = "Failed"
+		persona.Status.Phase = phaseFailed
 	} else {
-		persona.Status.Phase = "Degraded"
+		persona.Status.Phase = phaseDegraded
 	}
 	persona.Status.LastUpdated = &now
 
 	// 9. Set conditions
-	if persona.Status.Phase == "Active" {
+	if persona.Status.Phase == phaseActive {
 		setCondition(&persona.Status.Conditions, conditionTypeReady, metav1.ConditionTrue,
 			"Active", "Deployment is healthy and passes all validations")
 	} else {
@@ -480,15 +484,4 @@ func countSeverity(issues []dorguv1.ValidationIssue, severity string) int {
 		}
 	}
 	return count
-}
-
-// parseCPUMillis is used during resource validation. Keeping it here avoids
-// an external dependency but the helpers are intentionally minimal.
-func parseCPUMillis(s string) int64 {
-	if strings.HasSuffix(s, "m") {
-		v, _ := strconv.ParseInt(strings.TrimSuffix(s, "m"), 10, 64)
-		return v
-	}
-	v, _ := strconv.ParseFloat(s, 64)
-	return int64(v * 1000)
 }

@@ -93,9 +93,9 @@ func (v *DeploymentValidator) Handle(ctx context.Context, req admission.Request)
 	var warnings []string
 	var errors []string
 
-	validateWebhookResources(matchingPersona, deploy, &warnings, &errors)
+	validateWebhookResources(matchingPersona, deploy, &warnings)
 	validateWebhookReplicas(matchingPersona, deploy, &warnings, &errors)
-	validateWebhookSecurity(matchingPersona, deploy, &warnings, &errors)
+	validateWebhookSecurity(matchingPersona, deploy, &errors)
 	validateWebhookProbes(matchingPersona, deploy, &warnings)
 
 	log.Info("Webhook validation complete",
@@ -141,7 +141,7 @@ func (v *DeploymentValidator) InjectDecoder(d admission.Decoder) error {
 // Webhook-specific validation (simpler than controller; returns string slices)
 // ============================================================================
 
-func validateWebhookResources(persona *dorguv1.ApplicationPersona, deploy *appsv1.Deployment, warnings, errors *[]string) {
+func validateWebhookResources(persona *dorguv1.ApplicationPersona, deploy *appsv1.Deployment, warnings *[]string) {
 	if persona.Spec.Resources == nil || persona.Spec.Resources.Limits == nil {
 		return
 	}
@@ -188,7 +188,7 @@ func validateWebhookReplicas(persona *dorguv1.ApplicationPersona, deploy *appsv1
 	}
 }
 
-func validateWebhookSecurity(persona *dorguv1.ApplicationPersona, deploy *appsv1.Deployment, warnings, errors *[]string) {
+func validateWebhookSecurity(persona *dorguv1.ApplicationPersona, deploy *appsv1.Deployment, errors *[]string) {
 	if persona.Spec.Policies == nil || persona.Spec.Policies.Security == nil {
 		return
 	}
