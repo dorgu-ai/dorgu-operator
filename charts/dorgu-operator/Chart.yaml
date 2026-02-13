@@ -1,0 +1,19 @@
+apiVersion: v2
+name: dorgu-operator
+description: Dorgu Operator - ApplicationPersona validation and lifecycle management for Kubernetes
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - kubernetes
+  - operator
+  - persona
+  - dorgu
+  - ai
+  - application-understanding
+home: https://github.com/dorgu-ai/dorgu-operator
+sources:
+  - https://github.com/dorgu-ai/dorgu-operator
+maintainers:
+  - name: dorgu-ai
+    url: https://github.com/dorgu-ai

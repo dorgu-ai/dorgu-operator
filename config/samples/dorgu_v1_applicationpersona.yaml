@@ -1,0 +1,9 @@
+apiVersion: dorgu.dorgu.io/v1
+kind: ApplicationPersona
+metadata:
+  labels:
+    app.kubernetes.io/name: dorgu-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: applicationpersona-sample
+spec:
+  # TODO(user): Add fields here

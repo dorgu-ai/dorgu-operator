@@ -1,0 +1,76 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  docker:
+    name: Build & Push Docker Image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+  helm:
+    name: Package Helm Chart
+    runs-on: ubuntu-latest
+    needs: [docker]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+
+      - name: Update chart appVersion
+        run: |
+          TAG=${GITHUB_REF#refs/tags/v}
+          sed -i "s/^appVersion:.*/appVersion: \"${TAG}\"/" charts/dorgu-operator/Chart.yaml
+          sed -i "s/^version:.*/version: ${TAG}/" charts/dorgu-operator/Chart.yaml
+
+      - name: Copy latest CRD into chart
+        run: |
+          make manifests
+          cp config/crd/bases/*.yaml charts/dorgu-operator/crds/
+
+      - name: Package chart
+        run: helm package charts/dorgu-operator -d dist/
+
+      - name: Upload chart artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: helm-chart
+          path: dist/*.tgz

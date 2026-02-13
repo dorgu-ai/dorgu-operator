@@ -1,0 +1,101 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "dorgu-operator.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "dorgu-operator.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "dorgu-operator.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "dorgu-operator.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "dorgu-operator.serviceAccountName" . }}
+      securityContext:
+        runAsNonRoot: true
+      containers:
+        - name: manager
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - /manager
+          args:
+            - --health-probe-bind-address={{ .Values.healthProbe.bindAddress }}
+            {{- if .Values.metrics.enabled }}
+            - --metrics-bind-address={{ .Values.metrics.bindAddress }}
+            {{- else }}
+            - --metrics-bind-address=0
+            {{- end }}
+            {{- if .Values.metrics.secure }}
+            - --metrics-secure=true
+            {{- end }}
+            {{- if .Values.leaderElection.enabled }}
+            - --leader-elect=true
+            {{- end }}
+            {{- if .Values.webhook.enabled }}
+            - --enable-webhook=true
+            - --webhook-mode={{ .Values.webhook.mode }}
+            {{- end }}
+          ports:
+            - name: healthz
+              containerPort: 8081
+              protocol: TCP
+            {{- if .Values.webhook.enabled }}
+            - name: webhook
+              containerPort: {{ .Values.webhook.port }}
+              protocol: TCP
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: healthz
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: healthz
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          {{- if .Values.webhook.enabled }}
+          volumeMounts:
+            - name: webhook-certs
+              mountPath: /tmp/k8s-webhook-server/serving-certs
+              readOnly: true
+          {{- end }}
+      {{- if .Values.webhook.enabled }}
+      volumes:
+        - name: webhook-certs
+          secret:
+            secretName: {{ include "dorgu-operator.fullname" . }}-webhook-certs
+      {{- end }}
+      terminationGracePeriodSeconds: 10
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

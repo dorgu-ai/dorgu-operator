@@ -1,0 +1,510 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.0
+  name: applicationpersonas.dorgu.dorgu.io
+spec:
+  group: dorgu.dorgu.io
+  names:
+    kind: ApplicationPersona
+    listKind: ApplicationPersonaList
+    plural: applicationpersonas
+    singular: applicationpersona
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.type
+      name: Type
+      type: string
+    - jsonPath: .spec.tier
+      name: Tier
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.health.status
+      name: Health
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          ApplicationPersona is the Schema for the applicationpersonas API.
+          It represents the living identity of an application in a Kubernetes cluster.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec defines the desired state of ApplicationPersona.
+            properties:
+              dependencies:
+                description: dependencies lists required backing services.
+                items:
+                  description: DependencySpec describes a single dependency.
+                  properties:
+                    healthCheck:
+                      type: string
+                    name:
+                      type: string
+                    required:
+                      default: true
+                      type: boolean
+                    type:
+                      enum:
+                      - database
+                      - cache
+                      - queue
+                      - service
+                      - external
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
+              health:
+                description: health defines probe paths and ports.
+                properties:
+                  livenessPath:
+                    type: string
+                  port:
+                    format: int32
+                    type: integer
+                  readinessPath:
+                    type: string
+                  startupGracePeriod:
+                    default: 30s
+                    type: string
+                type: object
+              name:
+                description: name is the application name.
+                type: string
+              networking:
+                description: networking describes ports and ingress.
+                properties:
+                  ingress:
+                    description: IngressSpec defines external access.
+                    properties:
+                      enabled:
+                        type: boolean
+                      host:
+                        type: string
+                      paths:
+                        items:
+                          type: string
+                        type: array
+                      tlsEnabled:
+                        type: boolean
+                    type: object
+                  ports:
+                    items:
+                      description: PortSpec defines a single exposed port.
+                      properties:
+                        port:
+                          format: int32
+                          type: integer
+                        protocol:
+                          default: TCP
+                          type: string
+                        purpose:
+                          type: string
+                      required:
+                      - port
+                      type: object
+                    type: array
+                type: object
+              ownership:
+                description: ownership captures team and contact info.
+                properties:
+                  oncall:
+                    type: string
+                  owner:
+                    type: string
+                  repository:
+                    type: string
+                  runbook:
+                    type: string
+                  team:
+                    type: string
+                type: object
+              policies:
+                description: policies defines security, deployment, and maintenance
+                  rules.
+                properties:
+                  deployment:
+                    description: DeploymentPolicy defines rollout strategy.
+                    properties:
+                      maxSurge:
+                        default: 25%
+                        type: string
+                      maxUnavailable:
+                        default: 25%
+                        type: string
+                      strategy:
+                        default: RollingUpdate
+                        enum:
+                        - RollingUpdate
+                        - Recreate
+                        - BlueGreen
+                        - Canary
+                        type: string
+                    type: object
+                  maintenance:
+                    description: MaintenancePolicy defines maintenance behavior.
+                    properties:
+                      autoRestart:
+                        default: false
+                        type: boolean
+                      window:
+                        type: string
+                    type: object
+                  security:
+                    description: SecurityPolicy defines container security constraints.
+                    properties:
+                      allowPrivilegeEscalation:
+                        default: false
+                        type: boolean
+                      readOnlyRootFilesystem:
+                        default: true
+                        type: boolean
+                      runAsNonRoot:
+                        default: true
+                        type: boolean
+                    type: object
+                type: object
+              resources:
+                description: resources defines CPU/memory constraints.
+                properties:
+                  limits:
+                    description: ResourceValues holds CPU and memory strings.
+                    properties:
+                      cpu:
+                        type: string
+                      memory:
+                        type: string
+                    type: object
+                  profile:
+                    description: profile is a named resource profile.
+                    enum:
+                    - minimal
+                    - standard
+                    - compute-heavy
+                    - memory-heavy
+                    type: string
+                  requests:
+                    description: ResourceValues holds CPU and memory strings.
+                    properties:
+                      cpu:
+                        type: string
+                      memory:
+                        type: string
+                    type: object
+                type: object
+              scaling:
+                description: scaling defines HPA bounds and behavior.
+                properties:
+                  behavior:
+                    default: balanced
+                    enum:
+                    - conservative
+                    - balanced
+                    - aggressive
+                    type: string
+                  maxReplicas:
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  minReplicas:
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  targetCPU:
+                    format: int32
+                    maximum: 100
+                    minimum: 1
+                    type: integer
+                  targetMemory:
+                    format: int32
+                    maximum: 100
+                    minimum: 1
+                    type: integer
+                type: object
+              technical:
+                description: technical contains language, framework, and description.
+                properties:
+                  description:
+                    type: string
+                  framework:
+                    type: string
+                  language:
+                    type: string
+                type: object
+              tier:
+                default: standard
+                description: tier indicates criticality.
+                enum:
+                - critical
+                - standard
+                - best-effort
+                type: string
+              type:
+                description: type classifies the workload.
+                enum:
+                - api
+                - web
+                - worker
+                - cron
+                - daemon
+                type: string
+              version:
+                description: version is the persona schema version.
+                type: string
+            required:
+            - name
+            - type
+            type: object
+          status:
+            description: status defines the observed state of ApplicationPersona.
+            properties:
+              conditions:
+                description: conditions follow the standard Kubernetes condition pattern.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              deployments:
+                description: deployments tracks deployment versions.
+                properties:
+                  current:
+                    type: string
+                  history:
+                    items:
+                      description: DeploymentRecord is one entry in deployment history.
+                      properties:
+                        status:
+                          type: string
+                        timestamp:
+                          type: string
+                        triggeredBy:
+                          type: string
+                        version:
+                          type: string
+                      required:
+                      - status
+                      - timestamp
+                      - version
+                      type: object
+                    type: array
+                  lastFailed:
+                    type: string
+                  lastSuccessful:
+                    type: string
+                type: object
+              health:
+                description: health captures pod/container health.
+                properties:
+                  lastCheck:
+                    format: date-time
+                    type: string
+                  message:
+                    type: string
+                  status:
+                    enum:
+                    - Healthy
+                    - Degraded
+                    - Unhealthy
+                    - Unknown
+                    type: string
+                type: object
+              lastUpdated:
+                description: lastUpdated records when the operator last reconciled.
+                format: date-time
+                type: string
+              learned:
+                description: learned stores patterns detected over time.
+                properties:
+                  incidentCount:
+                    format: int32
+                    type: integer
+                  lastIncident:
+                    type: string
+                  patterns:
+                    items:
+                      description: Pattern is a single learned pattern.
+                      properties:
+                        confidence:
+                          description: confidence is a value between 0 and 1, serialised
+                            as a string (e.g. "0.92").
+                          type: string
+                        description:
+                          type: string
+                        type:
+                          type: string
+                      required:
+                      - description
+                      - type
+                      type: object
+                    type: array
+                  resourceBaseline:
+                    description: ResourceBaseline captures average and peak resource
+                      usage.
+                    properties:
+                      avgCPU:
+                        type: string
+                      avgMemory:
+                        type: string
+                      peakCPU:
+                        type: string
+                      peakMemory:
+                        type: string
+                    type: object
+                type: object
+              phase:
+                description: phase summarises the overall persona lifecycle.
+                enum:
+                - Pending
+                - Active
+                - Degraded
+                - Failed
+                type: string
+              recommendations:
+                description: recommendations suggests improvements.
+                items:
+                  description: Recommendation is a single improvement suggestion.
+                  properties:
+                    action:
+                      type: string
+                    message:
+                      type: string
+                    priority:
+                      enum:
+                      - high
+                      - medium
+                      - low
+                      type: string
+                    type:
+                      enum:
+                      - resource
+                      - scaling
+                      - security
+                      - cost
+                      - performance
+                      type: string
+                  required:
+                  - message
+                  - priority
+                  - type
+                  type: object
+                type: array
+              validation:
+                description: validation contains the latest check results.
+                properties:
+                  issues:
+                    items:
+                      description: ValidationIssue represents a single validation
+                        finding.
+                      properties:
+                        field:
+                          type: string
+                        message:
+                          type: string
+                        severity:
+                          enum:
+                          - error
+                          - warning
+                          - info
+                          type: string
+                        suggestion:
+                          type: string
+                      required:
+                      - message
+                      - severity
+                      type: object
+                    type: array
+                  lastChecked:
+                    format: date-time
+                    type: string
+                  passed:
+                    type: boolean
+                type: object
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
