@@ -58,9 +58,9 @@ type ApplicationPersonaReconciler struct {
 	Scheme *runtime.Scheme
 }
 
-// +kubebuilder:rbac:groups=dorgu.dorgu.io,resources=applicationpersonas,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=dorgu.dorgu.io,resources=applicationpersonas/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=dorgu.dorgu.io,resources=applicationpersonas/finalizers,verbs=update
+// +kubebuilder:rbac:groups=dorgu.io,resources=applicationpersonas,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=dorgu.io,resources=applicationpersonas/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=dorgu.io,resources=applicationpersonas/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list
 

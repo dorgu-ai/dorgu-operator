@@ -4,9 +4,9 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.20.0
-  name: applicationpersonas.dorgu.dorgu.io
+  name: applicationpersonas.dorgu.io
 spec:
-  group: dorgu.dorgu.io
+  group: dorgu.io
   names:
     kind: ApplicationPersona
     listKind: ApplicationPersonaList

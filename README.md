@@ -1,8 +1,25 @@
 # dorgu-operator
-// TODO(user): Add simple overview of use/purpose
+
+Kubernetes operator that validates Deployments against ApplicationPersona CRDs, ensuring applications conform to their declared resource, scaling, health, and security requirements.
 
 ## Description
-// TODO(user): An in-depth paragraph about your project and overview of use
+
+The Dorgu Operator is the cluster-side component of the [Dorgu](https://github.com/dorgu-ai/dorgu) project. It watches `ApplicationPersona` Custom Resources and validates that corresponding Deployments adhere to the constraints defined in the persona spec.
+
+**Key features:**
+- **Deployment validation** — Checks resource limits, replica counts, health probes, and security context against persona constraints
+- **Status reporting** — Updates persona status with validation results, health information, and recommendations
+- **Optional webhook** — Can run in advisory mode (warnings only) or enforcing mode (reject non-compliant deployments)
+- **Non-invasive** — The operator reads and validates only; it does not modify workloads. ArgoCD, Flux, or kubectl remain responsible for deployments.
+
+**Integration with Dorgu CLI:**
+```bash
+# Generate and apply a persona from your application
+dorgu persona apply ./my-app --namespace production
+
+# Check persona status
+dorgu persona status my-app -n production
+```
 
 ## Getting Started
 
@@ -128,7 +145,15 @@ helm uninstall dorgu-operator -n dorgu-system
 ```
 
 ## Contributing
-// TODO(user): Add detailed information on how you would like others to contribute to this project
+
+Contributions are welcome! Please see the [Dorgu CLI CONTRIBUTING.md](https://github.com/dorgu-ai/dorgu/blob/main/CONTRIBUTING.md) for general guidelines.
+
+For operator-specific development:
+1. Fork and clone the repository
+2. Make changes to `api/` or `internal/controller/`
+3. Run `make manifests generate` after modifying types
+4. Run `make test` to ensure tests pass
+5. Submit a pull request
 
 **NOTE:** Run `make help` for more information on all potential `make` targets
 

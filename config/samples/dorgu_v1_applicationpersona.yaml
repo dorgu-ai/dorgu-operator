@@ -1,9 +1,62 @@
-apiVersion: dorgu.dorgu.io/v1
+apiVersion: dorgu.io/v1
 kind: ApplicationPersona
 metadata:
+  name: order-service
+  namespace: default
   labels:
-    app.kubernetes.io/name: dorgu-operator
-    app.kubernetes.io/managed-by: kustomize
-  name: applicationpersona-sample
+    app.kubernetes.io/name: order-service
+    app.kubernetes.io/managed-by: dorgu
 spec:
-  # TODO(user): Add fields here
+  name: order-service
+  version: "1"
+  type: api
+  tier: critical
+  technical:
+    language: java
+    framework: spring
+    description: Order processing API for e-commerce platform
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+    limits:
+      cpu: "2000m"
+      memory: "2Gi"
+    profile: standard
+  scaling:
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPU: 70
+    behavior: balanced
+  health:
+    livenessPath: /actuator/health/liveness
+    readinessPath: /actuator/health/readiness
+    port: 8080
+    startupGracePeriod: "30s"
+  dependencies:
+    - name: mysql
+      type: database
+      required: true
+    - name: redis
+      type: cache
+      required: false
+  networking:
+    ports:
+      - port: 8080
+        protocol: TCP
+        purpose: HTTP API
+  ownership:
+    team: commerce-backend
+    owner: orders-team@company.com
+    repository: https://github.com/company/order-service
+  policies:
+    security:
+      runAsNonRoot: true
+      readOnlyRootFilesystem: true
+      allowPrivilegeEscalation: false
+    deployment:
+      strategy: RollingUpdate
+      maxSurge: "25%"
+      maxUnavailable: "25%"
+    maintenance:
+      autoRestart: false
