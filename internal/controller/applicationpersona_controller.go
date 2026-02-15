@@ -36,6 +36,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
+	"github.com/dorgu-ai/dorgu-operator/internal/metrics"
 )
 
 const (
@@ -55,7 +56,8 @@ const (
 // ApplicationPersonaReconciler reconciles an ApplicationPersona object.
 type ApplicationPersonaReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme        *runtime.Scheme
+	PrometheusURL string // Optional Prometheus URL for metrics baseline
 }
 
 // +kubebuilder:rbac:groups=dorgu.io,resources=applicationpersonas,verbs=get;list;watch;create;update;patch;delete
@@ -153,6 +155,22 @@ func (r *ApplicationPersonaReconciler) Reconcile(ctx context.Context, req ctrl.R
 	}
 	persona.Status.Deployments = &dorguv1.DeploymentTracking{
 		Current: image,
+	}
+
+	// 7.5. Query Prometheus for resource baseline (if configured)
+	if r.PrometheusURL != "" {
+		promClient := metrics.NewPrometheusClient(r.PrometheusURL)
+		if baseline, err := promClient.GetResourceBaseline(ctx, req.Namespace, persona.Spec.Name); err == nil {
+			if persona.Status.Learned == nil {
+				persona.Status.Learned = &dorguv1.LearnedPatterns{}
+			}
+			persona.Status.Learned.ResourceBaseline = baseline
+			log.V(1).Info("Updated resource baseline from Prometheus",
+				"avgCPU", baseline.AvgCPU,
+				"avgMemory", baseline.AvgMemory)
+		} else {
+			log.V(1).Info("Could not get Prometheus metrics", "error", err.Error())
+		}
 	}
 
 	// 8. Set phase

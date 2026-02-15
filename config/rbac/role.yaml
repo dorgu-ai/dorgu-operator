@@ -7,10 +7,13 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - namespaces
+  - nodes
   - pods
   verbs:
   - get
   - list
+  - watch
 - apiGroups:
   - apps
   resources:
@@ -20,9 +23,18 @@ rules:
   - list
   - watch
 - apiGroups:
+  - argoproj.io
+  resources:
+  - applications
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - dorgu.io
   resources:
   - applicationpersonas
+  - clusterpersonas
   verbs:
   - create
   - delete
@@ -35,12 +47,14 @@ rules:
   - dorgu.io
   resources:
   - applicationpersonas/finalizers
+  - clusterpersonas/finalizers
   verbs:
   - update
 - apiGroups:
   - dorgu.io
   resources:
   - applicationpersonas/status
+  - clusterpersonas/status
   verbs:
   - get
   - patch

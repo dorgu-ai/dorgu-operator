@@ -6,13 +6,13 @@ metadata:
     {{- include "dorgu-operator.labels" . | nindent 4 }}
 rules:
   # ApplicationPersona CRD
-  - apiGroups: ["dorgu.dorgu.io"]
+  - apiGroups: ["dorgu.io"]
     resources: ["applicationpersonas"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  - apiGroups: ["dorgu.dorgu.io"]
+  - apiGroups: ["dorgu.io"]
     resources: ["applicationpersonas/status"]
     verbs: ["get", "update", "patch"]
-  - apiGroups: ["dorgu.dorgu.io"]
+  - apiGroups: ["dorgu.io"]
     resources: ["applicationpersonas/finalizers"]
     verbs: ["update"]
   # Deployments (read-only)

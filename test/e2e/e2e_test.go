@@ -25,6 +25,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -268,15 +269,204 @@ var _ = Describe("Manager", Ordered, func() {
 
 		// +kubebuilder:scaffold:e2e-webhooks-checks
 
-		// TODO: Customize the e2e test suite with scenarios specific to your project.
-		// Consider applying sample/CR(s) and check their status and/or verifying
-		// the reconciliation by using the metrics, i.e.:
-		// metricsOutput, err := getMetricsOutput()
-		// Expect(err).NotTo(HaveOccurred(), "Failed to retrieve logs from curl pod")
-		// Expect(metricsOutput).To(ContainSubstring(
-		//    fmt.Sprintf(`controller_runtime_reconcile_total{controller="%s",result="success"} 1`,
-		//    strings.ToLower(<Kind>),
-		// ))
+		It("should create and reconcile an ApplicationPersona", func() {
+			By("creating an ApplicationPersona resource")
+			personaYAML := `
+apiVersion: dorgu.io/v1
+kind: ApplicationPersona
+metadata:
+  name: test-app
+  namespace: default
+spec:
+  name: test-app
+  type: api
+  tier: backend
+  description: "Test application for E2E"
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+  scaling:
+    minReplicas: 1
+    maxReplicas: 3
+`
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(personaYAML)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create ApplicationPersona")
+
+			By("verifying the ApplicationPersona was created")
+			verifyPersonaCreated := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "applicationpersona", "test-app",
+					"-n", "default", "-o", "jsonpath={.metadata.name}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("test-app"))
+			}
+			Eventually(verifyPersonaCreated, time.Minute).Should(Succeed())
+
+			By("verifying the ApplicationPersona status is updated")
+			verifyPersonaStatus := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "applicationpersona", "test-app",
+					"-n", "default", "-o", "jsonpath={.status.phase}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).NotTo(BeEmpty())
+			}
+			Eventually(verifyPersonaStatus, 2*time.Minute).Should(Succeed())
+
+			By("cleaning up the ApplicationPersona")
+			cmd = exec.Command("kubectl", "delete", "applicationpersona", "test-app", "-n", "default")
+			_, _ = utils.Run(cmd)
+		})
+
+		It("should create and reconcile a ClusterPersona", func() {
+			By("creating the dorgu-system namespace if not exists")
+			cmd := exec.Command("kubectl", "create", "ns", "dorgu-system", "--dry-run=client", "-o", "yaml")
+			nsYAML, _ := utils.Run(cmd)
+			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(nsYAML)
+			_, _ = utils.Run(cmd)
+
+			By("creating a ClusterPersona resource")
+			clusterYAML := `
+apiVersion: dorgu.io/v1
+kind: ClusterPersona
+metadata:
+  name: e2e-cluster
+  namespace: dorgu-system
+spec:
+  name: e2e-cluster
+  environment: testing
+  policies:
+    requireResourceLimits: true
+    requireHealthProbes: true
+    requireSecurityContext: false
+    defaultReplicaCount: 1
+    maxReplicasPerWorkload: 5
+`
+			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(clusterYAML)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create ClusterPersona")
+
+			By("verifying the ClusterPersona was created")
+			verifyClusterCreated := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "clusterpersona", "e2e-cluster",
+					"-n", "dorgu-system", "-o", "jsonpath={.metadata.name}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("e2e-cluster"))
+			}
+			Eventually(verifyClusterCreated, time.Minute).Should(Succeed())
+
+			By("verifying the ClusterPersona discovers cluster state")
+			verifyClusterDiscovery := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "clusterpersona", "e2e-cluster",
+					"-n", "dorgu-system", "-o", "jsonpath={.status.phase}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Or(Equal("Discovering"), Equal("Active")))
+			}
+			Eventually(verifyClusterDiscovery, 2*time.Minute).Should(Succeed())
+
+			By("verifying nodes are discovered")
+			verifyNodesDiscovered := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "clusterpersona", "e2e-cluster",
+					"-n", "dorgu-system", "-o", "jsonpath={.status.nodes}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).NotTo(BeEmpty())
+			}
+			Eventually(verifyNodesDiscovered, 2*time.Minute).Should(Succeed())
+
+			By("cleaning up the ClusterPersona")
+			cmd = exec.Command("kubectl", "delete", "clusterpersona", "e2e-cluster", "-n", "dorgu-system")
+			_, _ = utils.Run(cmd)
+		})
+
+		It("should validate a Deployment against its ApplicationPersona", func() {
+			By("creating an ApplicationPersona with resource constraints")
+			personaYAML := `
+apiVersion: dorgu.io/v1
+kind: ApplicationPersona
+metadata:
+  name: validated-app
+  namespace: default
+spec:
+  name: validated-app
+  type: api
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+  scaling:
+    minReplicas: 1
+    maxReplicas: 3
+`
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(personaYAML)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("creating a matching Deployment")
+			deploymentYAML := `
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: validated-app
+  namespace: default
+  labels:
+    app.kubernetes.io/name: validated-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: validated-app
+  template:
+    metadata:
+      labels:
+        app: validated-app
+        app.kubernetes.io/name: validated-app
+    spec:
+      containers:
+      - name: app
+        image: nginx:latest
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+`
+			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(deploymentYAML)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying the persona validates the deployment")
+			verifyValidation := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "applicationpersona", "validated-app",
+					"-n", "default", "-o", "jsonpath={.status.validation.valid}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("true"))
+			}
+			Eventually(verifyValidation, 2*time.Minute).Should(Succeed())
+
+			By("cleaning up")
+			cmd = exec.Command("kubectl", "delete", "deployment", "validated-app", "-n", "default")
+			_, _ = utils.Run(cmd)
+			cmd = exec.Command("kubectl", "delete", "applicationpersona", "validated-app", "-n", "default")
+			_, _ = utils.Run(cmd)
+		})
 	})
 })
 

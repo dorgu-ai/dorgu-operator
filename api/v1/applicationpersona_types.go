@@ -282,11 +282,44 @@ type ApplicationPersonaStatus struct {
 	// +optional
 	Recommendations []Recommendation `json:"recommendations,omitempty"`
 
+	// argoCD contains ArgoCD sync status if ArgoCD is detected.
+	// +optional
+	ArgoCD *ArgoCDStatus `json:"argoCD,omitempty"`
+
 	// conditions follow the standard Kubernetes condition pattern.
 	// +listType=map
 	// +listMapKey=type
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// ArgoCDStatus contains ArgoCD Application sync status.
+type ArgoCDStatus struct {
+	// syncStatus is the ArgoCD sync status.
+	// +kubebuilder:validation:Enum=Synced;OutOfSync;Unknown
+	// +optional
+	SyncStatus string `json:"syncStatus,omitempty"`
+
+	// healthStatus is the ArgoCD health status.
+	// +kubebuilder:validation:Enum=Healthy;Degraded;Progressing;Suspended;Missing;Unknown
+	// +optional
+	HealthStatus string `json:"healthStatus,omitempty"`
+
+	// lastSyncTime is when ArgoCD last synced.
+	// +optional
+	LastSyncTime *metav1.Time `json:"lastSyncTime,omitempty"`
+
+	// revision is the Git revision that was synced.
+	// +optional
+	Revision string `json:"revision,omitempty"`
+
+	// applicationName is the name of the ArgoCD Application.
+	// +optional
+	ApplicationName string `json:"applicationName,omitempty"`
+
+	// applicationNamespace is the namespace of the ArgoCD Application.
+	// +optional
+	ApplicationNamespace string `json:"applicationNamespace,omitempty"`
 }
 
 // DeploymentTracking records deployment history.

@@ -285,6 +285,41 @@ spec:
           status:
             description: status defines the observed state of ApplicationPersona.
             properties:
+              argoCD:
+                description: argoCD contains ArgoCD sync status if ArgoCD is detected.
+                properties:
+                  applicationName:
+                    description: applicationName is the name of the ArgoCD Application.
+                    type: string
+                  applicationNamespace:
+                    description: applicationNamespace is the namespace of the ArgoCD
+                      Application.
+                    type: string
+                  healthStatus:
+                    description: healthStatus is the ArgoCD health status.
+                    enum:
+                    - Healthy
+                    - Degraded
+                    - Progressing
+                    - Suspended
+                    - Missing
+                    - Unknown
+                    type: string
+                  lastSyncTime:
+                    description: lastSyncTime is when ArgoCD last synced.
+                    format: date-time
+                    type: string
+                  revision:
+                    description: revision is the Git revision that was synced.
+                    type: string
+                  syncStatus:
+                    description: syncStatus is the ArgoCD sync status.
+                    enum:
+                    - Synced
+                    - OutOfSync
+                    - Unknown
+                    type: string
+                type: object
               conditions:
                 description: conditions follow the standard Kubernetes condition pattern.
                 items:

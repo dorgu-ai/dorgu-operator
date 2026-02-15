@@ -1,16 +1,20 @@
 # dorgu-operator
 
-Kubernetes operator that validates Deployments against ApplicationPersona CRDs, ensuring applications conform to their declared resource, scaling, health, and security requirements.
+Kubernetes operator that validates Deployments against ApplicationPersona CRDs, manages ClusterPersona for cluster identity, and provides real-time integration with ArgoCD, Prometheus, and CLI tools.
 
 ## Description
 
-The Dorgu Operator is the cluster-side component of the [Dorgu](https://github.com/dorgu-ai/dorgu) project. It watches `ApplicationPersona` Custom Resources and validates that corresponding Deployments adhere to the constraints defined in the persona spec.
+The Dorgu Operator is the cluster-side component of the [Dorgu](https://github.com/dorgu-ai/dorgu) project. It watches `ApplicationPersona` and `ClusterPersona` Custom Resources, validates deployments, and provides the "Cluster Soul" foundation for AI-powered Kubernetes management.
 
 **Key features:**
-- **Deployment validation** — Checks resource limits, replica counts, health probes, and security context against persona constraints
+- **ApplicationPersona validation** — Checks resource limits, replica counts, health probes, and security context against persona constraints
+- **ClusterPersona discovery** — Automatically discovers cluster state including nodes, add-ons (ArgoCD, Prometheus, cert-manager), and resource usage
+- **ArgoCD integration** — Watches ArgoCD Applications and updates persona status with sync status and health
+- **Prometheus baseline learning** — Queries Prometheus for resource usage metrics to establish baselines
+- **WebSocket server** — Real-time communication with CLI for `dorgu watch` and `dorgu sync` commands
 - **Status reporting** — Updates persona status with validation results, health information, and recommendations
 - **Optional webhook** — Can run in advisory mode (warnings only) or enforcing mode (reject non-compliant deployments)
-- **Non-invasive** — The operator reads and validates only; it does not modify workloads. ArgoCD, Flux, or kubectl remain responsible for deployments.
+- **Non-invasive** — The operator reads and validates only; it does not modify workloads
 
 **Integration with Dorgu CLI:**
 ```bash
@@ -19,129 +23,141 @@ dorgu persona apply ./my-app --namespace production
 
 # Check persona status
 dorgu persona status my-app -n production
+
+# Initialize cluster persona
+dorgu cluster init --name production-cluster --environment production
+
+# Watch real-time updates
+dorgu watch personas
+
+# Sync with operator
+dorgu sync status
 ```
+
+## CRDs
+
+### ApplicationPersona
+Represents the identity and requirements of an application:
+- Resource constraints (CPU, memory limits)
+- Scaling parameters (min/max replicas)
+- Health probe configuration
+- Security policies
+- Ownership and team information
+
+### ClusterPersona
+Represents the identity and state of a Kubernetes cluster:
+- Cluster policies and conventions
+- Node information and resource capacity
+- Discovered add-ons (ArgoCD, Prometheus, etc.)
+- Application count and namespace summary
 
 ## Getting Started
 
 ### Prerequisites
 - go version v1.24.6+
-- docker version 17.03+.
-- kubectl version v1.11.3+.
-- Access to a Kubernetes v1.11.3+ cluster.
+- docker version 17.03+
+- kubectl version v1.11.3+
+- Access to a Kubernetes v1.11.3+ cluster
 
-### To Deploy on the cluster
-**Build and push your image to the location specified by `IMG`:**
+### Install with Helm (Recommended)
+
+```bash
+# Install the operator
+helm install dorgu-operator oci://ghcr.io/dorgu-ai/dorgu-operator-charts/dorgu-operator \
+  --version 0.2.0 \
+  --namespace dorgu-system \
+  --create-namespace
+```
+
+**With optional features enabled:**
+
+```bash
+helm install dorgu-operator oci://ghcr.io/dorgu-ai/dorgu-operator-charts/dorgu-operator \
+  --version 0.2.0 \
+  --namespace dorgu-system \
+  --create-namespace \
+  --set webhook.enabled=true \
+  --set webhook.mode=advisory \
+  --set prometheus.enabled=true \
+  --set prometheus.url=http://prometheus-server.monitoring:9090 \
+  --set websocket.enabled=true
+```
+
+### Configuration Options
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `webhook.enabled` | Enable deployment validation webhook | `false` |
+| `webhook.mode` | Webhook mode: `advisory` or `enforcing` | `advisory` |
+| `argocd.enabled` | Enable ArgoCD Application watching | `true` |
+| `prometheus.enabled` | Enable Prometheus metrics integration | `false` |
+| `prometheus.url` | Prometheus server URL | `""` |
+| `websocket.enabled` | Enable WebSocket server for CLI | `false` |
+| `websocket.port` | WebSocket server port | `9090` |
+
+### Deploy from Source
+
+**Build and push your image:**
 
 ```sh
 make docker-build docker-push IMG=<some-registry>/dorgu-operator:tag
 ```
 
-**NOTE:** This image ought to be published in the personal registry you specified.
-And it is required to have access to pull the image from the working environment.
-Make sure you have the proper permission to the registry if the above commands don’t work.
-
-**Install the CRDs into the cluster:**
+**Install the CRDs:**
 
 ```sh
 make install
 ```
 
-**Deploy the Manager to the cluster with the image specified by `IMG`:**
+**Deploy the Manager:**
 
 ```sh
 make deploy IMG=<some-registry>/dorgu-operator:tag
 ```
 
-> **NOTE**: If you encounter RBAC errors, you may need to grant yourself cluster-admin
-privileges or be logged in as admin.
-
-**Create instances of your solution**
-You can apply the samples (examples) from the config/sample:
+**Create sample resources:**
 
 ```sh
 kubectl apply -k config/samples/
 ```
 
->**NOTE**: Ensure that the samples has default values to test it out.
-
-### To Uninstall
-**Delete the instances (CRs) from the cluster:**
+### Uninstall
 
 ```sh
+# Delete sample resources
 kubectl delete -k config/samples/
-```
 
-**Delete the APIs(CRDs) from the cluster:**
-
-```sh
+# Delete CRDs
 make uninstall
-```
 
-**UnDeploy the controller from the cluster:**
-
-```sh
+# Undeploy controller
 make undeploy
-```
 
-## Project Distribution
-
-Following the options to release and provide this solution to the users.
-
-### By providing a bundle with all YAML files
-
-1. Build the installer for the image built and published in the registry:
-
-```sh
-make build-installer IMG=<some-registry>/dorgu-operator:tag
-```
-
-**NOTE:** The makefile target mentioned above generates an 'install.yaml'
-file in the dist directory. This file contains all the resources built
-with Kustomize, which are necessary to install this project without its
-dependencies.
-
-2. Using the installer
-
-Users can just run 'kubectl apply -f <URL for YAML BUNDLE>' to install
-the project, i.e.:
-
-```sh
-kubectl apply -f https://raw.githubusercontent.com/<org>/dorgu-operator/<tag or branch>/dist/install.yaml
-```
-
-### Install with Helm (OCI)
-
-The operator is published as a Helm chart to GitHub Container Registry (OCI). After a release tag (e.g. `v0.1.0`) is pushed, the chart is available at:
-
-```bash
-# Install the operator (replace <org> with your GitHub org, e.g. dorgu-ai)
-helm install dorgu-operator oci://ghcr.io/dorgu-ai/dorgu-operator-charts/dorgu-operator \
-  --version 0.1.0 \
-  --namespace dorgu-system \
-  --create-namespace
-```
-
-If the chart is **private**, log in first:
-
-```bash
-echo $GITHUB_TOKEN | helm registry login ghcr.io -u YOUR_GITHUB_USER --password-stdin
-```
-
-To enable the optional Deployment validating webhook:
-
-```bash
-helm install dorgu-operator oci://ghcr.io/dorgu-ai/dorgu-operator-charts/dorgu-operator \
-  --version 0.1.0 \
-  --namespace dorgu-system \
-  --create-namespace \
-  --set webhook.enabled=true \
-  --set webhook.mode=advisory
-```
-
-**Uninstall:**
-
-```bash
+# Or with Helm
 helm uninstall dorgu-operator -n dorgu-system
+```
+
+## Architecture
+
+```
+┌─────────────────┐     ┌──────────────────────────────────────┐
+│   dorgu CLI     │     │           Kubernetes Cluster          │
+│                 │     │                                        │
+│  dorgu watch    │◀───▶│  ┌──────────────────────────────────┐ │
+│  dorgu sync     │ WS  │  │       Dorgu Operator             │ │
+│                 │     │  │                                  │ │
+│  dorgu persona  │     │  │  - ApplicationPersona Controller │ │
+│  dorgu cluster  │────▶│  │  - ClusterPersona Controller     │ │
+│                 │     │  │  - ArgoCD Watcher                │ │
+│                 │     │  │  - Prometheus Client             │ │
+│                 │     │  │  - WebSocket Server              │ │
+│                 │     │  └──────────────────────────────────┘ │
+│                 │     │                 │                      │
+│                 │     │    ┌────────────┼────────────┐        │
+│                 │     │    ▼            ▼            ▼        │
+│                 │     │  ArgoCD    Prometheus   Deployments   │
+│                 │     │                                        │
+└─────────────────┘     └────────────────────────────────────────┘
 ```
 
 ## Contributing
@@ -174,4 +190,3 @@ distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
-

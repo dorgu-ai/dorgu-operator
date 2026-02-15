@@ -27,6 +27,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/discovery"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
@@ -38,6 +39,7 @@ import (
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/controller"
 	dorguwebhook "github.com/dorgu-ai/dorgu-operator/internal/webhook"
+	dorguws "github.com/dorgu-ai/dorgu-operator/internal/websocket"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -86,6 +88,18 @@ func main() {
 		"Enable the validating webhook for Deployment resources against ApplicationPersona constraints.")
 	flag.StringVar(&webhookMode, "webhook-mode", "advisory",
 		"Webhook validation mode: 'advisory' (warn only) or 'enforcing' (reject on errors).")
+	var enableArgoCD bool
+	flag.BoolVar(&enableArgoCD, "enable-argocd", true,
+		"Enable ArgoCD Application watching for sync status integration.")
+	var prometheusURL string
+	flag.StringVar(&prometheusURL, "prometheus-url", "",
+		"Prometheus server URL for metrics baseline learning (e.g., http://prometheus:9090).")
+	var enableWebSocket bool
+	var webSocketAddr string
+	flag.BoolVar(&enableWebSocket, "enable-websocket", false,
+		"Enable WebSocket server for CLI real-time communication.")
+	flag.StringVar(&webSocketAddr, "websocket-addr", ":9090",
+		"Address for the WebSocket server to listen on.")
 	opts := zap.Options{
 		Development: true,
 	}
@@ -185,13 +199,48 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Create discovery client for ClusterPersona controller
+	discoveryClient, err := discovery.NewDiscoveryClientForConfig(ctrl.GetConfigOrDie())
+	if err != nil {
+		setupLog.Error(err, "unable to create discovery client")
+		os.Exit(1)
+	}
+
 	if err := (&controller.ApplicationPersonaReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:        mgr.GetClient(),
+		Scheme:        mgr.GetScheme(),
+		PrometheusURL: prometheusURL,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ApplicationPersona")
 		os.Exit(1)
 	}
+
+	if prometheusURL != "" {
+		setupLog.Info("Prometheus integration enabled", "url", prometheusURL)
+	}
+
+	if err := (&controller.ClusterPersonaReconciler{
+		Client:          mgr.GetClient(),
+		Scheme:          mgr.GetScheme(),
+		DiscoveryClient: discoveryClient,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "ClusterPersona")
+		os.Exit(1)
+	}
+
+	// Register ArgoCD watcher if enabled
+	if enableArgoCD {
+		setupLog.Info("ArgoCD integration enabled, setting up watcher")
+		if err := (&controller.ArgoCDWatcher{
+			Client:  mgr.GetClient(),
+			Scheme:  mgr.GetScheme(),
+			Enabled: true,
+		}).SetupWithManager(mgr); err != nil {
+			// ArgoCD CRDs may not be installed, log warning but continue
+			setupLog.Info("ArgoCD watcher setup failed (ArgoCD may not be installed)", "error", err.Error())
+		}
+	}
+
 	// Register optional Deployment validating webhook
 	if enableWebhook {
 		mode := dorguwebhook.ModeAdvisory
@@ -215,6 +264,17 @@ func main() {
 	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
 		setupLog.Error(err, "unable to set up ready check")
 		os.Exit(1)
+	}
+
+	// Start WebSocket server if enabled
+	if enableWebSocket {
+		setupLog.Info("Starting WebSocket server", "addr", webSocketAddr)
+		wsServer := dorguws.NewServer(mgr.GetClient(), webSocketAddr)
+		go func() {
+			if err := wsServer.Start(ctrl.SetupSignalHandler()); err != nil {
+				setupLog.Error(err, "WebSocket server error")
+			}
+		}()
 	}
 
 	setupLog.Info("starting manager")

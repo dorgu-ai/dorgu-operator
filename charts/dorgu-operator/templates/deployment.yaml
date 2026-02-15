@@ -45,6 +45,16 @@ spec:
             - --enable-webhook=true
             - --webhook-mode={{ .Values.webhook.mode }}
             {{- end }}
+            {{- if not .Values.argocd.enabled }}
+            - --enable-argocd=false
+            {{- end }}
+            {{- if and .Values.prometheus.enabled .Values.prometheus.url }}
+            - --prometheus-url={{ .Values.prometheus.url }}
+            {{- end }}
+            {{- if .Values.websocket.enabled }}
+            - --enable-websocket=true
+            - --websocket-addr=:{{ .Values.websocket.port }}
+            {{- end }}
           ports:
             - name: healthz
               containerPort: 8081
@@ -52,6 +62,11 @@ spec:
             {{- if .Values.webhook.enabled }}
             - name: webhook
               containerPort: {{ .Values.webhook.port }}
+              protocol: TCP
+            {{- end }}
+            {{- if .Values.websocket.enabled }}
+            - name: websocket
+              containerPort: {{ .Values.websocket.port }}
               protocol: TCP
             {{- end }}
           livenessProbe:

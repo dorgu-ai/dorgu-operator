@@ -1,7 +1,7 @@
 # This rule is not used by the project dorgu-operator itself.
 # It is provided to allow the cluster admin to help manage permissions for users.
 #
-# Grants permissions to create, update, and delete resources within the dorgu.dorgu.io.
+# Grants permissions to create, update, and delete resources within the dorgu.io.
 # This role is intended for users who need to manage these resources
 # but should not control RBAC or manage permissions for others.
 
@@ -14,7 +14,7 @@ metadata:
   name: applicationpersona-editor-role
 rules:
 - apiGroups:
-  - dorgu.dorgu.io
+  - dorgu.io
   resources:
   - applicationpersonas
   verbs:
@@ -26,7 +26,7 @@ rules:
   - update
   - watch
 - apiGroups:
-  - dorgu.dorgu.io
+  - dorgu.io
   resources:
   - applicationpersonas/status
   verbs:
