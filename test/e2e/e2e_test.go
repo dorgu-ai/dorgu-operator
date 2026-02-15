@@ -460,8 +460,9 @@ spec:
 
 			By("verifying the persona validates the deployment")
 			verifyValidation := func(g Gomega) {
+				// The field is 'passed' not 'valid' in ValidationStatus struct
 				cmd := exec.Command("kubectl", "get", "applicationpersona", "validated-app",
-					"-n", "default", "-o", "jsonpath={.status.validation.valid}")
+					"-n", "default", "-o", "jsonpath={.status.validation.passed}")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(Equal("true"))
