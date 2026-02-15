@@ -325,39 +325,42 @@ spec:
 		})
 
 		It("should create and reconcile a ClusterPersona", func() {
-			By("creating the dorgu-system namespace if not exists")
-			cmd := exec.Command("kubectl", "create", "ns", "dorgu-system", "--dry-run=client", "-o", "yaml")
-			nsYAML, _ := utils.Run(cmd)
-			cmd = exec.Command("kubectl", "apply", "-f", "-")
-			cmd.Stdin = strings.NewReader(nsYAML)
-			_, _ = utils.Run(cmd)
-
 			By("creating a ClusterPersona resource")
+			// ClusterPersona is cluster-scoped (no namespace)
+			// Valid environment values: development, staging, production, sandbox
+			// policies uses ClusterPolicies struct with security, networking, compliance fields
 			clusterYAML := `
 apiVersion: dorgu.io/v1
 kind: ClusterPersona
 metadata:
   name: e2e-cluster
-  namespace: dorgu-system
 spec:
   name: e2e-cluster
-  environment: testing
+  description: E2E test cluster
+  environment: development
   policies:
-    requireResourceLimits: true
-    requireHealthProbes: true
-    requireSecurityContext: false
-    defaultReplicaCount: 1
-    maxReplicasPerWorkload: 5
+    security:
+      enforceNonRoot: true
+      disallowPrivileged: true
+      podSecurityStandard: baseline
+    networking:
+      defaultDenyIngress: false
+  conventions:
+    requiredLabels:
+      - app.kubernetes.io/name
+  defaults:
+    namespace: default
 `
-			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
 			cmd.Stdin = strings.NewReader(clusterYAML)
 			_, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to create ClusterPersona")
 
 			By("verifying the ClusterPersona was created")
 			verifyClusterCreated := func(g Gomega) {
+				// ClusterPersona is cluster-scoped, no -n flag needed
 				cmd := exec.Command("kubectl", "get", "clusterpersona", "e2e-cluster",
-					"-n", "dorgu-system", "-o", "jsonpath={.metadata.name}")
+					"-o", "jsonpath={.metadata.name}")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(Equal("e2e-cluster"))
@@ -366,26 +369,29 @@ spec:
 
 			By("verifying the ClusterPersona discovers cluster state")
 			verifyClusterDiscovery := func(g Gomega) {
+				// Valid phases: Discovering, Ready, Degraded, Unknown
 				cmd := exec.Command("kubectl", "get", "clusterpersona", "e2e-cluster",
-					"-n", "dorgu-system", "-o", "jsonpath={.status.phase}")
+					"-o", "jsonpath={.status.phase}")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).To(Or(Equal("Discovering"), Equal("Active")))
+				g.Expect(output).To(Or(Equal("Discovering"), Equal("Ready"), Equal("Unknown")))
 			}
 			Eventually(verifyClusterDiscovery, 2*time.Minute).Should(Succeed())
 
 			By("verifying nodes are discovered")
 			verifyNodesDiscovered := func(g Gomega) {
 				cmd := exec.Command("kubectl", "get", "clusterpersona", "e2e-cluster",
-					"-n", "dorgu-system", "-o", "jsonpath={.status.nodes}")
+					"-o", "jsonpath={.status.nodes}")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
+				// In Kind cluster, nodes should be discovered
 				g.Expect(output).NotTo(BeEmpty())
 			}
 			Eventually(verifyNodesDiscovered, 2*time.Minute).Should(Succeed())
 
 			By("cleaning up the ClusterPersona")
-			cmd = exec.Command("kubectl", "delete", "clusterpersona", "e2e-cluster", "-n", "dorgu-system")
+			// ClusterPersona is cluster-scoped, no -n flag needed
+			cmd = exec.Command("kubectl", "delete", "clusterpersona", "e2e-cluster")
 			_, _ = utils.Run(cmd)
 		})
 
