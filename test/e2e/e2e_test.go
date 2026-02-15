@@ -280,8 +280,9 @@ metadata:
 spec:
   name: test-app
   type: api
-  tier: backend
-  description: "Test application for E2E"
+  tier: standard
+  technical:
+    description: "Test application for E2E"
   resources:
     requests:
       cpu: "100m"

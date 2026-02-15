@@ -114,7 +114,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	client := &Client{
+	wsClient := &Client{
 		conn:          conn,
 		server:        s,
 		send:          make(chan *Message, 256),
@@ -122,20 +122,20 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.clientsMu.Lock()
-	s.clients[client] = true
+	s.clients[wsClient] = true
 	s.clientsMu.Unlock()
 
 	log.Info("Client connected", "remoteAddr", conn.RemoteAddr())
 
 	// Start client handlers
-	go client.readPump()
-	go client.writePump()
+	go wsClient.readPump()
+	go wsClient.writePump()
 }
 
 // handleHealth handles health check requests.
-func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("ok"))
+	_, _ = w.Write([]byte("ok"))
 }
 
 // handleBroadcast handles broadcasting messages to subscribed clients.
@@ -144,16 +144,16 @@ func (s *Server) handleBroadcast() {
 		select {
 		case msg := <-s.broadcast:
 			s.clientsMu.RLock()
-			for client := range s.clients {
-				client.subsMu.RLock()
-				if client.subscriptions[msg.Topic] {
+			for wsClient := range s.clients {
+				wsClient.subsMu.RLock()
+				if wsClient.subscriptions[msg.Topic] {
 					select {
-					case client.send <- msg:
+					case wsClient.send <- msg:
 					default:
 						// Client buffer full, skip
 					}
 				}
-				client.subsMu.RUnlock()
+				wsClient.subsMu.RUnlock()
 			}
 			s.clientsMu.RUnlock()
 		case <-s.done:
@@ -215,14 +215,14 @@ func (c *Client) readPump() {
 		c.server.clientsMu.Lock()
 		delete(c.server.clients, c)
 		c.server.clientsMu.Unlock()
-		c.conn.Close()
+		_ = c.conn.Close()
 		log.Info("Client disconnected", "remoteAddr", c.conn.RemoteAddr())
 	}()
 
 	c.conn.SetReadLimit(512 * 1024) // 512KB max message size
-	c.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+	_ = c.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 	c.conn.SetPongHandler(func(string) error {
-		c.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+		_ = c.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 		return nil
 	})
 
@@ -250,15 +250,15 @@ func (c *Client) writePump() {
 	ticker := time.NewTicker(30 * time.Second)
 	defer func() {
 		ticker.Stop()
-		c.conn.Close()
+		_ = c.conn.Close()
 	}()
 
 	for {
 		select {
 		case msg, ok := <-c.send:
-			c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			_ = c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 			if !ok {
-				c.conn.WriteMessage(websocket.CloseMessage, []byte{})
+				_ = c.conn.WriteMessage(websocket.CloseMessage, []byte{})
 				return
 			}
 
@@ -273,7 +273,7 @@ func (c *Client) writePump() {
 			}
 
 		case <-ticker.C:
-			c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			_ = c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 				return
 			}
@@ -347,7 +347,7 @@ func (c *Client) handleRequest(msg *Message) {
 func (c *Client) handleListPersonas(ctx context.Context, msg *Message) {
 	var req ListPersonasRequest
 	if msg.Payload != nil {
-		json.Unmarshal(msg.Payload, &req)
+		_ = json.Unmarshal(msg.Payload, &req)
 	}
 
 	personaList := &dorguv1.ApplicationPersonaList{}
@@ -361,7 +361,7 @@ func (c *Client) handleListPersonas(ctx context.Context, msg *Message) {
 		return
 	}
 
-	var summaries []PersonaSummary
+	summaries := make([]PersonaSummary, 0, len(personaList.Items))
 	for _, p := range personaList.Items {
 		health := ""
 		if p.Status.Health != nil {
@@ -389,7 +389,7 @@ func (c *Client) handleListPersonas(ctx context.Context, msg *Message) {
 func (c *Client) handleGetCluster(ctx context.Context, msg *Message) {
 	var req GetClusterRequest
 	if msg.Payload != nil {
-		json.Unmarshal(msg.Payload, &req)
+		_ = json.Unmarshal(msg.Payload, &req)
 	}
 
 	clusterList := &dorguv1.ClusterPersonaList{}

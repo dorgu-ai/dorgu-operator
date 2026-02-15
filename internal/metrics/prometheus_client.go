@@ -52,8 +52,8 @@ type PrometheusResponse struct {
 		ResultType string `json:"resultType"`
 		Result     []struct {
 			Metric map[string]string `json:"metric"`
-			Value  []interface{}     `json:"value"`  // [timestamp, value]
-			Values [][]interface{}   `json:"values"` // for range queries
+			Value  []any             `json:"value"`  // [timestamp, value]
+			Values [][]any           `json:"values"` // for range queries
 		} `json:"result"`
 	} `json:"data"`
 }
@@ -180,7 +180,7 @@ func (c *PrometheusClient) query(ctx context.Context, promQL string) (float64, e
 	if err != nil {
 		return 0, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -230,7 +230,7 @@ func (c *PrometheusClient) IsAvailable(ctx context.Context) bool {
 	if err != nil {
 		return false
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	return resp.StatusCode == http.StatusOK
 }

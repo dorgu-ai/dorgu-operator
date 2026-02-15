@@ -34,29 +34,29 @@ func TestArgoCDWatcher_ExtractArgoCDStatus(t *testing.T) {
 		{
 			name: "healthy synced application",
 			app: &unstructured.Unstructured{
-				Object: map[string]interface{}{
+				Object: map[string]any{
 					"apiVersion": "argoproj.io/v1alpha1",
 					"kind":       "Application",
-					"metadata": map[string]interface{}{
+					"metadata": map[string]any{
 						"name":      "my-app",
 						"namespace": "argocd",
 					},
-					"spec": map[string]interface{}{
-						"source": map[string]interface{}{
+					"spec": map[string]any{
+						"source": map[string]any{
 							"repoURL":        "https://github.com/example/repo",
 							"path":           "manifests",
 							"targetRevision": "main",
 						},
 					},
-					"status": map[string]interface{}{
-						"sync": map[string]interface{}{
+					"status": map[string]any{
+						"sync": map[string]any{
 							"status":   "Synced",
 							"revision": "abc123",
 						},
-						"health": map[string]interface{}{
+						"health": map[string]any{
 							"status": "Healthy",
 						},
-						"operationState": map[string]interface{}{
+						"operationState": map[string]any{
 							"finishedAt": "2026-02-15T10:00:00Z",
 						},
 					},
@@ -71,25 +71,25 @@ func TestArgoCDWatcher_ExtractArgoCDStatus(t *testing.T) {
 		{
 			name: "out of sync application",
 			app: &unstructured.Unstructured{
-				Object: map[string]interface{}{
+				Object: map[string]any{
 					"apiVersion": "argoproj.io/v1alpha1",
 					"kind":       "Application",
-					"metadata": map[string]interface{}{
+					"metadata": map[string]any{
 						"name":      "out-of-sync-app",
 						"namespace": "argocd",
 					},
-					"spec": map[string]interface{}{
-						"source": map[string]interface{}{
+					"spec": map[string]any{
+						"source": map[string]any{
 							"repoURL":        "https://github.com/example/repo2",
 							"targetRevision": "v1.0.0",
 						},
 					},
-					"status": map[string]interface{}{
-						"sync": map[string]interface{}{
+					"status": map[string]any{
+						"sync": map[string]any{
 							"status":   "OutOfSync",
 							"revision": "def456",
 						},
-						"health": map[string]interface{}{
+						"health": map[string]any{
 							"status": "Degraded",
 						},
 					},
@@ -104,15 +104,15 @@ func TestArgoCDWatcher_ExtractArgoCDStatus(t *testing.T) {
 		{
 			name: "application with missing status",
 			app: &unstructured.Unstructured{
-				Object: map[string]interface{}{
+				Object: map[string]any{
 					"apiVersion": "argoproj.io/v1alpha1",
 					"kind":       "Application",
-					"metadata": map[string]interface{}{
+					"metadata": map[string]any{
 						"name":      "new-app",
 						"namespace": "argocd",
 					},
-					"spec": map[string]interface{}{
-						"source": map[string]interface{}{
+					"spec": map[string]any{
+						"source": map[string]any{
 							"repoURL": "https://github.com/example/repo3",
 						},
 					},

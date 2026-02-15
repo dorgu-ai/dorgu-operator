@@ -41,8 +41,8 @@ func TestPrometheusClient_GetResourceBaseline(t *testing.T) {
 		response.Data.ResultType = "vector"
 		response.Data.Result = []struct {
 			Metric map[string]string `json:"metric"`
-			Value  []interface{}     `json:"value"`
-			Values [][]interface{}   `json:"values"`
+			Value  []any             `json:"value"`
+			Values [][]any           `json:"values"`
 		}{
 			{
 				Metric: map[string]string{
@@ -50,12 +50,12 @@ func TestPrometheusClient_GetResourceBaseline(t *testing.T) {
 					"container": "my-app",
 					"namespace": "default",
 				},
-				Value: []interface{}{float64(time.Now().Unix()), "0.5"},
+				Value: []any{float64(time.Now().Unix()), "0.5"},
 			},
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(response)
+		_ = json.NewEncoder(w).Encode(response)
 	}))
 	defer server.Close()
 
@@ -76,12 +76,12 @@ func TestPrometheusClient_EmptyResults(t *testing.T) {
 		response.Data.ResultType = "vector"
 		response.Data.Result = []struct {
 			Metric map[string]string `json:"metric"`
-			Value  []interface{}     `json:"value"`
-			Values [][]interface{}   `json:"values"`
+			Value  []any             `json:"value"`
+			Values [][]any           `json:"values"`
 		}{}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(response)
+		_ = json.NewEncoder(w).Encode(response)
 	}))
 	defer server.Close()
 
@@ -96,7 +96,7 @@ func TestPrometheusClient_EmptyResults(t *testing.T) {
 func TestPrometheusClient_ServerError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte("Internal Server Error"))
+		_, _ = w.Write([]byte("Internal Server Error"))
 	}))
 	defer server.Close()
 
@@ -128,7 +128,7 @@ func TestPrometheusClient_IsAvailable(t *testing.T) {
 	// Test with working server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		_, _ = w.Write([]byte("OK"))
 	}))
 	defer server.Close()
 

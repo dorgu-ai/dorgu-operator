@@ -174,7 +174,7 @@ func (r *ClusterPersonaReconciler) discoverNodes(ctx context.Context) ([]dorguv1
 		return nil, err
 	}
 
-	var nodes []dorguv1.NodeInfo
+	nodes := make([]dorguv1.NodeInfo, 0, len(nodeList.Items))
 	for _, node := range nodeList.Items {
 		nodeInfo := dorguv1.NodeInfo{
 			Name:             node.Name,
@@ -429,7 +429,7 @@ func (r *ClusterPersonaReconciler) countApplicationPersonas(ctx context.Context)
 }
 
 // determinePhase determines the overall cluster phase.
-func (r *ClusterPersonaReconciler) determinePhase(nodes []dorguv1.NodeInfo, addons []dorguv1.AddonInfo) string {
+func (r *ClusterPersonaReconciler) determinePhase(nodes []dorguv1.NodeInfo, _ []dorguv1.AddonInfo) string {
 	if len(nodes) == 0 {
 		return clusterPhaseUnknown
 	}
@@ -490,7 +490,7 @@ func filterNodeLabels(labels map[string]string) map[string]string {
 }
 
 func getTaintStrings(taints []corev1.Taint) []string {
-	var result []string
+	result := make([]string, 0, len(taints))
 	for _, taint := range taints {
 		result = append(result, fmt.Sprintf("%s=%s:%s", taint.Key, taint.Value, taint.Effect))
 	}

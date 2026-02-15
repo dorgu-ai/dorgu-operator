@@ -51,7 +51,7 @@ func TestWebSocketServer_Connect(t *testing.T) {
 	dialer := websocket.Dialer{}
 	conn, _, err := dialer.Dial(wsURL, nil)
 	require.NoError(t, err)
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	// Connection should be successful
 	assert.NotNil(t, conn)
@@ -72,7 +72,7 @@ func TestWebSocketServer_Subscribe(t *testing.T) {
 	dialer := websocket.Dialer{}
 	conn, _, err := dialer.Dial(wsURL, nil)
 	require.NoError(t, err)
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	// Send subscribe message
 	subscribeMsg := Message{
@@ -86,7 +86,7 @@ func TestWebSocketServer_Subscribe(t *testing.T) {
 	require.NoError(t, err)
 
 	// Read response
-	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	_, data, err := conn.ReadMessage()
 	require.NoError(t, err)
 
@@ -113,7 +113,7 @@ func TestWebSocketServer_Unsubscribe(t *testing.T) {
 	dialer := websocket.Dialer{}
 	conn, _, err := dialer.Dial(wsURL, nil)
 	require.NoError(t, err)
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	// Subscribe first
 	subscribeMsg := Message{
@@ -126,8 +126,8 @@ func TestWebSocketServer_Unsubscribe(t *testing.T) {
 	require.NoError(t, err)
 
 	// Read subscribe response
-	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-	conn.ReadMessage()
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, _, _ = conn.ReadMessage()
 
 	// Unsubscribe
 	unsubscribeMsg := Message{
@@ -140,7 +140,7 @@ func TestWebSocketServer_Unsubscribe(t *testing.T) {
 	require.NoError(t, err)
 
 	// Read unsubscribe response
-	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	_, data, err := conn.ReadMessage()
 	require.NoError(t, err)
 
@@ -180,7 +180,7 @@ func TestWebSocketServer_ListPersonas(t *testing.T) {
 	dialer := websocket.Dialer{}
 	conn, _, err := dialer.Dial(wsURL, nil)
 	require.NoError(t, err)
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	// Send list request
 	payload, _ := json.Marshal(map[string]string{})
@@ -196,7 +196,7 @@ func TestWebSocketServer_ListPersonas(t *testing.T) {
 	require.NoError(t, err)
 
 	// Read response
-	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	_, data, err := conn.ReadMessage()
 	require.NoError(t, err)
 
@@ -247,7 +247,7 @@ func TestWebSocketServer_GetCluster(t *testing.T) {
 	dialer := websocket.Dialer{}
 	conn, _, err := dialer.Dial(wsURL, nil)
 	require.NoError(t, err)
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	// Send cluster request
 	payload, _ := json.Marshal(map[string]string{})
@@ -263,7 +263,7 @@ func TestWebSocketServer_GetCluster(t *testing.T) {
 	require.NoError(t, err)
 
 	// Read response
-	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	_, data, err := conn.ReadMessage()
 	require.NoError(t, err)
 
@@ -331,15 +331,15 @@ func TestWebSocketServer_InvalidMessage(t *testing.T) {
 	dialer := websocket.Dialer{}
 	conn, _, err := dialer.Dial(wsURL, nil)
 	require.NoError(t, err)
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	// Send invalid JSON
 	err = conn.WriteMessage(websocket.TextMessage, []byte("invalid json"))
 	require.NoError(t, err)
 
 	// Connection should still be open
-	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	_, _, err = conn.ReadMessage()
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, _, _ = conn.ReadMessage()
 	// May timeout or receive error response, but connection should handle gracefully
 }
 
@@ -359,11 +359,11 @@ func TestWebSocketServer_MultipleClients(t *testing.T) {
 	dialer := websocket.Dialer{}
 	conn1, _, err := dialer.Dial(wsURL, nil)
 	require.NoError(t, err)
-	defer conn1.Close()
+	defer func() { _ = conn1.Close() }()
 
 	conn2, _, err := dialer.Dial(wsURL, nil)
 	require.NoError(t, err)
-	defer conn2.Close()
+	defer func() { _ = conn2.Close() }()
 
 	// Both clients subscribe to personas
 	subscribeMsg := Message{
@@ -381,17 +381,17 @@ func TestWebSocketServer_MultipleClients(t *testing.T) {
 	require.NoError(t, err)
 
 	// Read responses - both should get subscribe confirmations
-	conn1.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_ = conn1.SetReadDeadline(time.Now().Add(5 * time.Second))
 	_, data1, err := conn1.ReadMessage()
 	require.NoError(t, err)
 
-	conn2.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_ = conn2.SetReadDeadline(time.Now().Add(5 * time.Second))
 	_, data2, err := conn2.ReadMessage()
 	require.NoError(t, err)
 
 	var msg1, msg2 Message
-	json.Unmarshal(data1, &msg1)
-	json.Unmarshal(data2, &msg2)
+	_ = json.Unmarshal(data1, &msg1)
+	_ = json.Unmarshal(data2, &msg2)
 
 	// Both should receive response messages
 	assert.Equal(t, MessageTypeResponse, msg1.Type)

@@ -63,12 +63,12 @@ type SubscribePayload struct {
 
 // PersonaEvent represents a persona change event.
 type PersonaEvent struct {
-	EventType string      `json:"eventType"` // created, updated, deleted
-	Namespace string      `json:"namespace"`
-	Name      string      `json:"name"`
-	Phase     string      `json:"phase,omitempty"`
-	Health    string      `json:"health,omitempty"`
-	Persona   interface{} `json:"persona,omitempty"` // Full persona if requested
+	EventType string `json:"eventType"` // created, updated, deleted
+	Namespace string `json:"namespace"`
+	Name      string `json:"name"`
+	Phase     string `json:"phase,omitempty"`
+	Health    string `json:"health,omitempty"`
+	Persona   any    `json:"persona,omitempty"` // Full persona if requested
 }
 
 // ClusterEvent represents a cluster state change event.
@@ -135,7 +135,7 @@ type GetClusterResponse struct {
 }
 
 // NewMessage creates a new message with the current timestamp.
-func NewMessage(msgType MessageType, topic Topic, payload interface{}) (*Message, error) {
+func NewMessage(msgType MessageType, topic Topic, payload any) (*Message, error) {
 	var payloadBytes json.RawMessage
 	if payload != nil {
 		var err error
@@ -162,6 +162,6 @@ func NewErrorMessage(code, message string) (*Message, error) {
 }
 
 // NewEventMessage creates a new event message.
-func NewEventMessage(topic Topic, payload interface{}) (*Message, error) {
+func NewEventMessage(topic Topic, payload any) (*Message, error) {
 	return NewMessage(MessageTypeEvent, topic, payload)
 }
