@@ -228,16 +228,19 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Register ArgoCD watcher if enabled
+	// Register ArgoCD watcher if enabled and ArgoCD CRD is present
 	if enableArgoCD {
-		setupLog.Info("ArgoCD integration enabled, setting up watcher")
-		if err := (&controller.ArgoCDWatcher{
-			Client:  mgr.GetClient(),
-			Scheme:  mgr.GetScheme(),
-			Enabled: true,
-		}).SetupWithManager(mgr); err != nil {
-			// ArgoCD CRDs may not be installed, log warning but continue
-			setupLog.Info("ArgoCD watcher setup failed (ArgoCD may not be installed)", "error", err.Error())
+		if controller.ArgoCDCRDExists(discoveryClient) {
+			setupLog.Info("ArgoCD integration enabled, setting up watcher")
+			if err := (&controller.ArgoCDWatcher{
+				Client:  mgr.GetClient(),
+				Scheme:  mgr.GetScheme(),
+				Enabled: true,
+			}).SetupWithManager(mgr); err != nil {
+				setupLog.Info("ArgoCD watcher setup failed", "error", err.Error())
+			}
+		} else {
+			setupLog.Info("ArgoCD integration disabled: Application CRD (argoproj.io/v1alpha1) not found in cluster")
 		}
 	}
 

@@ -25,6 +25,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/discovery"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
@@ -256,6 +257,24 @@ func extractArgoCDStatus(argoApp *unstructured.Unstructured) *dorguv1.ArgoCDStat
 	}
 
 	return status
+}
+
+// ArgoCDCRDExists checks if the ArgoCD Application CRD is installed using the discovery client.
+// Use this before registering the ArgoCD watcher to avoid cache errors when ArgoCD is not installed.
+func ArgoCDCRDExists(dc discovery.DiscoveryInterface) bool {
+	if dc == nil {
+		return false
+	}
+	resources, err := dc.ServerResourcesForGroupVersion("argoproj.io/v1alpha1")
+	if err != nil {
+		return false
+	}
+	for _, r := range resources.APIResources {
+		if r.Kind == "Application" {
+			return true
+		}
+	}
+	return false
 }
 
 // IsArgoCDInstalled checks if ArgoCD CRDs are installed in the cluster.
