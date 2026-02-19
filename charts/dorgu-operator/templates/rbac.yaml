@@ -5,7 +5,7 @@ metadata:
   labels:
     {{- include "dorgu-operator.labels" . | nindent 4 }}
 rules:
-  # ApplicationPersona CRD
+  # ApplicationPersona CRD (namespaced; controller reconciles and updates status)
   - apiGroups: ["dorgu.io"]
     resources: ["applicationpersonas"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
@@ -15,7 +15,7 @@ rules:
   - apiGroups: ["dorgu.io"]
     resources: ["applicationpersonas/finalizers"]
     verbs: ["update"]
-  # ClusterPersona CRD (cluster-scoped)
+  # ClusterPersona CRD (cluster-scoped; controller reconciles and updates status)
   - apiGroups: ["dorgu.io"]
     resources: ["clusterpersonas"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
@@ -25,23 +25,25 @@ rules:
   - apiGroups: ["dorgu.io"]
     resources: ["clusterpersonas/finalizers"]
     verbs: ["update"]
-  # Deployments (read-only)
+  # Deployments (read-only; for ApplicationPersona validation)
   - apiGroups: ["apps"]
     resources: ["deployments"]
     verbs: ["get", "list", "watch"]
-  # ArgoCD Applications (when argocd.enabled and ArgoCD is installed)
+  {{- if .Values.argocd.enabled }}
+  # ArgoCD Applications (only when argocd.enabled; watcher registered only if CRD exists)
   - apiGroups: ["argoproj.io"]
     resources: ["applications"]
     verbs: ["get", "list", "watch"]
-  # Pods, namespaces, nodes (ClusterPersona discovery)
+  {{- end }}
+  # Pods, namespaces, nodes (ClusterPersona discovery; read-only)
   - apiGroups: [""]
     resources: ["pods", "namespaces", "nodes"]
     verbs: ["get", "list", "watch"]
-  # Events
+  # Events (for recording controller events)
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["create", "patch"]
-  # Leader election (required when leaderElection.enabled=true)
+  # Leases (leader election when leaderElection.enabled=true)
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
