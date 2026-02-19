@@ -83,6 +83,15 @@ helm install dorgu-operator oci://ghcr.io/dorgu-ai/dorgu-operator-charts/dorgu-o
   --set websocket.enabled=true
 ```
 
+### Public packages (for installs without login)
+
+The release workflow runs on tag push and publishes the **container image** and **Helm chart** to GitHub Container Registry (GHCR). For users to install without authenticating, both packages must be **Public** in GitHub:
+
+- **Container image:** `ghcr.io/dorgu-ai/dorgu-operator` — In GitHub: go to the package (from the repo or org), Package settings → Change visibility → **Public**.
+- **Helm chart (OCI):** The chart is pushed to `ghcr.io/<org>/dorgu-operator-charts`. Ensure that package is also set to **Public** so `helm install oci://ghcr.io/...` works without `helm registry login`.
+
+If your org uses GitHub Releases for chart or binary artifacts, keep those releases public as well.
+
 ### Configuration Options
 
 | Parameter | Description | Default |
