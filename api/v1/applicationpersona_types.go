@@ -222,6 +222,12 @@ type SecurityPolicy struct {
 	// +kubebuilder:default=false
 	// +optional
 	AllowPrivilegeEscalation *bool `json:"allowPrivilegeEscalation,omitempty"`
+	// imageRunsAsRoot indicates the container image runs as root (USER root/0 or no USER).
+	// +optional
+	ImageRunsAsRoot *bool `json:"imageRunsAsRoot,omitempty"`
+	// runAsUser is the UID to run the container as when runAsNonRoot is true and image runs as root (e.g. 65534).
+	// +optional
+	RunAsUser *int64 `json:"runAsUser,omitempty"`
 }
 
 // DeploymentPolicy defines rollout strategy.

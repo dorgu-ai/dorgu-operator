@@ -22,7 +22,6 @@ rules:
   - get
   - list
   - watch
-# Only needed when running with --enable-argocd and ArgoCD CRD is installed (Helm chart makes this conditional via argocd.enabled)
 - apiGroups:
   - argoproj.io
   resources:

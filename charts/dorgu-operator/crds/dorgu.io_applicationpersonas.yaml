@@ -183,12 +183,21 @@ spec:
                       allowPrivilegeEscalation:
                         default: false
                         type: boolean
+                      imageRunsAsRoot:
+                        description: imageRunsAsRoot indicates the container image
+                          runs as root (USER root/0 or no USER).
+                        type: boolean
                       readOnlyRootFilesystem:
                         default: true
                         type: boolean
                       runAsNonRoot:
                         default: true
                         type: boolean
+                      runAsUser:
+                        description: runAsUser is the UID to run the container as
+                          when runAsNonRoot is true and image runs as root (e.g. 65534).
+                        format: int64
+                        type: integer
                     type: object
                 type: object
               resources:
