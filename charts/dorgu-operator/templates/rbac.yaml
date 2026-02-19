@@ -4,6 +4,10 @@ metadata:
   name: {{ include "dorgu-operator.fullname" . }}-manager
   labels:
     {{- include "dorgu-operator.labels" . | nindent 4 }}
+  annotations:
+    # Ensure Helm owns this resource so upgrades don't conflict with kubectl-patch
+    meta.helm.sh/release-name: {{ .Release.Name | quote }}
+    meta.helm.sh/release-namespace: {{ .Release.Namespace | quote }}
 rules:
   # ApplicationPersona CRD (namespaced; controller reconciles and updates status)
   - apiGroups: ["dorgu.io"]
@@ -54,6 +58,9 @@ metadata:
   name: {{ include "dorgu-operator.fullname" . }}-manager
   labels:
     {{- include "dorgu-operator.labels" . | nindent 4 }}
+  annotations:
+    meta.helm.sh/release-name: {{ .Release.Name | quote }}
+    meta.helm.sh/release-namespace: {{ .Release.Namespace | quote }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
