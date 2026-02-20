@@ -357,6 +357,22 @@ type HealthStatus struct {
 	LastCheck *metav1.Time `json:"lastCheck,omitempty"`
 	// +optional
 	Message string `json:"message,omitempty"`
+	// podFailures captures container failure reasons when pods are unhealthy.
+	// +optional
+	PodFailures []PodFailure `json:"podFailures,omitempty"`
+}
+
+// PodFailure captures a single pod/container failure reason.
+type PodFailure struct {
+	// podName is the name of the failing pod.
+	PodName string `json:"podName"`
+	// container is the name of the failing container.
+	Container string `json:"container"`
+	// reason is the failure reason (e.g., CrashLoopBackOff, ImagePullBackOff).
+	Reason string `json:"reason"`
+	// message provides additional details about the failure.
+	// +optional
+	Message string `json:"message,omitempty"`
 }
 
 // ValidationStatus contains the latest validation results.
