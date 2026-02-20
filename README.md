@@ -1,22 +1,13 @@
-# dorgu-operator
+# Dorgu Operator
 
-Kubernetes operator that validates Deployments against ApplicationPersona CRDs, manages ClusterPersona for cluster identity, and provides real-time integration with ArgoCD, Prometheus, and CLI tools.
+Cluster-side component of [Dorgu](https://github.com/dorgu-ai/dorgu): validates Deployments against **ApplicationPersona** CRDs, manages **ClusterPersona** for cluster identity, and integrates with ArgoCD, Prometheus, and the CLI. Read-only on workloads — it validates and reports; it does not modify your Deployments or Pods.
 
-## Description
+[![Go](https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat&logo=go)](https://go.dev/)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
-The Dorgu Operator is the cluster-side component of the [Dorgu](https://github.com/dorgu-ai/dorgu) project. It watches `ApplicationPersona` and `ClusterPersona` Custom Resources, validates deployments, and provides the "Cluster Soul" foundation for AI-powered Kubernetes management.
+**Features:** ApplicationPersona validation (resources, replicas, health, security) · ClusterPersona discovery (nodes, add-ons, capacity) · ArgoCD sync/health status · Prometheus baseline learning · WebSocket server for `dorgu watch` / `dorgu sync` · Optional validating webhook (advisory or enforcing)
 
-**Key features:**
-- **ApplicationPersona validation** — Checks resource limits, replica counts, health probes, and security context against persona constraints
-- **ClusterPersona discovery** — Automatically discovers cluster state including nodes, add-ons (ArgoCD, Prometheus, cert-manager), and resource usage
-- **ArgoCD integration** — Watches ArgoCD Applications and updates persona status with sync status and health
-- **Prometheus baseline learning** — Queries Prometheus for resource usage metrics to establish baselines
-- **WebSocket server** — Real-time communication with CLI for `dorgu watch` and `dorgu sync` commands
-- **Status reporting** — Updates persona status with validation results, health information, and recommendations
-- **Optional webhook** — Can run in advisory mode (warnings only) or enforcing mode (reject non-compliant deployments)
-- **Non-invasive** — The operator reads and validates only; it does not modify workloads
-
-**Integration with Dorgu CLI:**
+**CLI integration:**
 ```bash
 # Generate and apply a persona from your application
 dorgu persona apply ./my-app --namespace production
@@ -36,28 +27,16 @@ dorgu sync status
 
 ## CRDs
 
-### ApplicationPersona
-Represents the identity and requirements of an application:
-- Resource constraints (CPU, memory limits)
-- Scaling parameters (min/max replicas)
-- Health probe configuration
-- Security policies
-- Ownership and team information
-
-### ClusterPersona
-Represents the identity and state of a Kubernetes cluster:
-- Cluster policies and conventions
-- Node information and resource capacity
-- Discovered add-ons (ArgoCD, Prometheus, etc.)
-- Application count and namespace summary
+| CRD | Purpose |
+|-----|---------|
+| **ApplicationPersona** | App identity and requirements: resources, scaling, health probes, security, ownership. |
+| **ClusterPersona** | Cluster identity and state: nodes, add-ons (ArgoCD, Prometheus, cert-manager), capacity, namespace summary. |
 
 ## Getting Started
 
 ### Prerequisites
-- go version v1.24.6+
-- docker version 17.03+
-- kubectl version v1.11.3+
-- Access to a Kubernetes v1.11.3+ cluster
+
+Go 1.21+ (for building), Helm 3.x, kubectl, and a Kubernetes cluster (1.11+).
 
 ### Install with Helm (Recommended)
 
@@ -83,14 +62,7 @@ helm install dorgu-operator oci://ghcr.io/dorgu-ai/dorgu-operator-charts/dorgu-o
   --set websocket.enabled=true
 ```
 
-### Public packages (for installs without login)
-
-The release workflow runs on tag push and publishes the **container image** and **Helm chart** to GitHub Container Registry (GHCR). For users to install without authenticating, both packages must be **Public** in GitHub:
-
-- **Container image:** `ghcr.io/dorgu-ai/dorgu-operator` — In GitHub: go to the package (from the repo or org), Package settings → Change visibility → **Public**.
-- **Helm chart (OCI):** The chart is pushed to `ghcr.io/<org>/dorgu-operator-charts`. Ensure that package is also set to **Public** so `helm install oci://ghcr.io/...` works without `helm registry login`.
-
-If your org uses GitHub Releases for chart or binary artifacts, keep those releases public as well.
+**Public installs:** Image and Helm chart are published to GHCR on release. Set package visibility to **Public** in GitHub (package settings) so `helm install oci://...` works without login.
 
 ### Configuration Options
 
@@ -169,12 +141,9 @@ helm uninstall dorgu-operator -n dorgu-system
 └─────────────────┘     └────────────────────────────────────────┘
 ```
 
-## Contributing
+## Contributing & Security
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for how to contribute. It references the [Dorgu CLI contributing guidelines](https://github.com/dorgu-ai/dorgu/blob/main/CONTRIBUTING.md) for general practices and adds operator-specific steps (fork, branch, `make manifests generate`, `make test`, PR).
+[CONTRIBUTING.md](CONTRIBUTING.md) — operator-specific steps and link to [CLI contributing guidelines](https://github.com/dorgu-ai/dorgu/blob/main/CONTRIBUTING.md).  
+[SECURITY.md](SECURITY.md) — how to report vulnerabilities.
 
-**Security issues:** See [SECURITY.md](SECURITY.md).
-
-## License
-
-Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for the full text.
+**License:** Apache 2.0 — [LICENSE](LICENSE).
