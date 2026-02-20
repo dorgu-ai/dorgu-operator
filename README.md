@@ -120,25 +120,35 @@ helm uninstall dorgu-operator -n dorgu-system
 
 ## Architecture
 
-```
-┌─────────────────┐     ┌──────────────────────────────────────┐
-│   dorgu CLI     │     │           Kubernetes Cluster          │
-│                 │     │                                        │
-│  dorgu watch    │◀───▶│  ┌──────────────────────────────────┐ │
-│  dorgu sync     │ WS  │  │       Dorgu Operator             │ │
-│                 │     │  │                                  │ │
-│  dorgu persona  │     │  │  - ApplicationPersona Controller │ │
-│  dorgu cluster  │────▶│  │  - ClusterPersona Controller     │ │
-│                 │     │  │  - ArgoCD Watcher                │ │
-│                 │     │  │  - Prometheus Client             │ │
-│                 │     │  │  - WebSocket Server              │ │
-│                 │     │  └──────────────────────────────────┘ │
-│                 │     │                 │                      │
-│                 │     │    ┌────────────┼────────────┐        │
-│                 │     │    ▼            ▼            ▼        │
-│                 │     │  ArgoCD    Prometheus   Deployments   │
-│                 │     │                                        │
-└─────────────────┘     └────────────────────────────────────────┘
+```mermaid
+flowchart LR
+  subgraph cli [dorgu CLI]
+    watch[dorgu watch]
+    sync[dorgu sync]
+    persona[dorgu persona]
+    clusterCmd[dorgu cluster]
+  end
+
+  subgraph k8s [Kubernetes Cluster]
+    subgraph operator [Dorgu Operator]
+      appCtrl[ApplicationPersona Controller]
+      clusterCtrl[ClusterPersona Controller]
+      argocdWatcher[ArgoCD Watcher]
+      promClient[Prometheus Client]
+      wsServer[WebSocket Server]
+    end
+    argocd[ArgoCD]
+    prometheus[Prometheus]
+    deployments[Deployments]
+  end
+
+  watch <-->|WebSocket| wsServer
+  sync <-->|WebSocket| wsServer
+  persona --> appCtrl
+  clusterCmd --> clusterCtrl
+  operator --> argocd
+  operator --> prometheus
+  operator --> deployments
 ```
 
 ## Contributing & Security
