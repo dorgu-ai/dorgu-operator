@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -51,6 +52,12 @@ const (
 	phaseActive   = "Active"
 	phaseDegraded = "Degraded"
 	phaseFailed   = "Failed"
+
+	// Health status values
+	healthStatusHealthy   = "Healthy"
+	healthStatusDegraded  = "Degraded"
+	healthStatusUnhealthy = "Unhealthy"
+	healthStatusUnknown   = "Unknown"
 )
 
 // ApplicationPersonaReconciler reconciles an ApplicationPersona object.
@@ -102,7 +109,7 @@ func (r *ApplicationPersonaReconciler) Reconcile(ctx context.Context, req ctrl.R
 		persona.Status.Phase = phasePending
 		persona.Status.LastUpdated = &now
 		persona.Status.Health = &dorguv1.HealthStatus{
-			Status:    "Unknown",
+			Status:    healthStatusUnknown,
 			LastCheck: &now,
 			Message:   "No matching Deployment found",
 		}
@@ -148,6 +155,29 @@ func (r *ApplicationPersonaReconciler) Reconcile(ctx context.Context, req ctrl.R
 	// 6. Update health from deployment conditions
 	persona.Status.Health = deriveHealthFromDeployment(&deploy, &now)
 
+	// 6.5. Query pod failures if health is not Healthy
+	if persona.Status.Health.Status != healthStatusHealthy {
+		podFailures, err := r.getPodFailures(ctx, &deploy)
+		if err != nil {
+			log.V(1).Info("Could not get pod failures", "error", err.Error())
+		} else if len(podFailures) > 0 {
+			persona.Status.Health.PodFailures = podFailures
+			// Enhance the health message with failure reasons
+			reasons := make(map[string]bool)
+			for _, pf := range podFailures {
+				reasons[pf.Reason] = true
+			}
+			var reasonList []string
+			for reason := range reasons {
+				reasonList = append(reasonList, reason)
+			}
+			if len(reasonList) > 0 {
+				persona.Status.Health.Message = fmt.Sprintf("%s; failures: %s",
+					persona.Status.Health.Message, strings.Join(reasonList, ", "))
+			}
+		}
+	}
+
 	// 7. Update deployment tracking
 	image := ""
 	if len(deploy.Spec.Template.Spec.Containers) > 0 {
@@ -174,11 +204,11 @@ func (r *ApplicationPersonaReconciler) Reconcile(ctx context.Context, req ctrl.R
 	}
 
 	// 8. Set phase
-	if persona.Status.Health.Status == "Healthy" && !hasErrors {
+	if persona.Status.Health.Status == healthStatusHealthy && !hasErrors {
 		persona.Status.Phase = phaseActive
 	} else if hasErrors {
 		persona.Status.Phase = phaseDegraded
-	} else if persona.Status.Health.Status == "Unhealthy" {
+	} else if persona.Status.Health.Status == healthStatusUnhealthy {
 		persona.Status.Phase = phaseFailed
 	} else {
 		persona.Status.Phase = phaseDegraded
@@ -456,16 +486,16 @@ func deriveHealthFromDeployment(deploy *appsv1.Deployment, now *metav1.Time) *do
 
 	switch {
 	case available && deploy.Status.ReadyReplicas == deploy.Status.Replicas:
-		hs.Status = "Healthy"
+		hs.Status = healthStatusHealthy
 		hs.Message = fmt.Sprintf("%d/%d replicas ready", deploy.Status.ReadyReplicas, deploy.Status.Replicas)
 	case available && deploy.Status.ReadyReplicas > 0:
-		hs.Status = "Degraded"
+		hs.Status = healthStatusDegraded
 		hs.Message = fmt.Sprintf("%d/%d replicas ready", deploy.Status.ReadyReplicas, deploy.Status.Replicas)
 	case progressing:
-		hs.Status = "Unknown"
+		hs.Status = healthStatusUnknown
 		hs.Message = "Deployment is progressing"
 	default:
-		hs.Status = "Unhealthy"
+		hs.Status = healthStatusUnhealthy
 		hs.Message = fmt.Sprintf("%d/%d replicas ready", deploy.Status.ReadyReplicas, deploy.Status.Replicas)
 	}
 
@@ -502,4 +532,100 @@ func countSeverity(issues []dorguv1.ValidationIssue, severity string) int {
 		}
 	}
 	return count
+}
+
+// getPodFailures queries pods owned by the deployment and extracts failure reasons.
+func (r *ApplicationPersonaReconciler) getPodFailures(ctx context.Context, deploy *appsv1.Deployment) ([]dorguv1.PodFailure, error) {
+	// Get the pod selector from the deployment
+	selector, err := metav1.LabelSelectorAsSelector(deploy.Spec.Selector)
+	if err != nil {
+		return nil, fmt.Errorf("invalid deployment selector: %w", err)
+	}
+
+	// List pods matching the deployment's selector
+	pods := &corev1.PodList{}
+	if err := r.List(ctx, pods, &client.ListOptions{
+		Namespace:     deploy.Namespace,
+		LabelSelector: selector,
+	}); err != nil {
+		return nil, fmt.Errorf("failed to list pods: %w", err)
+	}
+
+	var failures []dorguv1.PodFailure
+
+	for _, pod := range pods.Items {
+		// Check init container statuses
+		for _, cs := range pod.Status.InitContainerStatuses {
+			if failure := extractContainerFailure(pod.Name, cs); failure != nil {
+				failures = append(failures, *failure)
+			}
+		}
+
+		// Check container statuses
+		for _, cs := range pod.Status.ContainerStatuses {
+			if failure := extractContainerFailure(pod.Name, cs); failure != nil {
+				failures = append(failures, *failure)
+			}
+		}
+	}
+
+	return failures, nil
+}
+
+// extractContainerFailure extracts failure information from a container status.
+func extractContainerFailure(podName string, cs corev1.ContainerStatus) *dorguv1.PodFailure {
+	// Check if container is waiting with a failure reason
+	if cs.State.Waiting != nil {
+		reason := cs.State.Waiting.Reason
+		if isFailureReason(reason) {
+			return &dorguv1.PodFailure{
+				PodName:   podName,
+				Container: cs.Name,
+				Reason:    reason,
+				Message:   cs.State.Waiting.Message,
+			}
+		}
+	}
+
+	// Check if container terminated with an error
+	if cs.State.Terminated != nil && cs.State.Terminated.ExitCode != 0 {
+		reason := cs.State.Terminated.Reason
+		if reason == "" {
+			reason = fmt.Sprintf("ExitCode:%d", cs.State.Terminated.ExitCode)
+		}
+		return &dorguv1.PodFailure{
+			PodName:   podName,
+			Container: cs.Name,
+			Reason:    reason,
+			Message:   cs.State.Terminated.Message,
+		}
+	}
+
+	// Check last termination state for crash loops
+	if cs.LastTerminationState.Terminated != nil && cs.RestartCount > 0 {
+		return &dorguv1.PodFailure{
+			PodName:   podName,
+			Container: cs.Name,
+			Reason:    "CrashLoopBackOff",
+			Message:   fmt.Sprintf("Restarted %d times; last exit code: %d", cs.RestartCount, cs.LastTerminationState.Terminated.ExitCode),
+		}
+	}
+
+	return nil
+}
+
+// isFailureReason returns true if the waiting reason indicates a failure.
+func isFailureReason(reason string) bool {
+	failureReasons := map[string]bool{
+		"CrashLoopBackOff":           true,
+		"ImagePullBackOff":           true,
+		"ErrImagePull":               true,
+		"CreateContainerConfigError": true,
+		"CreateContainerError":       true,
+		"InvalidImageName":           true,
+		"RunContainerError":          true,
+		"ContainerCannotRun":         true,
+		"OOMKilled":                  true,
+	}
+	return failureReasons[reason]
 }

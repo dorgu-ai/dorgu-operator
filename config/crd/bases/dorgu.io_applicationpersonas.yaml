@@ -425,6 +425,33 @@ spec:
                     type: string
                   message:
                     type: string
+                  podFailures:
+                    description: podFailures captures container failure reasons when
+                      pods are unhealthy.
+                    items:
+                      description: PodFailure captures a single pod/container failure
+                        reason.
+                      properties:
+                        container:
+                          description: container is the name of the failing container.
+                          type: string
+                        message:
+                          description: message provides additional details about the
+                            failure.
+                          type: string
+                        podName:
+                          description: podName is the name of the failing pod.
+                          type: string
+                        reason:
+                          description: reason is the failure reason (e.g., CrashLoopBackOff,
+                            ImagePullBackOff).
+                          type: string
+                      required:
+                      - container
+                      - podName
+                      - reason
+                      type: object
+                    type: array
                   status:
                     enum:
                     - Healthy
