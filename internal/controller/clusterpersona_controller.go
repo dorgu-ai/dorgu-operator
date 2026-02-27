@@ -262,6 +262,12 @@ func (r *ClusterPersonaReconciler) calculateResourceSummary(ctx context.Context,
 func (r *ClusterPersonaReconciler) discoverAddons(ctx context.Context) []dorguv1.AddonInfo {
 	var addons []dorguv1.AddonInfo
 
+	// To add a new addon detector:
+	//   r.checkAddon(ctx, podNameContains, namespace, addonType)
+	// Valid addonType values: gitops, monitoring, logging, ingress,
+	//   service-mesh, secrets, cert-management, other
+	// podNameContains: a substring of the main component's pod name
+
 	// Check for ArgoCD
 	argoCD := r.checkAddon(ctx, "argocd", "argocd", "gitops")
 	addons = append(addons, argoCD)
@@ -292,6 +298,10 @@ func (r *ClusterPersonaReconciler) discoverAddons(ctx context.Context) []dorguv1
 	// Check for Istio
 	istio := r.checkAddon(ctx, "istiod", "istio-system", "service-mesh")
 	addons = append(addons, istio)
+
+	// Check for OpenObserve (installed by 'dorgu cluster setup')
+	openObserve := r.checkAddon(ctx, "openobserve", "openobserve", "monitoring")
+	addons = append(addons, openObserve)
 
 	return addons
 }
