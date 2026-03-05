@@ -321,6 +321,10 @@ type ClusterResourceSummary struct {
 	// runningPods is the number of running pods.
 	// +optional
 	RunningPods int32 `json:"runningPods,omitempty"`
+
+	// nodeCount is the number of nodes in the cluster.
+	// +optional
+	NodeCount int32 `json:"nodeCount,omitempty"`
 }
 
 // AddonInfo contains information about a cluster add-on.
@@ -372,7 +376,7 @@ type NamespaceSummary struct {
 // +kubebuilder:resource:scope=Cluster
 // +kubebuilder:printcolumn:name="Environment",type=string,JSONPath=`.spec.environment`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
-// +kubebuilder:printcolumn:name="Nodes",type=integer,JSONPath=`.status.resourceSummary.totalPods`
+// +kubebuilder:printcolumn:name="Nodes",type=integer,JSONPath=`.status.resourceSummary.nodeCount`
 // +kubebuilder:printcolumn:name="Apps",type=integer,JSONPath=`.status.applicationCount`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
