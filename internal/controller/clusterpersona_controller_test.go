@@ -97,7 +97,7 @@ var _ = Describe("ClusterPersona Controller", func() {
 			clusterpersona := &dorguv1.ClusterPersona{}
 			err = k8sClient.Get(ctx, typeNamespacedName, clusterpersona)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(clusterpersona.Status.Phase).To(Or(Equal("Unknown"), Equal("Ready"), Equal("Degraded")))
+			Expect(clusterpersona.Status.Phase).To(Or(Equal("Discovering"), Equal("Ready"), Equal("Degraded")))
 		})
 
 		It("should discover nodes in the cluster", func() {
