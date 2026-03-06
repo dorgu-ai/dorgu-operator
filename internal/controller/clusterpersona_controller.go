@@ -88,9 +88,10 @@ func (r *ClusterPersonaReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	nodes, err := r.discoverNodes(ctx)
 	if err != nil {
 		log.Error(err, "Failed to discover nodes")
-		clusterPersona.Status.Phase = clusterPhaseDegraded
 		setCondition(&clusterPersona.Status.Conditions, conditionTypeDiscovered, metav1.ConditionFalse,
 			"NodeDiscoveryFailed", err.Error())
+		// Preserve existing nodes to avoid phase regression on transient failures
+		nodes = clusterPersona.Status.Nodes
 	} else {
 		clusterPersona.Status.Nodes = nodes
 	}
@@ -255,12 +256,21 @@ func (r *ClusterPersonaReconciler) calculateResourceSummary(ctx context.Context,
 		summary.RunningPods = runningCount
 	}
 
+	// Set node count
+	summary.NodeCount = int32(len(nodes))
+
 	return summary
 }
 
 // discoverAddons detects installed cluster add-ons.
 func (r *ClusterPersonaReconciler) discoverAddons(ctx context.Context) []dorguv1.AddonInfo {
 	var addons []dorguv1.AddonInfo
+
+	// To add a new addon detector:
+	//   r.checkAddon(ctx, podNameContains, namespace, addonType)
+	// Valid addonType values: gitops, monitoring, logging, ingress,
+	//   service-mesh, secrets, cert-management, other
+	// podNameContains: a substring of the main component's pod name
 
 	// Check for ArgoCD
 	argoCD := r.checkAddon(ctx, "argocd", "argocd", "gitops")
@@ -292,6 +302,10 @@ func (r *ClusterPersonaReconciler) discoverAddons(ctx context.Context) []dorguv1
 	// Check for Istio
 	istio := r.checkAddon(ctx, "istiod", "istio-system", "service-mesh")
 	addons = append(addons, istio)
+
+	// Check for OpenObserve (installed by 'dorgu cluster setup')
+	openObserve := r.checkAddon(ctx, "openobserve", "openobserve", "monitoring")
+	addons = append(addons, openObserve)
 
 	return addons
 }
@@ -429,9 +443,11 @@ func (r *ClusterPersonaReconciler) countApplicationPersonas(ctx context.Context)
 }
 
 // determinePhase determines the overall cluster phase.
+// When no nodes are discovered, returns Discovering instead of Unknown
+// to prevent transient API failures from regressing a Ready cluster.
 func (r *ClusterPersonaReconciler) determinePhase(nodes []dorguv1.NodeInfo, _ []dorguv1.AddonInfo) string {
 	if len(nodes) == 0 {
-		return clusterPhaseUnknown
+		return clusterPhaseDiscovering
 	}
 
 	readyNodes := countReadyNodes(nodes)
@@ -439,11 +455,8 @@ func (r *ClusterPersonaReconciler) determinePhase(nodes []dorguv1.NodeInfo, _ []
 		return clusterPhaseReady
 	}
 
-	if readyNodes > 0 {
-		return clusterPhaseDegraded
-	}
-
-	return clusterPhaseUnknown
+	// Some or all nodes not ready — this is Degraded, not Unknown
+	return clusterPhaseDegraded
 }
 
 // Helper functions

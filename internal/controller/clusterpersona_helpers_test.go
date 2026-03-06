@@ -331,7 +331,7 @@ func TestDeterminePhase_NoNodes(t *testing.T) {
 	addons := []dorguv1.AddonInfo{}
 
 	phase := r.determinePhase(nodes, addons)
-	assert.Equal(t, clusterPhaseUnknown, phase)
+	assert.Equal(t, clusterPhaseDiscovering, phase)
 }
 
 func TestDeterminePhase_AllReady(t *testing.T) {
@@ -370,7 +370,7 @@ func TestDeterminePhase_NoneReady(t *testing.T) {
 	addons := []dorguv1.AddonInfo{}
 
 	phase := r.determinePhase(nodes, addons)
-	assert.Equal(t, clusterPhaseUnknown, phase)
+	assert.Equal(t, clusterPhaseDegraded, phase)
 }
 
 func TestDeterminePhase_SingleNodeReady(t *testing.T) {
@@ -392,5 +392,5 @@ func TestDeterminePhase_SingleNodeNotReady(t *testing.T) {
 	addons := []dorguv1.AddonInfo{}
 
 	phase := r.determinePhase(nodes, addons)
-	assert.Equal(t, clusterPhaseUnknown, phase)
+	assert.Equal(t, clusterPhaseDegraded, phase)
 }
