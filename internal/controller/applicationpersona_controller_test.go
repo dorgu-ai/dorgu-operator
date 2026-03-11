@@ -337,7 +337,7 @@ var _ = Describe("ApplicationPersona Controller", func() {
 			Expect(k8sClient.Get(ctx, typeNamespacedName, persona)).To(Succeed())
 			Expect(persona.Status.Validation).NotTo(BeNil())
 			Expect(persona.Status.Validation.Passed).To(BeFalse())
-			Expect(len(persona.Status.Validation.Issues)).To(BeNumerically(">", 0))
+			Expect(persona.Status.Validation.Issues).ToNot(BeEmpty())
 		})
 
 		It("should set Degraded phase when validation fails", func() {
@@ -380,7 +380,7 @@ var _ = Describe("ApplicationPersona Controller", func() {
 				NamespacedName: typeNamespacedName,
 			})
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result.Requeue).To(BeFalse())
+			Expect(result.RequeueAfter).To(BeZero())
 		})
 	})
 

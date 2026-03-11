@@ -38,6 +38,10 @@ import (
 const (
 	clusterRequeueInterval = 5 * time.Minute
 
+	// Node role values
+	nodeRoleControlPlane = "control-plane"
+	nodeRoleWorker       = "worker"
+
 	// ClusterPersona phase values
 	clusterPhaseDiscovering = "Discovering"
 	clusterPhaseReady       = "Ready"
@@ -463,12 +467,12 @@ func (r *ClusterPersonaReconciler) determinePhase(nodes []dorguv1.NodeInfo, _ []
 
 func getNodeRole(node *corev1.Node) string {
 	if _, ok := node.Labels["node-role.kubernetes.io/control-plane"]; ok {
-		return "control-plane"
+		return nodeRoleControlPlane
 	}
 	if _, ok := node.Labels["node-role.kubernetes.io/master"]; ok {
-		return "control-plane"
+		return nodeRoleControlPlane
 	}
-	return "worker"
+	return nodeRoleWorker
 }
 
 func isNodeReady(node *corev1.Node) bool {

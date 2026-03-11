@@ -406,9 +406,10 @@ var _ = Describe("ClusterPersona Controller", func() {
 			controlPlaneCount := 0
 			workerCount := 0
 			for _, node := range clusterpersona.Status.Nodes {
-				if node.Role == "control-plane" {
+				switch node.Role {
+				case "control-plane":
 					controlPlaneCount++
-				} else if node.Role == "worker" {
+				case "worker":
 					workerCount++
 				}
 			}
@@ -610,7 +611,7 @@ var _ = Describe("ClusterPersona Controller", func() {
 				NamespacedName: typeNamespacedName,
 			})
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result.Requeue).To(BeFalse())
+			Expect(result.RequeueAfter).To(BeZero())
 		})
 	})
 
