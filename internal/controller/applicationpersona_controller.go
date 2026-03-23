@@ -284,4 +284,3 @@ func (r *ApplicationPersonaReconciler) deploymentToPersona(ctx context.Context, 
 	}
 	return requests
 }
-
