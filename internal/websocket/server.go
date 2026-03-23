@@ -19,7 +19,6 @@ package websocket
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"sync"
 	"time"
@@ -27,11 +26,28 @@ import (
 	"github.com/gorilla/websocket"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
-
-	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 )
 
 var log = logf.Log.WithName("websocket")
+
+const (
+	// WebSocket connection limits
+	maxMessageSize  = 512 * 1024 // 512KB max message size
+	readTimeout     = 60 * time.Second
+	writeTimeout    = 10 * time.Second
+	pingInterval    = 30 * time.Second
+	shutdownTimeout = 5 * time.Second
+
+	// Buffer sizes
+	readBufferSize    = 1024
+	writeBufferSize   = 1024
+	sendChannelSize   = 256
+	broadcastChanSize = 256
+
+	// HTTP server timeouts
+	httpReadTimeout  = 10 * time.Second
+	httpWriteTimeout = 10 * time.Second
+)
 
 // Server is the WebSocket server for CLI communication.
 type Server struct {
@@ -42,6 +58,7 @@ type Server struct {
 	clientsMu sync.RWMutex
 	broadcast chan *Message
 	done      chan struct{}
+	ctx       context.Context
 }
 
 // Client represents a connected WebSocket client.
@@ -59,21 +76,23 @@ func NewServer(k8sClient client.Client, addr string) *Server {
 		client: k8sClient,
 		addr:   addr,
 		upgrader: websocket.Upgrader{
-			ReadBufferSize:  1024,
-			WriteBufferSize: 1024,
+			ReadBufferSize:  readBufferSize,
+			WriteBufferSize: writeBufferSize,
 			CheckOrigin: func(r *http.Request) bool {
 				// In production, implement proper origin checking
 				return true
 			},
 		},
 		clients:   make(map[*Client]bool),
-		broadcast: make(chan *Message, 256),
+		broadcast: make(chan *Message, broadcastChanSize),
 		done:      make(chan struct{}),
 	}
 }
 
 // Start starts the WebSocket server.
 func (s *Server) Start(ctx context.Context) error {
+	s.ctx = ctx
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", s.handleWebSocket)
 	mux.HandleFunc("/health", s.handleHealth)
@@ -81,8 +100,8 @@ func (s *Server) Start(ctx context.Context) error {
 	server := &http.Server{
 		Addr:         s.addr,
 		Handler:      mux,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
+		ReadTimeout:  httpReadTimeout,
+		WriteTimeout: httpWriteTimeout,
 	}
 
 	// Start broadcast handler
@@ -101,7 +120,7 @@ func (s *Server) Start(ctx context.Context) error {
 	close(s.done)
 
 	// Shutdown server
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 	return server.Shutdown(shutdownCtx)
 }
@@ -117,7 +136,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	wsClient := &Client{
 		conn:          conn,
 		server:        s,
-		send:          make(chan *Message, 256),
+		send:          make(chan *Message, sendChannelSize),
 		subscriptions: make(map[Topic]bool),
 	}
 
@@ -219,10 +238,10 @@ func (c *Client) readPump() {
 		log.Info("Client disconnected", "remoteAddr", c.conn.RemoteAddr())
 	}()
 
-	c.conn.SetReadLimit(512 * 1024) // 512KB max message size
-	_ = c.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+	c.conn.SetReadLimit(maxMessageSize)
+	_ = c.conn.SetReadDeadline(time.Now().Add(readTimeout))
 	c.conn.SetPongHandler(func(string) error {
-		_ = c.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+		_ = c.conn.SetReadDeadline(time.Now().Add(readTimeout))
 		return nil
 	})
 
@@ -247,7 +266,7 @@ func (c *Client) readPump() {
 
 // writePump writes messages to the WebSocket connection.
 func (c *Client) writePump() {
-	ticker := time.NewTicker(30 * time.Second)
+	ticker := time.NewTicker(pingInterval)
 	defer func() {
 		ticker.Stop()
 		_ = c.conn.Close()
@@ -256,7 +275,7 @@ func (c *Client) writePump() {
 	for {
 		select {
 		case msg, ok := <-c.send:
-			_ = c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			_ = c.conn.SetWriteDeadline(time.Now().Add(writeTimeout))
 			if !ok {
 				_ = c.conn.WriteMessage(websocket.CloseMessage, []byte{})
 				return
@@ -273,178 +292,10 @@ func (c *Client) writePump() {
 			}
 
 		case <-ticker.C:
-			_ = c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			_ = c.conn.SetWriteDeadline(time.Now().Add(writeTimeout))
 			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 				return
 			}
 		}
 	}
-}
-
-// handleMessage handles incoming messages from the client.
-func (c *Client) handleMessage(msg *Message) {
-	switch msg.Type {
-	case MessageTypeSubscribe:
-		c.handleSubscribe(msg)
-	case MessageTypeUnsubscribe:
-		c.handleUnsubscribe(msg)
-	case MessageTypeRequest:
-		c.handleRequest(msg)
-	default:
-		c.sendError("unknown_message_type", fmt.Sprintf("Unknown message type: %s", msg.Type))
-	}
-}
-
-// handleSubscribe handles subscription requests.
-func (c *Client) handleSubscribe(msg *Message) {
-	c.subsMu.Lock()
-	c.subscriptions[msg.Topic] = true
-	c.subsMu.Unlock()
-
-	log.V(1).Info("Client subscribed", "topic", msg.Topic, "remoteAddr", c.conn.RemoteAddr())
-
-	// Send confirmation
-	response, _ := NewMessage(MessageTypeResponse, msg.Topic, map[string]string{
-		"status": "subscribed",
-		"topic":  string(msg.Topic),
-	})
-	response.RequestID = msg.RequestID
-	c.send <- response
-}
-
-// handleUnsubscribe handles unsubscription requests.
-func (c *Client) handleUnsubscribe(msg *Message) {
-	c.subsMu.Lock()
-	delete(c.subscriptions, msg.Topic)
-	c.subsMu.Unlock()
-
-	log.V(1).Info("Client unsubscribed", "topic", msg.Topic, "remoteAddr", c.conn.RemoteAddr())
-
-	// Send confirmation
-	response, _ := NewMessage(MessageTypeResponse, msg.Topic, map[string]string{
-		"status": "unsubscribed",
-		"topic":  string(msg.Topic),
-	})
-	response.RequestID = msg.RequestID
-	c.send <- response
-}
-
-// handleRequest handles request messages.
-func (c *Client) handleRequest(msg *Message) {
-	ctx := context.Background()
-
-	switch msg.Topic {
-	case TopicPersonas:
-		c.handleListPersonas(ctx, msg)
-	case TopicCluster:
-		c.handleGetCluster(ctx, msg)
-	default:
-		c.sendError("unknown_topic", fmt.Sprintf("Unknown topic: %s", msg.Topic))
-	}
-}
-
-// handleListPersonas handles listing personas request.
-func (c *Client) handleListPersonas(ctx context.Context, msg *Message) {
-	var req ListPersonasRequest
-	if msg.Payload != nil {
-		_ = json.Unmarshal(msg.Payload, &req)
-	}
-
-	personaList := &dorguv1.ApplicationPersonaList{}
-	opts := []client.ListOption{}
-	if req.Namespace != "" {
-		opts = append(opts, client.InNamespace(req.Namespace))
-	}
-
-	if err := c.server.client.List(ctx, personaList, opts...); err != nil {
-		c.sendError("list_failed", err.Error())
-		return
-	}
-
-	summaries := make([]PersonaSummary, 0, len(personaList.Items))
-	for _, p := range personaList.Items {
-		health := ""
-		if p.Status.Health != nil {
-			health = p.Status.Health.Status
-		}
-		summaries = append(summaries, PersonaSummary{
-			Namespace: p.Namespace,
-			Name:      p.Name,
-			AppName:   p.Spec.Name,
-			Type:      p.Spec.Type,
-			Tier:      p.Spec.Tier,
-			Phase:     p.Status.Phase,
-			Health:    health,
-		})
-	}
-
-	response, _ := NewMessage(MessageTypeResponse, TopicPersonas, ListPersonasResponse{
-		Personas: summaries,
-	})
-	response.RequestID = msg.RequestID
-	c.send <- response
-}
-
-// handleGetCluster handles getting cluster info request.
-func (c *Client) handleGetCluster(ctx context.Context, msg *Message) {
-	var req GetClusterRequest
-	if msg.Payload != nil {
-		_ = json.Unmarshal(msg.Payload, &req)
-	}
-
-	clusterList := &dorguv1.ClusterPersonaList{}
-	if err := c.server.client.List(ctx, clusterList); err != nil {
-		c.sendError("list_failed", err.Error())
-		return
-	}
-
-	if len(clusterList.Items) == 0 {
-		c.sendError("not_found", "No ClusterPersona found")
-		return
-	}
-
-	// Use first cluster or find by name
-	var cluster *dorguv1.ClusterPersona
-	if req.Name != "" {
-		for i := range clusterList.Items {
-			if clusterList.Items[i].Name == req.Name {
-				cluster = &clusterList.Items[i]
-				break
-			}
-		}
-		if cluster == nil {
-			c.sendError("not_found", fmt.Sprintf("ClusterPersona '%s' not found", req.Name))
-			return
-		}
-	} else {
-		cluster = &clusterList.Items[0]
-	}
-
-	var addons []string
-	for _, addon := range cluster.Status.Addons {
-		if addon.Installed {
-			addons = append(addons, addon.Name)
-		}
-	}
-
-	resp := GetClusterResponse{
-		Name:             cluster.Spec.Name,
-		Environment:      cluster.Spec.Environment,
-		Phase:            cluster.Status.Phase,
-		KubernetesVer:    cluster.Status.KubernetesVersion,
-		Platform:         cluster.Status.Platform,
-		NodeCount:        len(cluster.Status.Nodes),
-		ApplicationCount: int(cluster.Status.ApplicationCount),
-		Addons:           addons,
-	}
-
-	response, _ := NewMessage(MessageTypeResponse, TopicCluster, resp)
-	response.RequestID = msg.RequestID
-	c.send <- response
-}
-
-// sendError sends an error message to the client.
-func (c *Client) sendError(code, message string) {
-	msg, _ := NewErrorMessage(code, message)
-	c.send <- msg
 }
