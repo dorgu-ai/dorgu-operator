@@ -58,6 +58,7 @@ type Server struct {
 	clientsMu sync.RWMutex
 	broadcast chan *Message
 	done      chan struct{}
+	ctx       context.Context
 }
 
 // Client represents a connected WebSocket client.
@@ -90,6 +91,8 @@ func NewServer(k8sClient client.Client, addr string) *Server {
 
 // Start starts the WebSocket server.
 func (s *Server) Start(ctx context.Context) error {
+	s.ctx = ctx
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", s.handleWebSocket)
 	mux.HandleFunc("/health", s.handleHealth)

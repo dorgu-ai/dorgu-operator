@@ -75,7 +75,7 @@ func (c *Client) handleUnsubscribe(msg *Message) {
 
 // handleRequest handles data request messages by topic.
 func (c *Client) handleRequest(msg *Message) {
-	ctx := context.Background()
+	ctx := c.server.ctx
 
 	switch msg.Topic {
 	case TopicPersonas:
@@ -91,7 +91,10 @@ func (c *Client) handleRequest(msg *Message) {
 func (c *Client) handleListPersonas(ctx context.Context, msg *Message) {
 	var req ListPersonasRequest
 	if msg.Payload != nil {
-		_ = json.Unmarshal(msg.Payload, &req)
+		if err := json.Unmarshal(msg.Payload, &req); err != nil {
+			c.sendError("invalid_payload", fmt.Sprintf("failed to parse personas request: %v", err))
+			return
+		}
 	}
 
 	personaList := &dorguv1.ApplicationPersonaList{}
@@ -133,7 +136,10 @@ func (c *Client) handleListPersonas(ctx context.Context, msg *Message) {
 func (c *Client) handleGetCluster(ctx context.Context, msg *Message) {
 	var req GetClusterRequest
 	if msg.Payload != nil {
-		_ = json.Unmarshal(msg.Payload, &req)
+		if err := json.Unmarshal(msg.Payload, &req); err != nil {
+			c.sendError("invalid_payload", fmt.Sprintf("failed to parse cluster request: %v", err))
+			return
+		}
 	}
 
 	clusterList := &dorguv1.ClusterPersonaList{}
