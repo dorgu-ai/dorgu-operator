@@ -33,6 +33,25 @@ import (
 
 var log = logf.Log.WithName("websocket")
 
+const (
+	// WebSocket connection limits
+	maxMessageSize  = 512 * 1024 // 512KB max message size
+	readTimeout     = 60 * time.Second
+	writeTimeout    = 10 * time.Second
+	pingInterval    = 30 * time.Second
+	shutdownTimeout = 5 * time.Second
+
+	// Buffer sizes
+	readBufferSize    = 1024
+	writeBufferSize   = 1024
+	sendChannelSize   = 256
+	broadcastChanSize = 256
+
+	// HTTP server timeouts
+	httpReadTimeout  = 10 * time.Second
+	httpWriteTimeout = 10 * time.Second
+)
+
 // Server is the WebSocket server for CLI communication.
 type Server struct {
 	client    client.Client
@@ -59,15 +78,15 @@ func NewServer(k8sClient client.Client, addr string) *Server {
 		client: k8sClient,
 		addr:   addr,
 		upgrader: websocket.Upgrader{
-			ReadBufferSize:  1024,
-			WriteBufferSize: 1024,
+			ReadBufferSize:  readBufferSize,
+			WriteBufferSize: writeBufferSize,
 			CheckOrigin: func(r *http.Request) bool {
 				// In production, implement proper origin checking
 				return true
 			},
 		},
 		clients:   make(map[*Client]bool),
-		broadcast: make(chan *Message, 256),
+		broadcast: make(chan *Message, broadcastChanSize),
 		done:      make(chan struct{}),
 	}
 }
@@ -81,8 +100,8 @@ func (s *Server) Start(ctx context.Context) error {
 	server := &http.Server{
 		Addr:         s.addr,
 		Handler:      mux,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
+		ReadTimeout:  httpReadTimeout,
+		WriteTimeout: httpWriteTimeout,
 	}
 
 	// Start broadcast handler
@@ -101,7 +120,7 @@ func (s *Server) Start(ctx context.Context) error {
 	close(s.done)
 
 	// Shutdown server
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 	return server.Shutdown(shutdownCtx)
 }
@@ -117,7 +136,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	wsClient := &Client{
 		conn:          conn,
 		server:        s,
-		send:          make(chan *Message, 256),
+		send:          make(chan *Message, sendChannelSize),
 		subscriptions: make(map[Topic]bool),
 	}
 
@@ -219,10 +238,10 @@ func (c *Client) readPump() {
 		log.Info("Client disconnected", "remoteAddr", c.conn.RemoteAddr())
 	}()
 
-	c.conn.SetReadLimit(512 * 1024) // 512KB max message size
-	_ = c.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+	c.conn.SetReadLimit(maxMessageSize)
+	_ = c.conn.SetReadDeadline(time.Now().Add(readTimeout))
 	c.conn.SetPongHandler(func(string) error {
-		_ = c.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+		_ = c.conn.SetReadDeadline(time.Now().Add(readTimeout))
 		return nil
 	})
 
@@ -247,7 +266,7 @@ func (c *Client) readPump() {
 
 // writePump writes messages to the WebSocket connection.
 func (c *Client) writePump() {
-	ticker := time.NewTicker(30 * time.Second)
+	ticker := time.NewTicker(pingInterval)
 	defer func() {
 		ticker.Stop()
 		_ = c.conn.Close()
@@ -256,7 +275,7 @@ func (c *Client) writePump() {
 	for {
 		select {
 		case msg, ok := <-c.send:
-			_ = c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			_ = c.conn.SetWriteDeadline(time.Now().Add(writeTimeout))
 			if !ok {
 				_ = c.conn.WriteMessage(websocket.CloseMessage, []byte{})
 				return
@@ -273,7 +292,7 @@ func (c *Client) writePump() {
 			}
 
 		case <-ticker.C:
-			_ = c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			_ = c.conn.SetWriteDeadline(time.Now().Add(writeTimeout))
 			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 				return
 			}
