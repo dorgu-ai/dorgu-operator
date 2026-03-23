@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-03-23
+
+### Added
+
+- Claude Code project configuration files for better project management.
+
+### Fixed
+
+- Handle JSON unmarshal errors and use server context in WebSocket handlers.
+
+### Changed
+
+- Extracted flag parsing from `cmd/main.go` into `cmd/config.go` with `operatorConfig` struct, removing `nolint:gocyclo` suppression.
+- Refactored webhook validators to return slices instead of mutating pointer arguments.
+- Extracted controller helpers: `setCondition`, validation, and status helpers into dedicated files.
+- Extracted ClusterPersona discovery and addon helpers into dedicated files.
+- Extracted WebSocket message handlers into `handlers.go` and replaced magic numbers with named constants.
+
 ## [0.2.5] - 2026-03-11
 
 ### Added
