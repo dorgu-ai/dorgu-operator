@@ -18,7 +18,6 @@ package main
 
 import (
 	"crypto/tls"
-	"flag"
 	"os"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
@@ -55,58 +54,10 @@ func init() {
 	// +kubebuilder:scaffold:scheme
 }
 
-// nolint:gocyclo
 func main() {
-	var enableWebhook bool
-	var webhookMode string
-	var metricsAddr string
-	var metricsCertPath, metricsCertName, metricsCertKey string
-	var webhookCertPath, webhookCertName, webhookCertKey string
-	var enableLeaderElection bool
-	var probeAddr string
-	var secureMetrics bool
-	var enableHTTP2 bool
-	var tlsOpts []func(*tls.Config)
-	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
-		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
-	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
-	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
-		"Enable leader election for controller manager. "+
-			"Enabling this will ensure there is only one active controller manager.")
-	flag.BoolVar(&secureMetrics, "metrics-secure", true,
-		"If set, the metrics endpoint is served securely via HTTPS. Use --metrics-secure=false to use HTTP instead.")
-	flag.StringVar(&webhookCertPath, "webhook-cert-path", "", "The directory that contains the webhook certificate.")
-	flag.StringVar(&webhookCertName, "webhook-cert-name", "tls.crt", "The name of the webhook certificate file.")
-	flag.StringVar(&webhookCertKey, "webhook-cert-key", "tls.key", "The name of the webhook key file.")
-	flag.StringVar(&metricsCertPath, "metrics-cert-path", "",
-		"The directory that contains the metrics server certificate.")
-	flag.StringVar(&metricsCertName, "metrics-cert-name", "tls.crt", "The name of the metrics server certificate file.")
-	flag.StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
-	flag.BoolVar(&enableHTTP2, "enable-http2", false,
-		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
-	flag.BoolVar(&enableWebhook, "enable-webhook", false,
-		"Enable the validating webhook for Deployment resources against ApplicationPersona constraints.")
-	flag.StringVar(&webhookMode, "webhook-mode", "advisory",
-		"Webhook validation mode: 'advisory' (warn only) or 'enforcing' (reject on errors).")
-	var enableArgoCD bool
-	flag.BoolVar(&enableArgoCD, "enable-argocd", true,
-		"Enable ArgoCD Application watching for sync status integration.")
-	var prometheusURL string
-	flag.StringVar(&prometheusURL, "prometheus-url", "",
-		"Prometheus server URL for metrics baseline learning (e.g., http://prometheus:9090).")
-	var enableWebSocket bool
-	var webSocketAddr string
-	flag.BoolVar(&enableWebSocket, "enable-websocket", false,
-		"Enable WebSocket server for CLI real-time communication.")
-	flag.StringVar(&webSocketAddr, "websocket-addr", ":9090",
-		"Address for the WebSocket server to listen on.")
-	opts := zap.Options{
-		Development: true,
-	}
-	opts.BindFlags(flag.CommandLine)
-	flag.Parse()
+	cfg := parseFlags()
 
-	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&cfg.zapOpts)))
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
 	// due to its vulnerabilities. More specifically, disabling http/2 will
@@ -114,12 +65,13 @@ func main() {
 	// Rapid Reset CVEs. For more information see:
 	// - https://github.com/advisories/GHSA-qppj-fm5r-hxr3
 	// - https://github.com/advisories/GHSA-4374-p667-p6c8
+	var tlsOpts []func(*tls.Config)
 	disableHTTP2 := func(c *tls.Config) {
 		setupLog.Info("disabling http/2")
 		c.NextProtos = []string{"http/1.1"}
 	}
 
-	if !enableHTTP2 {
+	if !cfg.enableHTTP2 {
 		tlsOpts = append(tlsOpts, disableHTTP2)
 	}
 
@@ -129,13 +81,13 @@ func main() {
 		TLSOpts: webhookTLSOpts,
 	}
 
-	if len(webhookCertPath) > 0 {
+	if len(cfg.webhookCertPath) > 0 {
 		setupLog.Info("Initializing webhook certificate watcher using provided certificates",
-			"webhook-cert-path", webhookCertPath, "webhook-cert-name", webhookCertName, "webhook-cert-key", webhookCertKey)
+			"webhook-cert-path", cfg.webhookCertPath, "webhook-cert-name", cfg.webhookCertName, "webhook-cert-key", cfg.webhookCertKey)
 
-		webhookServerOptions.CertDir = webhookCertPath
-		webhookServerOptions.CertName = webhookCertName
-		webhookServerOptions.KeyName = webhookCertKey
+		webhookServerOptions.CertDir = cfg.webhookCertPath
+		webhookServerOptions.CertName = cfg.webhookCertName
+		webhookServerOptions.KeyName = cfg.webhookCertKey
 	}
 
 	webhookServer := webhook.NewServer(webhookServerOptions)
@@ -145,12 +97,12 @@ func main() {
 	// - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.23.1/pkg/metrics/server
 	// - https://book.kubebuilder.io/reference/metrics.html
 	metricsServerOptions := metricsserver.Options{
-		BindAddress:   metricsAddr,
-		SecureServing: secureMetrics,
+		BindAddress:   cfg.metricsAddr,
+		SecureServing: cfg.secureMetrics,
 		TLSOpts:       tlsOpts,
 	}
 
-	if secureMetrics {
+	if cfg.secureMetrics {
 		// FilterProvider is used to protect the metrics endpoint with authn/authz.
 		// These configurations ensure that only authorized users and service accounts
 		// can access the metrics endpoint. The RBAC are configured in 'config/rbac/kustomization.yaml'. More info:
@@ -166,21 +118,21 @@ func main() {
 	// - [METRICS-WITH-CERTS] at config/default/kustomization.yaml to generate and use certificates
 	// managed by cert-manager for the metrics server.
 	// - [PROMETHEUS-WITH-CERTS] at config/prometheus/kustomization.yaml for TLS certification.
-	if len(metricsCertPath) > 0 {
+	if len(cfg.metricsCertPath) > 0 {
 		setupLog.Info("Initializing metrics certificate watcher using provided certificates",
-			"metrics-cert-path", metricsCertPath, "metrics-cert-name", metricsCertName, "metrics-cert-key", metricsCertKey)
+			"metrics-cert-path", cfg.metricsCertPath, "metrics-cert-name", cfg.metricsCertName, "metrics-cert-key", cfg.metricsCertKey)
 
-		metricsServerOptions.CertDir = metricsCertPath
-		metricsServerOptions.CertName = metricsCertName
-		metricsServerOptions.KeyName = metricsCertKey
+		metricsServerOptions.CertDir = cfg.metricsCertPath
+		metricsServerOptions.CertName = cfg.metricsCertName
+		metricsServerOptions.KeyName = cfg.metricsCertKey
 	}
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsServerOptions,
 		WebhookServer:          webhookServer,
-		HealthProbeBindAddress: probeAddr,
-		LeaderElection:         enableLeaderElection,
+		HealthProbeBindAddress: cfg.probeAddr,
+		LeaderElection:         cfg.enableLeaderElection,
 		LeaderElectionID:       "48ec518d.dorgu.io",
 		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
 		// when the Manager ends. This requires the binary to immediately end when the
@@ -209,14 +161,14 @@ func main() {
 	if err := (&controller.ApplicationPersonaReconciler{
 		Client:        mgr.GetClient(),
 		Scheme:        mgr.GetScheme(),
-		PrometheusURL: prometheusURL,
+		PrometheusURL: cfg.prometheusURL,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ApplicationPersona")
 		os.Exit(1)
 	}
 
-	if prometheusURL != "" {
-		setupLog.Info("Prometheus integration enabled", "url", prometheusURL)
+	if cfg.prometheusURL != "" {
+		setupLog.Info("Prometheus integration enabled", "url", cfg.prometheusURL)
 	}
 
 	if err := (&controller.ClusterPersonaReconciler{
@@ -229,7 +181,7 @@ func main() {
 	}
 
 	// Register ArgoCD watcher if enabled and ArgoCD CRD is present
-	if enableArgoCD {
+	if cfg.enableArgoCD {
 		if controller.ArgoCDCRDExists(discoveryClient) {
 			setupLog.Info("ArgoCD integration enabled, setting up watcher")
 			if err := (&controller.ArgoCDWatcher{
@@ -245,9 +197,9 @@ func main() {
 	}
 
 	// Register optional Deployment validating webhook
-	if enableWebhook {
+	if cfg.enableWebhook {
 		mode := dorguwebhook.ModeAdvisory
-		if webhookMode == "enforcing" {
+		if cfg.webhookMode == "enforcing" {
 			mode = dorguwebhook.ModeEnforcing
 		}
 		setupLog.Info("Registering Deployment validating webhook", "mode", mode)
@@ -270,9 +222,9 @@ func main() {
 	}
 
 	// Start WebSocket server if enabled
-	if enableWebSocket {
-		setupLog.Info("Starting WebSocket server", "addr", webSocketAddr)
-		wsServer := dorguws.NewServer(mgr.GetClient(), webSocketAddr)
+	if cfg.enableWebSocket {
+		setupLog.Info("Starting WebSocket server", "addr", cfg.webSocketAddr)
+		wsServer := dorguws.NewServer(mgr.GetClient(), cfg.webSocketAddr)
 		go func() {
 			if err := wsServer.Start(ctrl.SetupSignalHandler()); err != nil {
 				setupLog.Error(err, "WebSocket server error")
