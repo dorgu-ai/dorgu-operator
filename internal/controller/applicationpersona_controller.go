@@ -502,28 +502,6 @@ func deriveHealthFromDeployment(deploy *appsv1.Deployment, now *metav1.Time) *do
 	return hs
 }
 
-func setCondition(conditions *[]metav1.Condition, condType string, status metav1.ConditionStatus, reason, message string) {
-	now := metav1.Now()
-	for i, c := range *conditions {
-		if c.Type == condType {
-			if c.Status != status || c.Reason != reason {
-				(*conditions)[i].Status = status
-				(*conditions)[i].Reason = reason
-				(*conditions)[i].Message = message
-				(*conditions)[i].LastTransitionTime = now
-			}
-			return
-		}
-	}
-	*conditions = append(*conditions, metav1.Condition{
-		Type:               condType,
-		Status:             status,
-		Reason:             reason,
-		Message:            message,
-		LastTransitionTime: now,
-	})
-}
-
 func countSeverity(issues []dorguv1.ValidationIssue, severity string) int {
 	count := 0
 	for _, i := range issues {
