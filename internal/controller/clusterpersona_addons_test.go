@@ -100,5 +100,111 @@ var _ = Describe("OpenObserve Addon Discovery", func() {
 			Expect(k8sClient.Delete(ctx, pod)).To(Succeed())
 			Expect(k8sClient.Delete(ctx, ns)).To(Succeed())
 		})
+
+		It("prefers app.kubernetes.io/version label over image tag", func() {
+			By("creating the test namespace")
+			ns := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "ingress-nginx-label-test",
+				},
+			}
+			err := k8sClient.Get(ctx, types.NamespacedName{Name: ns.Name}, ns)
+			if err != nil && errors.IsNotFound(err) {
+				Expect(k8sClient.Create(ctx, ns)).To(Succeed())
+			}
+
+			By("creating a pod with version label and digest image tag")
+			pod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "ingress-nginx-controller-abc123",
+					Namespace: ns.Name,
+					Labels: map[string]string{
+						"app.kubernetes.io/version": "1.11.3",
+					},
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:  "controller",
+							Image: "registry.k8s.io/ingress-nginx/controller:d56f135b6462cfc476447cfe564b83a45e8bb7da2774963b00d12161112270b7",
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+			pod.Status.Phase = corev1.PodRunning
+			Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
+
+			By("calling checkAddon")
+			r := &ClusterPersonaReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			addon := r.checkAddon(ctx, "ingress-nginx-controller", ns.Name, "ingress")
+
+			By("verifying the label version is used, not the digest")
+			Expect(addon.Installed).To(BeTrue())
+			Expect(addon.Version).To(Equal("1.11.3"))
+
+			By("cleaning up")
+			Expect(k8sClient.Delete(ctx, pod)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, ns)).To(Succeed())
+		})
+
+		It("returns unknown for hex digest image tag when no label exists", func() {
+			By("creating the test namespace")
+			ns := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "ingress-nginx-digest-test",
+				},
+			}
+			err := k8sClient.Get(ctx, types.NamespacedName{Name: ns.Name}, ns)
+			if err != nil && errors.IsNotFound(err) {
+				Expect(k8sClient.Create(ctx, ns)).To(Succeed())
+			}
+
+			By("creating a pod with digest-only image tag and no version label")
+			pod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "ingress-nginx-controller-def456",
+					Namespace: ns.Name,
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:  "controller",
+							Image: "registry.k8s.io/ingress-nginx/controller:d56f135b6462cfc476447cfe564b83a45e8bb7da2774963b00d12161112270b7",
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+			pod.Status.Phase = corev1.PodRunning
+			Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
+
+			By("calling checkAddon")
+			r := &ClusterPersonaReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			addon := r.checkAddon(ctx, "ingress-nginx-controller", ns.Name, "ingress")
+
+			By("verifying version is 'unknown' instead of the digest hash")
+			Expect(addon.Installed).To(BeTrue())
+			Expect(addon.Version).To(Equal("unknown"))
+
+			By("cleaning up")
+			Expect(k8sClient.Delete(ctx, pod)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, ns)).To(Succeed())
+		})
+	})
+})
+
+var _ = Describe("isHexDigest", func() {
+	It("returns true for long hex strings", func() {
+		Expect(isHexDigest("d56f135b6462cfc476447cfe564b83a45e8bb7da2774963b00d12161112270b7")).To(BeTrue())
+	})
+	It("returns false for semver tags", func() {
+		Expect(isHexDigest("v1.11.3")).To(BeFalse())
+	})
+	It("returns false for short hex strings", func() {
+		Expect(isHexDigest("abc123")).To(BeFalse())
+	})
+	It("returns false for strings with non-hex chars", func() {
+		Expect(isHexDigest("d56f135b6462cfc476447cfe564b83a45e8bb7da2774963b00d12161112270zz")).To(BeFalse())
 	})
 })
