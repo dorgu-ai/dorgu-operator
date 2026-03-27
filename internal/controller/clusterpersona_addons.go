@@ -101,11 +101,18 @@ func (r *ClusterPersonaReconciler) checkAddon(ctx context.Context, deploymentNam
 			addon.Installed = true
 			addon.Namespace = namespace
 
-			// Try to get version from container image
-			if len(pod.Spec.Containers) > 0 {
+			// Prefer app.kubernetes.io/version label (set by Helm charts)
+			if v, ok := pod.Labels["app.kubernetes.io/version"]; ok && v != "" {
+				addon.Version = v
+			} else if len(pod.Spec.Containers) > 0 {
 				image := pod.Spec.Containers[0].Image
 				if parts := strings.Split(image, ":"); len(parts) > 1 {
-					addon.Version = parts[len(parts)-1]
+					tag := parts[len(parts)-1]
+					if isHexDigest(tag) {
+						addon.Version = "unknown"
+					} else {
+						addon.Version = tag
+					}
 				}
 			}
 
@@ -117,4 +124,18 @@ func (r *ClusterPersonaReconciler) checkAddon(ctx context.Context, deploymentNam
 	}
 
 	return addon
+}
+
+// isHexDigest returns true if s looks like a hex digest (40+ hex characters
+// with no dots or dashes, indicating it's not a semantic version).
+func isHexDigest(s string) bool {
+	if len(s) < 40 {
+		return false
+	}
+	for _, c := range s {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return true
 }
