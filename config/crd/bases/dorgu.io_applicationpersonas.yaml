@@ -294,6 +294,11 @@ spec:
           status:
             description: status defines the observed state of ApplicationPersona.
             properties:
+              activeIncidents:
+                description: activeIncidents is the count of unresolved incidents
+                  for this persona.
+                format: int32
+                type: integer
               argoCD:
                 description: argoCD contains ArgoCD sync status if ArgoCD is detected.
                 properties:
@@ -460,6 +465,11 @@ spec:
                     - Unknown
                     type: string
                 type: object
+              lastIncidentTime:
+                description: lastIncidentTime is when the most recent incident was
+                  detected.
+                format: date-time
+                type: string
               lastUpdated:
                 description: lastUpdated records when the operator last reconciled.
                 format: date-time
