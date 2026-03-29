@@ -75,6 +75,7 @@ func NewWatcher(
 		emitter:      emitter,
 		logger:       logger.WithName("event-watcher"),
 		resyncPeriod: DefaultResyncPeriod,
+		startupTime:  time.Now(),
 	}
 	for _, opt := range opts {
 		opt(w)

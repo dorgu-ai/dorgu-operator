@@ -102,15 +102,12 @@ func (s *HybridEventStore) Store(ctx context.Context, event *InternalEvent) erro
 		return nil
 	}
 
-	// Deduplication check.
+	// Atomic deduplication check-and-set.
 	dedupKey := s.dedupKey(event)
-	if s.isDuplicate(dedupKey) {
+	if s.checkAndMarkSeen(dedupKey) {
 		s.logger.V(1).Info("event deduplicated", "id", event.ID, "key", dedupKey)
 		return nil
 	}
-
-	// Mark as seen for dedup.
-	s.markSeen(dedupKey)
 
 	// Write to in-memory cache.
 	s.addToCache(*event)
@@ -154,20 +151,17 @@ func (s *HybridEventStore) dedupKey(event *InternalEvent) string {
 	)
 }
 
-func (s *HybridEventStore) isDuplicate(key string) bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	lastSeen, exists := s.dedupMap[key]
-	if !exists {
-		return false
-	}
-	return time.Since(lastSeen) < s.dedupWindow
-}
-
-func (s *HybridEventStore) markSeen(key string) {
+// checkAndMarkSeen atomically checks if a key is a duplicate and marks it as seen.
+// Returns true if the event is a duplicate (should be suppressed).
+func (s *HybridEventStore) checkAndMarkSeen(key string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if lastSeen, exists := s.dedupMap[key]; exists {
+		if time.Since(lastSeen) < s.dedupWindow {
+			return true
+		}
+	}
 
 	s.dedupMap[key] = time.Now()
 
@@ -180,6 +174,8 @@ func (s *HybridEventStore) markSeen(key string) {
 			}
 		}
 	}
+
+	return false
 }
 
 func (s *HybridEventStore) addToCache(event InternalEvent) {
