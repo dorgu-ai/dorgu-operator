@@ -25,7 +25,7 @@ spec:
       type: string
     - jsonPath: .spec.confidence
       name: Confidence
-      type: number
+      type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date

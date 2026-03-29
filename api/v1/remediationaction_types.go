@@ -162,7 +162,7 @@ type RemediationActionStatus struct {
 // +kubebuilder:resource:shortName=ra
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Type",type=string,JSONPath=`.spec.action.type`
-// +kubebuilder:printcolumn:name="Confidence",type=number,JSONPath=`.spec.confidence`
+// +kubebuilder:printcolumn:name="Confidence",type=string,JSONPath=`.spec.confidence`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // RemediationAction is the Schema for the remediationactions API.
