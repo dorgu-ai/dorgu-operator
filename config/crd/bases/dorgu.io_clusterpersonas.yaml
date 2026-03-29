@@ -226,6 +226,67 @@ spec:
                         - restricted
                         type: string
                     type: object
+                  selfHealing:
+                    description: selfHealing configures the cluster healing behavior.
+                    properties:
+                      enabled:
+                        default: true
+                        description: enabled activates the healing system.
+                        type: boolean
+                      excludeNamespaces:
+                        description: excludeNamespaces lists namespaces excluded from
+                          auto-remediation.
+                        items:
+                          type: string
+                        type: array
+                      maxRemediationsPerHour:
+                        default: 5
+                        description: maxRemediationsPerHour limits remediation rate
+                          per persona.
+                        format: int32
+                        type: integer
+                      mode:
+                        default: propose
+                        description: mode controls the healing behavior.
+                        enum:
+                        - observe
+                        - propose
+                        - auto-approve
+                        type: string
+                      rollback:
+                        description: rollback configures automatic rollback behavior.
+                        properties:
+                          enabled:
+                            default: true
+                            description: enabled activates automatic rollback on degradation.
+                            type: boolean
+                          healthCheckAfter:
+                            description: healthCheckAfter is the duration to wait
+                              before verifying remediation health.
+                            type: string
+                          maxRetries:
+                            default: 1
+                            description: maxRetries limits rollback attempts.
+                            format: int32
+                            minimum: 0
+                            type: integer
+                        required:
+                        - enabled
+                        - maxRetries
+                        type: object
+                      trustLevel:
+                        default: 2
+                        description: trustLevel sets the progressive trust level (0-5).
+                        format: int32
+                        maximum: 5
+                        minimum: 0
+                        type: integer
+                    required:
+                    - enabled
+                    - maxRemediationsPerHour
+                    - mode
+                    - trustLevel
+                    type: object
                 type: object
               resourceQuotas:
                 description: resourceQuotas defines cluster-wide resource constraints.

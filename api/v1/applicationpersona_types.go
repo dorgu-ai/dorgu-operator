@@ -292,6 +292,14 @@ type ApplicationPersonaStatus struct {
 	// +optional
 	ArgoCD *ArgoCDStatus `json:"argoCD,omitempty"`
 
+	// activeIncidents is the count of unresolved incidents for this persona.
+	// +optional
+	ActiveIncidents int32 `json:"activeIncidents,omitempty"`
+
+	// lastIncidentTime is when the most recent incident was detected.
+	// +optional
+	LastIncidentTime *metav1.Time `json:"lastIncidentTime,omitempty"`
+
 	// conditions follow the standard Kubernetes condition pattern.
 	// +listType=map
 	// +listMapKey=type
