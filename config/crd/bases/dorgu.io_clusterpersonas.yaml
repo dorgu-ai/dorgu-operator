@@ -231,42 +231,42 @@ spec:
                     properties:
                       enabled:
                         default: true
-                        description: Enabled activates the healing system.
+                        description: enabled activates the healing system.
                         type: boolean
                       excludeNamespaces:
-                        description: ExcludeNamespaces lists namespaces excluded from
+                        description: excludeNamespaces lists namespaces excluded from
                           auto-remediation.
                         items:
                           type: string
                         type: array
                       maxRemediationsPerHour:
                         default: 5
-                        description: MaxRemediationsPerHour limits remediation rate
+                        description: maxRemediationsPerHour limits remediation rate
                           per persona.
                         format: int32
                         type: integer
                       mode:
                         default: propose
-                        description: Mode controls the healing behavior.
+                        description: mode controls the healing behavior.
                         enum:
                         - observe
                         - propose
                         - auto-approve
                         type: string
                       rollback:
-                        description: Rollback configures automatic rollback behavior.
+                        description: rollback configures automatic rollback behavior.
                         properties:
                           enabled:
                             default: true
-                            description: Enabled activates automatic rollback on degradation.
+                            description: enabled activates automatic rollback on degradation.
                             type: boolean
                           healthCheckAfter:
-                            description: HealthCheckAfter is the duration to wait
+                            description: healthCheckAfter is the duration to wait
                               before verifying remediation health.
                             type: string
                           maxRetries:
                             default: 1
-                            description: MaxRetries limits rollback attempts.
+                            description: maxRetries limits rollback attempts.
                             format: int32
                             minimum: 0
                             type: integer
@@ -276,7 +276,7 @@ spec:
                         type: object
                       trustLevel:
                         default: 2
-                        description: TrustLevel sets the progressive trust level (0-5).
+                        description: trustLevel sets the progressive trust level (0-5).
                         format: int32
                         maximum: 5
                         minimum: 0

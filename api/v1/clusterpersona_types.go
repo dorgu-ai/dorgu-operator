@@ -78,45 +78,47 @@ type ClusterPolicies struct {
 
 // SelfHealingPolicy configures the cluster's self-healing behavior.
 type SelfHealingPolicy struct {
-	// Enabled activates the healing system.
+	// enabled activates the healing system.
 	// +kubebuilder:default=true
 	Enabled bool `json:"enabled"`
 
-	// Mode controls the healing behavior.
+	// mode controls the healing behavior.
 	// +kubebuilder:validation:Enum=observe;propose;auto-approve
 	// +kubebuilder:default=propose
 	Mode string `json:"mode"`
 
-	// TrustLevel sets the progressive trust level (0-5).
+	// trustLevel sets the progressive trust level (0-5).
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:validation:Maximum=5
 	// +kubebuilder:default=2
 	TrustLevel int32 `json:"trustLevel"`
 
-	// MaxRemediationsPerHour limits remediation rate per persona.
+	// maxRemediationsPerHour limits remediation rate per persona.
 	// +kubebuilder:default=5
 	MaxRemediationsPerHour int32 `json:"maxRemediationsPerHour"`
 
-	// ExcludeNamespaces lists namespaces excluded from auto-remediation.
+	// excludeNamespaces lists namespaces excluded from auto-remediation.
 	// +optional
 	ExcludeNamespaces []string `json:"excludeNamespaces,omitempty"`
 
-	// Rollback configures automatic rollback behavior.
+	// rollback configures automatic rollback behavior.
 	// +optional
 	Rollback *RollbackPolicy `json:"rollback,omitempty"`
 }
 
-// RollbackPolicy configures automatic rollback on remediation degradation.
+// RollbackPolicy defines cluster-level default rollback behavior.
+// This is intentionally separate from RemediationRollbackSpec (per-action override)
+// because cluster defaults and per-action overrides may diverge as features evolve.
 type RollbackPolicy struct {
-	// Enabled activates automatic rollback on degradation.
+	// enabled activates automatic rollback on degradation.
 	// +kubebuilder:default=true
 	Enabled bool `json:"enabled"`
 
-	// HealthCheckAfter is the duration to wait before verifying remediation health.
+	// healthCheckAfter is the duration to wait before verifying remediation health.
 	// +optional
 	HealthCheckAfter *metav1.Duration `json:"healthCheckAfter,omitempty"`
 
-	// MaxRetries limits rollback attempts.
+	// maxRetries limits rollback attempts.
 	// +kubebuilder:default=1
 	// +kubebuilder:validation:Minimum=0
 	MaxRetries int32 `json:"maxRetries"`

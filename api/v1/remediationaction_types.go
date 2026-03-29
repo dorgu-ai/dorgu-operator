@@ -102,7 +102,9 @@ type AutoApproveRule struct {
 	AfterSuccessfulOccurrences int32 `json:"afterSuccessfulOccurrences"`
 }
 
-// RemediationRollbackSpec configures automatic rollback behavior for a remediation.
+// RemediationRollbackSpec configures automatic rollback behavior for a single remediation action.
+// This is intentionally separate from RollbackPolicy (cluster-level default in ClusterPersona)
+// because per-action overrides may diverge from cluster defaults as features evolve.
 type RemediationRollbackSpec struct {
 	// Enabled activates automatic rollback on degradation.
 	// +kubebuilder:default=true

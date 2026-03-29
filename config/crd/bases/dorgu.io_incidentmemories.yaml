@@ -29,6 +29,10 @@ spec:
     - jsonPath: .spec.detection.signal
       name: Signal
       type: string
+    - jsonPath: .spec.personaRef.name
+      name: Persona
+      priority: 1
+      type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -332,6 +336,7 @@ spec:
                 description: OccurrenceCount tracks how many times this pattern has
                   been seen.
                 format: int32
+                minimum: 0
                 type: integer
               phase:
                 description: Phase tracks the incident lifecycle.

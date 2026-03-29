@@ -178,6 +178,7 @@ type IncidentMemoryStatus struct {
 	Phase string `json:"phase,omitempty"`
 
 	// OccurrenceCount tracks how many times this pattern has been seen.
+	// +kubebuilder:validation:Minimum=0
 	// +optional
 	OccurrenceCount int32 `json:"occurrenceCount,omitempty"`
 
@@ -203,6 +204,7 @@ type IncidentMemoryStatus struct {
 // +kubebuilder:printcolumn:name="Severity",type=string,JSONPath=`.spec.severity`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Signal",type=string,JSONPath=`.spec.detection.signal`
+// +kubebuilder:printcolumn:name="Persona",type=string,JSONPath=`.spec.personaRef.name`,priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // IncidentMemory is the Schema for the incidentmemories API.
