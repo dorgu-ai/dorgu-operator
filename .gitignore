@@ -1,3 +1,6 @@
+# Claude plans for Development
+.claude/plans/
+
 # Binaries for programs and plugins
 *.exe
 *.exe~
