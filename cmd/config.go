@@ -18,6 +18,7 @@ package main
 
 import (
 	"flag"
+	"time"
 
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 )
@@ -57,6 +58,13 @@ type operatorConfig struct {
 	enableWebSocket bool
 	webSocketAddr   string
 
+	// Health check reconciler
+	enableHealthCheck   bool
+	healthCheckInterval time.Duration
+
+	// Metrics-server integration
+	enableMetricsServer bool
+
 	// Logging
 	zapOpts zap.Options
 }
@@ -94,6 +102,12 @@ func parseFlags() operatorConfig {
 		"Enable WebSocket server for CLI real-time communication.")
 	flag.StringVar(&cfg.webSocketAddr, "websocket-addr", ":9090",
 		"Address for the WebSocket server to listen on.")
+	flag.BoolVar(&cfg.enableHealthCheck, "enable-health-check", false,
+		"Enable health check reconciler for Phase 2a detection and diagnosis.")
+	flag.DurationVar(&cfg.healthCheckInterval, "health-check-interval", 60*time.Second,
+		"Health check reconciler interval.")
+	flag.BoolVar(&cfg.enableMetricsServer, "enable-metrics-server", true,
+		"Enable metrics-server integration for detection.")
 
 	cfg.zapOpts = zap.Options{Development: true}
 	cfg.zapOpts.BindFlags(flag.CommandLine)
