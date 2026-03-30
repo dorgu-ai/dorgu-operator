@@ -42,7 +42,7 @@ func newTestEvent(reason, message, eventType string) *corev1.Event {
 		Reason:        reason,
 		Message:       message,
 		Type:          eventType,
-		LastTimestamp:  metav1.Time{Time: time.Date(2026, 3, 27, 14, 0, 0, 0, time.UTC)},
+		LastTimestamp: metav1.Time{Time: time.Date(2026, 3, 27, 14, 0, 0, 0, time.UTC)},
 		Source:        corev1.EventSource{Component: "kubelet"},
 	}
 }

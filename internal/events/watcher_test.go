@@ -164,9 +164,9 @@ func TestWatcher_ProcessEvent(t *testing.T) {
 			Name:      "api-server-xyz",
 			Namespace: "production",
 		},
-		Reason:       "OOMKilling",
-		Message:      "Container killed due to OOM",
-		Type:         corev1.EventTypeWarning,
+		Reason:        "OOMKilling",
+		Message:       "Container killed due to OOM",
+		Type:          corev1.EventTypeWarning,
 		LastTimestamp: metav1.Time{Time: time.Now()},
 	}
 
@@ -208,9 +208,9 @@ func TestWatcher_ProcessEvent_DiscardedByClassifier(t *testing.T) {
 			Name: "normal-event",
 			UID:  types.UID("uid-456"),
 		},
-		Reason:       "Scheduled",
-		Message:      "Successfully assigned pod",
-		Type:         corev1.EventTypeNormal,
+		Reason:        "Scheduled",
+		Message:       "Successfully assigned pod",
+		Type:          corev1.EventTypeNormal,
 		LastTimestamp: metav1.Time{Time: time.Now()},
 	}
 
@@ -246,8 +246,8 @@ func TestWatcher_ProcessEvent_NilEmitter(t *testing.T) {
 			Name: "test-event",
 			UID:  types.UID("uid-789"),
 		},
-		Reason:       "MemoryPressure",
-		Message:      "Node has memory pressure",
+		Reason:        "MemoryPressure",
+		Message:       "Node has memory pressure",
 		LastTimestamp: metav1.Time{Time: time.Now()},
 	}
 
@@ -343,8 +343,8 @@ func TestWatcher_ProcessEvent_CorrelationError(t *testing.T) {
 			Name: "test-event",
 			UID:  types.UID("uid-err"),
 		},
-		Reason:       "OOMKilling",
-		Message:      "OOM",
+		Reason:        "OOMKilling",
+		Message:       "OOM",
 		LastTimestamp: metav1.Time{Time: time.Now()},
 	}
 
@@ -382,8 +382,8 @@ func TestWatcher_ProcessEvent_StoreError(t *testing.T) {
 			Name: "test-event",
 			UID:  types.UID("uid-err2"),
 		},
-		Reason:       "OOMKilling",
-		Message:      "OOM",
+		Reason:        "OOMKilling",
+		Message:       "OOM",
 		LastTimestamp: metav1.Time{Time: time.Now()},
 	}
 

@@ -266,10 +266,10 @@ func TestStore_QueryFallbackToAPI(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: dorguv1.DorguEventSpec{
-			Severity:   "warning",
-			Category:   "resource",
-			Source:     "kubelet",
-			Message:    "existing event from CRD",
+			Severity: "warning",
+			Category: "resource",
+			Source:   "kubelet",
+			Message:  "existing event from CRD",
 			InvolvedObject: dorguv1.ResourceReference{
 				Kind:      "Pod",
 				Name:      "old-pod",
