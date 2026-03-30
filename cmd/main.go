@@ -27,7 +27,9 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/discovery"
+	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	metricsclient "k8s.io/metrics/pkg/client/clientset/versioned"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -37,6 +39,9 @@ import (
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/controller"
+	"github.com/dorgu-ai/dorgu-operator/internal/detection"
+	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
+	"github.com/dorgu-ai/dorgu-operator/internal/events"
 	dorguwebhook "github.com/dorgu-ai/dorgu-operator/internal/webhook"
 	dorguws "github.com/dorgu-ai/dorgu-operator/internal/websocket"
 	// +kubebuilder:scaffold:imports
@@ -127,7 +132,9 @@ func main() {
 		metricsServerOptions.KeyName = cfg.metricsCertKey
 	}
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+	restConfig := ctrl.GetConfigOrDie()
+
+	mgr, err := ctrl.NewManager(restConfig, ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsServerOptions,
 		WebhookServer:          webhookServer,
@@ -152,7 +159,7 @@ func main() {
 	}
 
 	// Create discovery client for ClusterPersona controller
-	discoveryClient, err := discovery.NewDiscoveryClientForConfig(ctrl.GetConfigOrDie())
+	discoveryClient, err := discovery.NewDiscoveryClientForConfig(restConfig)
 	if err != nil {
 		setupLog.Error(err, "unable to create discovery client")
 		os.Exit(1)
@@ -210,6 +217,96 @@ func main() {
 			},
 		})
 	}
+	// Phase 2a: Health check reconciler + event pipeline + incident controller.
+	// All components gated behind --enable-health-check flag.
+	if cfg.enableHealthCheck {
+		clientset, err := kubernetes.NewForConfig(restConfig)
+		if err != nil {
+			setupLog.Error(err, "unable to create kubernetes clientset")
+			os.Exit(1)
+		}
+
+		// 1. Create detection collectors.
+		nodeCollector := detection.NewNodeCollector(mgr.GetClient(), setupLog)
+		podCollector := detection.NewPodCollector(mgr.GetClient(), setupLog)
+		resourceCollector := detection.NewResourceCollector(mgr.GetClient(), setupLog)
+		controlPlaneCollector := detection.NewControlPlaneCollector(
+			mgr.GetClient(), clientset.CoreV1().RESTClient(), setupLog,
+		)
+
+		collectors := []detection.SignalCollector{
+			nodeCollector, podCollector, resourceCollector, controlPlaneCollector,
+		}
+
+		// Optional: metrics-server collector.
+		if cfg.enableMetricsServer {
+			mc, err := metricsclient.NewForConfig(restConfig)
+			if err != nil {
+				setupLog.Info("metrics-server client creation failed, skipping metrics collector",
+					"error", err.Error())
+			} else {
+				metricsCollector := detection.NewMetricsCollector(mc, mgr.GetClient(), setupLog)
+				collectors = append(collectors, metricsCollector)
+			}
+		}
+
+		// 2. Create detection engine.
+		detectionEngine := detection.NewEngine(setupLog, collectors...)
+
+		// 3. Create diagnosis engine.
+		ruleProvider := diagnosis.NewRuleBasedProvider(setupLog)
+		diagnosisEngine := diagnosis.NewEngine(setupLog, ruleProvider)
+
+		// 4. Create event pipeline components.
+		classifier := events.NewClassifier()
+		correlator := events.NewCorrelator(mgr.GetClient())
+		eventStore := events.NewEventStore(mgr.GetClient(), setupLog)
+		emitter := events.NewEmitter(mgr.GetEventRecorderFor("dorgu-operator"), setupLog)
+
+		// 5. Start event watcher.
+		eventWatcher := events.NewWatcher(clientset, classifier, correlator, eventStore, emitter, setupLog)
+		if err := mgr.Add(eventWatcher); err != nil {
+			setupLog.Error(err, "unable to start event watcher")
+			os.Exit(1)
+		}
+
+		// 6. Start TTL cleanup.
+		cleaner := events.NewCleaner(mgr.GetClient(), setupLog)
+		if err := mgr.Add(cleaner); err != nil {
+			setupLog.Error(err, "unable to start event cleaner")
+			os.Exit(1)
+		}
+
+		// 7. Start health check reconciler.
+		healthReconciler := &controller.HealthCheckReconciler{
+			Client:            mgr.GetClient(),
+			Detection:         detectionEngine,
+			Diagnosis:         diagnosisEngine,
+			EventStore:        eventStore,
+			EventEmitter:      emitter,
+			Logger:            setupLog.WithName("health-check"),
+			ReconcileInterval: cfg.healthCheckInterval,
+		}
+		if err := mgr.Add(healthReconciler); err != nil {
+			setupLog.Error(err, "unable to start health check reconciler")
+			os.Exit(1)
+		}
+
+		// 8. Register incident controller.
+		if err := (&controller.IncidentController{
+			Client: mgr.GetClient(),
+			Logger: setupLog.WithName("incident-controller"),
+		}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create incident controller")
+			os.Exit(1)
+		}
+
+		setupLog.Info("Phase 2a health check reconciler enabled",
+			"interval", cfg.healthCheckInterval,
+			"metricsServer", cfg.enableMetricsServer,
+		)
+	}
+
 	// +kubebuilder:scaffold:builder
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {

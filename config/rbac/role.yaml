@@ -7,6 +7,13 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - events
+  verbs:
+  - create
+  - patch
+- apiGroups:
+  - ""
+  resources:
   - namespaces
   - nodes
   - pods
@@ -55,7 +62,28 @@ rules:
   resources:
   - applicationpersonas/status
   - clusterpersonas/status
+  - incidentmemories/status
   verbs:
   - get
   - patch
   - update
+- apiGroups:
+  - dorgu.io
+  resources:
+  - dorguevents
+  verbs:
+  - create
+  - get
+  - list
+  - watch
+- apiGroups:
+  - dorgu.io
+  resources:
+  - incidentmemories
+  verbs:
+  - create
+  - get
+  - list
+  - patch
+  - update
+  - watch
