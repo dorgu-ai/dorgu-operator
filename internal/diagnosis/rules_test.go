@@ -584,6 +584,55 @@ func TestRuleBasedProvider_ImagePullSuppressedByCrashLoop(t *testing.T) {
 	}
 }
 
+func TestRuleBasedProvider_ImagePullPartialSuppression(t *testing.T) {
+	// CrashLoop on pod A + ImagePull on pod A and pod B.
+	// Pod A's ImagePull should be suppressed, pod B's should still produce a diagnosis.
+	p := newTestProvider()
+	now := time.Now()
+	signals := []detection.Signal{
+		{
+			Type:       detection.SignalCrashLoopBackOff,
+			Severity:   detection.SeverityCritical,
+			Resource:   dorguv1.ResourceReference{Kind: "Pod", Name: "crash-pod", Namespace: "default"},
+			DetectedAt: now,
+		},
+		{
+			Type:       detection.SignalImagePullBackOff,
+			Severity:   detection.SeverityCritical,
+			Resource:   dorguv1.ResourceReference{Kind: "Pod", Name: "crash-pod", Namespace: "default"},
+			DetectedAt: now.Add(-5 * time.Second),
+		},
+		{
+			Type:       detection.SignalImagePullBackOff,
+			Severity:   detection.SeverityCritical,
+			Resource:   dorguv1.ResourceReference{Kind: "Pod", Name: "other-pod", Namespace: "default"},
+			DetectedAt: now.Add(-3 * time.Second),
+		},
+	}
+
+	diagnoses, err := p.Diagnose(context.Background(), signals)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var imgDiag *Diagnosis
+	for i := range diagnoses {
+		if strings.Contains(diagnoses[i].Summary, "Image pull failing") {
+			imgDiag = &diagnoses[i]
+			break
+		}
+	}
+	if imgDiag == nil {
+		t.Fatal("expected ImagePull diagnosis for other-pod (not covered by CrashLoop)")
+	}
+	// Verify it only includes other-pod, not crash-pod.
+	for _, r := range imgDiag.AffectedResources {
+		if r.Name == "crash-pod" {
+			t.Error("ImagePull diagnosis should not include crash-pod (covered by CrashLoop rule)")
+		}
+	}
+}
+
 func TestRuleBasedProvider_PendingPodStandalone(t *testing.T) {
 	p := newTestProvider()
 	signals := []detection.Signal{

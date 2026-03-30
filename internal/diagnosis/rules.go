@@ -164,13 +164,14 @@ func highestSeverity(signals []detection.Signal) detection.Severity {
 	return highest
 }
 
+var severityRank = map[detection.Severity]int{
+	detection.SeverityInfo:     0,
+	detection.SeverityWarning:  1,
+	detection.SeverityCritical: 2,
+}
+
 func severityGreater(a, b detection.Severity) bool {
-	rank := map[detection.Severity]int{
-		detection.SeverityInfo:     0,
-		detection.SeverityWarning:  1,
-		detection.SeverityCritical: 2,
-	}
-	return rank[a] > rank[b]
+	return severityRank[a] > severityRank[b]
 }
 
 // collectAffectedResources gathers unique ResourceReferences from signals.
@@ -202,6 +203,19 @@ func buildContributing(signals []detection.Signal, detail string) []Contributing
 	result := make([]ContributingSignal, len(signals))
 	for i, s := range signals {
 		result[i] = ContributingSignal{Signal: s, Detail: detail}
+	}
+	return result
+}
+
+// concatSignals safely concatenates signal slices without aliasing the input slices.
+func concatSignals(slices ...[]detection.Signal) []detection.Signal {
+	total := 0
+	for _, s := range slices {
+		total += len(s)
+	}
+	result := make([]detection.Signal, 0, total)
+	for _, s := range slices {
+		result = append(result, s...)
 	}
 	return result
 }
@@ -256,7 +270,7 @@ func diagnoseOOM(signals []detection.Signal) *Diagnosis {
 		contributing = buildContributing(oomSignals, "Container was OOM-killed")
 	}
 
-	allRelated := append(oomSignals, memUsage...)
+	allRelated := concatSignals(oomSignals, memUsage)
 
 	return &Diagnosis{
 		Summary:           summary,
@@ -327,9 +341,7 @@ func diagnoseCrashLoop(signals []detection.Signal) *Diagnosis {
 		contributing = buildContributing(crashSignals, "Container is crash-looping with no correlated signals")
 	}
 
-	allSignals := append(crashSignals, oomRelated...)
-	allSignals = append(allSignals, imgRelated...)
-	allSignals = append(allSignals, probeRelated...)
+	allSignals := concatSignals(crashSignals, oomRelated, imgRelated, probeRelated)
 
 	return &Diagnosis{
 		Summary:           summary,
@@ -417,7 +429,7 @@ func diagnoseNodePressure(signals []detection.Signal) *Diagnosis {
 		contributing = buildContributing(pressureSignals, "Node is under resource pressure")
 	}
 
-	allSignals := append(pressureSignals, relatedEvictions...)
+	allSignals := concatSignals(pressureSignals, relatedEvictions)
 
 	return &Diagnosis{
 		Summary:           summary,
@@ -465,7 +477,7 @@ func diagnoseNodeDown(signals []detection.Signal) *Diagnosis {
 		contributing = buildContributing(notReadySignals, "Node is not ready")
 	}
 
-	allSignals := append(notReadySignals, networkDown...)
+	allSignals := concatSignals(notReadySignals, networkDown)
 
 	return &Diagnosis{
 		Summary:           summary,
@@ -535,7 +547,7 @@ func diagnoseResourceSaturation(signals []detection.Signal) *Diagnosis {
 		contributing = buildContributing(saturationSignals, "Node resource saturation is critical")
 	}
 
-	allSignals := append(saturationSignals, pendingPods...)
+	allSignals := concatSignals(saturationSignals, pendingPods)
 
 	return &Diagnosis{
 		Summary:           summary,
@@ -617,18 +629,23 @@ func diagnoseImagePull(signals []detection.Signal) *Diagnosis {
 		return nil
 	}
 
-	// Skip if already handled by CrashLoop rule (CrashLoop + ImagePull = CrashLoop diagnosis).
-	if hasSignalType(signals, detection.SignalCrashLoopBackOff) {
-		// Check if image pull is for same resource as crash loop.
-		crashSignals := signalsOfType(signals, detection.SignalCrashLoopBackOff)
+	// Filter out image pull signals already covered by the CrashLoop rule (same pod).
+	crashSignals := signalsOfType(signals, detection.SignalCrashLoopBackOff)
+	if len(crashSignals) > 0 {
+		crashPods := make(map[string]bool)
+		for _, c := range crashSignals {
+			crashPods[c.Resource.Namespace+"/"+c.Resource.Name] = true
+		}
+		var filtered []detection.Signal
 		for _, img := range imgSignals {
-			for _, crash := range crashSignals {
-				if img.Resource.Name == crash.Resource.Name &&
-					img.Resource.Namespace == crash.Resource.Namespace {
-					return nil // Already covered by crashloop rule.
-				}
+			if !crashPods[img.Resource.Namespace+"/"+img.Resource.Name] {
+				filtered = append(filtered, img)
 			}
 		}
+		imgSignals = filtered
+	}
+	if len(imgSignals) == 0 {
+		return nil
 	}
 
 	return &Diagnosis{
