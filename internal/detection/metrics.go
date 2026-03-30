@@ -19,6 +19,7 @@ package detection
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -42,7 +43,7 @@ type MetricsCollector struct {
 	metricsClient  metricsclient.Interface
 	client         client.Reader
 	logger         logr.Logger
-	available      bool
+	available      atomic.Bool
 	usageThreshold float64
 }
 
@@ -57,8 +58,8 @@ func NewMetricsCollector(metricsClient metricsclient.Interface, c client.Reader,
 	}
 
 	// Probe metrics-server availability
-	mc.available = mc.probeAvailability()
-	if !mc.available {
+	mc.available.Store(mc.probeAvailability())
+	if !mc.available.Load() {
 		mc.logger.Info("metrics-server not available, usage-based detection disabled")
 	}
 
@@ -70,13 +71,13 @@ func (m *MetricsCollector) Name() string { return metricsCollectorName }
 // Collect returns usage signals if metrics-server is available.
 // Returns an empty slice (not an error) when metrics-server is unavailable.
 func (m *MetricsCollector) Collect(ctx context.Context) ([]Signal, error) {
-	if !m.available {
+	if !m.available.Load() {
 		return nil, nil
 	}
 
 	// Re-probe on each collection in case metrics-server went away or came back
 	if !m.probeAvailability() {
-		m.available = false
+		m.available.Store(false)
 		m.logger.V(1).Info("metrics-server became unavailable")
 		return nil, nil
 	}
@@ -92,6 +93,7 @@ func (m *MetricsCollector) Collect(ctx context.Context) ([]Signal, error) {
 	// Build a map of pod specs for limit lookup
 	podSpecs, err := m.getPodSpecs(ctx)
 	if err != nil {
+		m.logger.Error(err, "failed to list pod specs for metrics comparison")
 		return nil, nil // graceful degradation
 	}
 
@@ -105,12 +107,6 @@ func (m *MetricsCollector) Collect(ctx context.Context) ([]Signal, error) {
 
 // probeAvailability checks if metrics-server API is reachable.
 func (m *MetricsCollector) probeAvailability() bool {
-	_, err := m.metricsClient.Discovery().ServerGroups()
-	if err != nil {
-		return false
-	}
-
-	// Check if metrics.k8s.io API group exists
 	groups, err := m.metricsClient.Discovery().ServerGroups()
 	if err != nil {
 		return false

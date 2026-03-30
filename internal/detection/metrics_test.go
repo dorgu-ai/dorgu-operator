@@ -41,8 +41,8 @@ func TestMetricsCollector_Name(t *testing.T) {
 func TestMetricsCollector_Unavailable(t *testing.T) {
 	logger := zap.New(zap.UseDevMode(true))
 	mc := &MetricsCollector{
-		logger:    logger,
-		available: false,
+		logger: logger,
+		// available defaults to zero value (false) for atomic.Bool
 	}
 
 	signals, err := mc.Collect(context.Background())

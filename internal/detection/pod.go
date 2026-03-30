@@ -19,6 +19,7 @@ package detection
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -31,7 +32,7 @@ import (
 const (
 	podCollectorName = "pod-failure-detector"
 
-	defaultPendingTimeout  = 5 * time.Minute
+	defaultPendingTimeout         = 5 * time.Minute
 	defaultRestartThreshold int32 = 5
 )
 
@@ -111,12 +112,12 @@ func (p *PodCollector) checkEviction(pod corev1.Pod, now time.Time) (Signal, boo
 	}
 
 	return Signal{
-		Type:     SignalPodEvicted,
-		Severity: SeverityCritical,
-		Category: CategoryHealth,
-		Source:   podCollectorName,
-		Message:  fmt.Sprintf("Pod %s/%s was evicted: %s", pod.Namespace, pod.Name, pod.Status.Message),
-		Resource: podResource(pod),
+		Type:       SignalPodEvicted,
+		Severity:   SeverityCritical,
+		Category:   CategoryHealth,
+		Source:     podCollectorName,
+		Message:    fmt.Sprintf("Pod %s/%s was evicted: %s", pod.Namespace, pod.Name, pod.Status.Message),
+		Resource:   podResource(pod),
 		DetectedAt: now,
 		Metadata:   podMetadata(pod),
 	}, true
@@ -141,14 +142,14 @@ func (p *PodCollector) checkPendingLong(pod corev1.Pod, now time.Time) (Signal, 
 	threshold := p.pendingTimeout.Minutes()
 
 	return Signal{
-		Type:     SignalPodPendingLong,
-		Severity: SeverityWarning,
-		Category: CategoryHealth,
-		Source:   podCollectorName,
-		Message:  fmt.Sprintf("Pod %s/%s has been pending for %.0f minutes", pod.Namespace, pod.Name, pendingMinutes),
-		Resource: podResource(pod),
-		Value:    &pendingMinutes,
-		Threshold: &threshold,
+		Type:       SignalPodPendingLong,
+		Severity:   SeverityWarning,
+		Category:   CategoryHealth,
+		Source:     podCollectorName,
+		Message:    fmt.Sprintf("Pod %s/%s has been pending for %.0f minutes", pod.Namespace, pod.Name, pendingMinutes),
+		Resource:   podResource(pod),
+		Value:      &pendingMinutes,
+		Threshold:  &threshold,
 		DetectedAt: pod.CreationTimestamp.Time,
 		Metadata:   podMetadata(pod),
 	}, true
@@ -190,24 +191,24 @@ func (p *PodCollector) checkWaiting(pod corev1.Pod, cs corev1.ContainerStatus, n
 	switch reason {
 	case "CrashLoopBackOff":
 		return Signal{
-			Type:     SignalCrashLoopBackOff,
-			Severity: SeverityCritical,
-			Category: CategoryHealth,
-			Source:   podCollectorName,
-			Message:  fmt.Sprintf("Container %s in pod %s/%s is in CrashLoopBackOff", cs.Name, pod.Namespace, pod.Name),
-			Resource: podResource(pod),
+			Type:       SignalCrashLoopBackOff,
+			Severity:   SeverityCritical,
+			Category:   CategoryHealth,
+			Source:     podCollectorName,
+			Message:    fmt.Sprintf("Container %s in pod %s/%s is in CrashLoopBackOff", cs.Name, pod.Namespace, pod.Name),
+			Resource:   podResource(pod),
 			DetectedAt: now,
 			Metadata:   containerMetadata(pod, cs),
 		}, true
 
 	case "ImagePullBackOff", "ErrImagePull":
 		return Signal{
-			Type:     SignalImagePullBackOff,
-			Severity: SeverityWarning,
-			Category: CategoryHealth,
-			Source:   podCollectorName,
-			Message:  fmt.Sprintf("Container %s in pod %s/%s cannot pull image: %s", cs.Name, pod.Namespace, pod.Name, cs.State.Waiting.Message),
-			Resource: podResource(pod),
+			Type:       SignalImagePullBackOff,
+			Severity:   SeverityWarning,
+			Category:   CategoryHealth,
+			Source:     podCollectorName,
+			Message:    fmt.Sprintf("Container %s in pod %s/%s cannot pull image: %s", cs.Name, pod.Namespace, pod.Name, cs.State.Waiting.Message),
+			Resource:   podResource(pod),
 			DetectedAt: now,
 			Metadata:   containerMetadata(pod, cs),
 		}, true
@@ -249,12 +250,12 @@ func (p *PodCollector) checkOOMKilled(pod corev1.Pod, cs corev1.ContainerStatus,
 	}
 
 	return Signal{
-		Type:     SignalOOMKilled,
-		Severity: SeverityCritical,
-		Category: CategoryHealth,
-		Source:   podCollectorName,
-		Message:  fmt.Sprintf("Container %s in pod %s/%s was OOMKilled", cs.Name, pod.Namespace, pod.Name),
-		Resource: podResource(pod),
+		Type:       SignalOOMKilled,
+		Severity:   SeverityCritical,
+		Category:   CategoryHealth,
+		Source:     podCollectorName,
+		Message:    fmt.Sprintf("Container %s in pod %s/%s was OOMKilled", cs.Name, pod.Namespace, pod.Name),
+		Resource:   podResource(pod),
 		DetectedAt: detectedAt,
 		Metadata:   meta,
 	}, true
@@ -274,12 +275,12 @@ func (p *PodCollector) checkProbeFailure(pod corev1.Pod, cs corev1.ContainerStat
 	}
 
 	return Signal{
-		Type:     SignalProbeFailure,
-		Severity: SeverityWarning,
-		Category: CategoryHealth,
-		Source:   podCollectorName,
-		Message:  fmt.Sprintf("Container %s in pod %s/%s is failing probes (restarts: %d)", cs.Name, pod.Namespace, pod.Name, cs.RestartCount),
-		Resource: podResource(pod),
+		Type:       SignalProbeFailure,
+		Severity:   SeverityWarning,
+		Category:   CategoryHealth,
+		Source:     podCollectorName,
+		Message:    fmt.Sprintf("Container %s in pod %s/%s is failing probes (restarts: %d)", cs.Name, pod.Namespace, pod.Name, cs.RestartCount),
+		Resource:   podResource(pod),
 		DetectedAt: now,
 		Metadata:   containerMetadata(pod, cs),
 	}, true
@@ -295,14 +296,14 @@ func (p *PodCollector) checkHighRestarts(pod corev1.Pod, cs corev1.ContainerStat
 	threshold := float64(p.restartThreshold)
 
 	return Signal{
-		Type:     SignalContainerRestart,
-		Severity: SeverityWarning,
-		Category: CategoryHealth,
-		Source:   podCollectorName,
-		Message:  fmt.Sprintf("Container %s in pod %s/%s has restarted %d times", cs.Name, pod.Namespace, pod.Name, cs.RestartCount),
-		Resource: podResource(pod),
-		Value:    &restarts,
-		Threshold: &threshold,
+		Type:       SignalContainerRestart,
+		Severity:   SeverityWarning,
+		Category:   CategoryHealth,
+		Source:     podCollectorName,
+		Message:    fmt.Sprintf("Container %s in pod %s/%s has restarted %d times", cs.Name, pod.Namespace, pod.Name, cs.RestartCount),
+		Resource:   podResource(pod),
+		Value:      &restarts,
+		Threshold:  &threshold,
 		DetectedAt: now,
 		Metadata:   containerMetadata(pod, cs),
 	}, true
@@ -342,22 +343,11 @@ func ownerDeployment(pod corev1.Pod) string {
 		if ref.Kind == "ReplicaSet" {
 			// ReplicaSet names follow the pattern <deployment>-<hash>
 			name := ref.Name
-			lastDash := lastIndexByte(name, '-')
-			if lastDash > 0 {
+			if lastDash := strings.LastIndexByte(name, '-'); lastDash > 0 {
 				return name[:lastDash]
 			}
 			return name
 		}
 	}
 	return ""
-}
-
-// lastIndexByte returns the index of the last occurrence of c in s, or -1.
-func lastIndexByte(s string, c byte) int {
-	for i := len(s) - 1; i >= 0; i-- {
-		if s[i] == c {
-			return i
-		}
-	}
-	return -1
 }
