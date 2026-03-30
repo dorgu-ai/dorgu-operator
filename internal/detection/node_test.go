@@ -206,9 +206,9 @@ func TestNodeCollector_Metadata_Zone(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "node-1",
 			Labels: map[string]string{
-				"topology.kubernetes.io/zone":              "us-east-1a",
-				"topology.kubernetes.io/region":            "us-east-1",
-				"node-role.kubernetes.io/control-plane":    "",
+				"topology.kubernetes.io/zone":           "us-east-1a",
+				"topology.kubernetes.io/region":         "us-east-1",
+				"node-role.kubernetes.io/control-plane": "",
 			},
 		},
 		Status: corev1.NodeStatus{

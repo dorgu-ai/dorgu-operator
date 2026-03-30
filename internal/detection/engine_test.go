@@ -34,7 +34,7 @@ type stubCollector struct {
 	err     error
 }
 
-func (s *stubCollector) Name() string                              { return s.name }
+func (s *stubCollector) Name() string                                { return s.name }
 func (s *stubCollector) Collect(_ context.Context) ([]Signal, error) { return s.signals, s.err }
 
 func TestEngine_CollectAll_Empty(t *testing.T) {

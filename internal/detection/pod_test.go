@@ -226,7 +226,7 @@ func TestPodCollector_Collect(t *testing.T) {
 					ObjectMeta: metav1.ObjectMeta{
 						Name:              "app-1",
 						Namespace:         "default",
-						CreationTimestamp:  metav1.NewTime(time.Now().Add(-10 * time.Minute)),
+						CreationTimestamp: metav1.NewTime(time.Now().Add(-10 * time.Minute)),
 					},
 					Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "main"}}},
 					Status: corev1.PodStatus{
@@ -244,7 +244,7 @@ func TestPodCollector_Collect(t *testing.T) {
 					ObjectMeta: metav1.ObjectMeta{
 						Name:              "app-1",
 						Namespace:         "default",
-						CreationTimestamp:  metav1.NewTime(time.Now().Add(-2 * time.Minute)),
+						CreationTimestamp: metav1.NewTime(time.Now().Add(-2 * time.Minute)),
 					},
 					Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "main"}}},
 					Status: corev1.PodStatus{
@@ -438,9 +438,9 @@ func TestPodCollector_Name(t *testing.T) {
 
 func TestOwnerDeployment(t *testing.T) {
 	tests := []struct {
-		name  string
-		pod   corev1.Pod
-		want  string
+		name string
+		pod  corev1.Pod
+		want string
 	}{
 		{
 			name: "pod owned by ReplicaSet",
