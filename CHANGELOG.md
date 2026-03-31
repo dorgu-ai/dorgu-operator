@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-03-31
+
+### Fixed
+
+- Add GitHub Release creation to release workflow — new releases now appear on the GitHub Releases page with release notes and Helm chart attached.
+
 ## [0.4.0] - 2026-03-29
 
 ### Added
