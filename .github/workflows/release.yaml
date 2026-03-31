@@ -6,7 +6,7 @@ on:
       - "v*"
 
 permissions:
-  contents: read
+  contents: write
   packages: write
 
 env:
@@ -97,3 +97,52 @@ jobs:
         with:
           name: helm-chart
           path: dist/*.tgz
+
+  github-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [docker, helm]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download Helm chart artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: helm-chart
+          path: dist/
+
+      - name: Extract release notes from CHANGELOG
+        id: notes
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          # Extract the section for this version from CHANGELOG.md
+          awk "/^## \[${VERSION}\]/{flag=1; next} /^## \[/{flag=0} flag" CHANGELOG.md > release_notes.md
+          # Append install instructions
+          cat >> release_notes.md << EOF
+
+          ## Installation
+
+          **Helm (recommended):**
+          \`\`\`bash
+          helm install dorgu-operator oci://ghcr.io/dorgu-ai/dorgu-operator-charts/dorgu-operator \\
+            --version ${VERSION} \\
+            --namespace dorgu-system \\
+            --create-namespace
+          \`\`\`
+
+          **Docker image:**
+          \`\`\`
+          ghcr.io/dorgu-ai/dorgu-operator:${VERSION}
+          \`\`\`
+          EOF
+
+      - name: Create GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            --title "Dorgu Operator ${{ github.ref_name }}" \
+            --notes-file release_notes.md \
+            dist/*.tgz
