@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-03-29
+
+### Added
+
+- **IncidentMemory CRD** — namespaced CRD for tracking cluster incidents with detection signals, root cause analysis, confidence scoring, and resolution tracking. Supports cross-namespace relationship tracking via `relatedResources` field.
+- **RemediationAction CRD** — namespaced CRD for remediation proposals with YAML diff, approval workflow, rollback spec, and progressive trust levels. Type definitions ready for Phase 2b execution.
+- **DorguEvent CRD** — lightweight event persistence with TTL-based cleanup. Hybrid architecture: CRD-backed storage with in-memory LRU cache for fast reads.
+- **Detection engine** with pluggable signal collectors: node health (Ready, MemoryPressure, DiskPressure, PIDPressure, NetworkUnavailable), pod failures (OOMKilled, CrashLoopBackOff, ImagePullBackOff, Evicted, long-Pending, high restarts), resource saturation (CPU/memory request vs allocatable with configurable thresholds), and control plane health (healthz/readyz endpoints, ComponentStatus, Lease freshness).
+- **Optional metrics-server integration** — detects actual CPU/memory usage when metrics-server is available; graceful degradation without it.
+- **Diagnosis engine** with deterministic rule-based provider covering 8 failure patterns: OOM root cause, CrashLoop correlation, node pressure, node down, resource saturation, control plane issues, image pull failures, and long-pending pods. Confidence scoring with signal clarity and time proximity factors.
+- **Event processing pipeline** — K8s Event watcher via informers, event classifier (severity/category mapping), persona correlator (pod→deployment→ApplicationPersona matching), and K8s Event emitter for `kubectl describe` visibility.
+- **Health check reconciler** — timer-based reconciler (configurable interval, default 60s) that runs the detect→diagnose→incident loop. Creates/updates IncidentMemory CRDs with deduplication via label-based matching. Auto-resolves incidents when triggering signals clear.
+- **Incident controller** — watches IncidentMemory CRDs for lifecycle management, label maintenance, condition updates, and ApplicationPersona status synchronization (`status.activeIncidents`, `status.lastIncidentTime`).
+- **SelfHealing policy** fields on ClusterPersona spec: `mode` (observe/propose/auto-approve), `trustLevel` (L0-L5, default L2), `maxRemediationsPerHour`, `excludeNamespaces`, and rollback configuration.
+- `--enable-health-check` flag to opt into the health check reconciler and event pipeline.
+- `--health-check-interval` flag for configurable reconciliation interval.
+- `--enable-metrics-server` flag for metrics-server integration.
+
+### Fixed
+
+- Correct Confidence printcolumn type from number to string in CRD manifests.
+- Resolve TOCTOU race in event dedup and startupTime data race in event watcher.
+- Prefer pod version label over image digest for addon discovery.
+
 ## [0.3.0] - 2026-03-23
 
 ### Added

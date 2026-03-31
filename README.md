@@ -1,36 +1,37 @@
 # Dorgu Operator
 
-Cluster-side component of [Dorgu](https://github.com/dorgu-ai/dorgu): validates Deployments against **ApplicationPersona** CRDs, manages **ClusterPersona** for cluster identity, and integrates with ArgoCD, Prometheus, and the CLI. Read-only on workloads — it validates and reports; it does not modify your Deployments or Pods.
+Cluster-side component of [Dorgu](https://github.com/dorgu-ai/dorgu): validates Deployments against **ApplicationPersona** CRDs, manages **ClusterPersona** for cluster identity, **detects cluster health issues**, **diagnoses root causes**, and **tracks incidents** — all without modifying your workloads. Integrates with ArgoCD, Prometheus, metrics-server, and the CLI.
 
 [![Go](https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat&logo=go)](https://go.dev/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
-**Features:** ApplicationPersona validation (resources, replicas, health, security) · ClusterPersona discovery (nodes, add-ons, capacity) · ArgoCD sync/health status · Prometheus baseline learning · WebSocket server for `dorgu watch` / `dorgu sync` · Optional validating webhook (advisory or enforcing)
+**Features:** Health detection (node failures, pod crashes, resource saturation, control plane) · Deterministic diagnosis with confidence scoring · Incident tracking via IncidentMemory CRDs · ApplicationPersona validation · ClusterPersona discovery · ArgoCD sync/health · Prometheus baseline learning · WebSocket server · Optional validating webhook
 
 **CLI integration:**
 ```bash
-# Generate and apply a persona from your application
+# Cluster health at a glance
+dorgu health
+
+# View active incidents
+dorgu incidents list
+dorgu incidents describe im-default-api-oom-a3f2
+
+# Generate and apply a persona
 dorgu persona apply ./my-app --namespace production
-
-# Check persona status
-dorgu persona status my-app -n production
-
-# Initialize cluster persona
-dorgu cluster init --name production-cluster --environment production
 
 # Watch real-time updates
 dorgu watch personas
-
-# Sync with operator
-dorgu sync status
 ```
 
 ## CRDs
 
-| CRD | Purpose |
-|-----|---------|
-| **ApplicationPersona** | App identity and requirements: resources, scaling, health probes, security, ownership. |
-| **ClusterPersona** | Cluster identity and state: nodes, add-ons (ArgoCD, Prometheus, cert-manager), capacity, namespace summary. |
+| CRD | Scope | Purpose |
+|-----|-------|---------|
+| **ApplicationPersona** | Namespaced | App identity and requirements: resources, scaling, health probes, security, ownership. Status includes validation, health, and active incident count. |
+| **ClusterPersona** | Cluster | Cluster identity and state: nodes, add-ons, capacity, self-healing policy (mode, trust level, rollback config). |
+| **IncidentMemory** | Namespaced | Detected incidents: signal, root cause, confidence score, affected resources, resolution tracking. Correlates to Personas. |
+| **RemediationAction** | Namespaced | Remediation proposals: YAML diff, approval workflow, rollback spec, trust level requirements. (Execution in Phase 2b.) |
+| **DorguEvent** | Namespaced | Classified cluster events with severity, category, persona correlation, and TTL-based cleanup. |
 
 ## Getting Started
 
@@ -43,18 +44,31 @@ Go 1.21+ (for building), Helm 3.x, kubectl, and a Kubernetes cluster (1.11+).
 ```bash
 # Install the operator
 helm install dorgu-operator oci://ghcr.io/dorgu-ai/dorgu-operator-charts/dorgu-operator \
-  --version 0.2.0 \
+  --version 0.4.0 \
   --namespace dorgu-system \
   --create-namespace
 ```
 
-**With optional features enabled:**
+**With health detection enabled (recommended):**
 
 ```bash
 helm install dorgu-operator oci://ghcr.io/dorgu-ai/dorgu-operator-charts/dorgu-operator \
-  --version 0.2.0 \
+  --version 0.4.0 \
   --namespace dorgu-system \
   --create-namespace \
+  --set healthCheck.enabled=true \
+  --set websocket.enabled=true
+```
+
+**With all optional features:**
+
+```bash
+helm install dorgu-operator oci://ghcr.io/dorgu-ai/dorgu-operator-charts/dorgu-operator \
+  --version 0.4.0 \
+  --namespace dorgu-system \
+  --create-namespace \
+  --set healthCheck.enabled=true \
+  --set healthCheck.metricsServer=true \
   --set webhook.enabled=true \
   --set webhook.mode=advisory \
   --set prometheus.enabled=true \
@@ -68,6 +82,9 @@ helm install dorgu-operator oci://ghcr.io/dorgu-ai/dorgu-operator-charts/dorgu-o
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
+| `healthCheck.enabled` | Enable health detection, diagnosis, and incident tracking | `false` |
+| `healthCheck.interval` | Health check reconciliation interval | `60s` |
+| `healthCheck.metricsServer` | Enable metrics-server integration for usage-based detection | `true` |
 | `webhook.enabled` | Enable deployment validation webhook | `false` |
 | `webhook.mode` | Webhook mode: `advisory` or `enforcing` | `advisory` |
 | `argocd.enabled` | Enable ArgoCD Application watching | `true` |
@@ -123,8 +140,9 @@ helm uninstall dorgu-operator -n dorgu-system
 ```mermaid
 flowchart LR
   subgraph cli [dorgu CLI]
+    health[dorgu health]
+    incidents[dorgu incidents]
     watch[dorgu watch]
-    sync[dorgu sync]
     persona[dorgu persona]
     clusterCmd[dorgu cluster]
   end
@@ -133,22 +151,38 @@ flowchart LR
     subgraph operator [Dorgu Operator]
       appCtrl[ApplicationPersona Controller]
       clusterCtrl[ClusterPersona Controller]
+      healthRec[Health Check Reconciler]
+      detEngine[Detection Engine]
+      diagEngine[Diagnosis Engine]
+      eventPipe[Event Pipeline]
+      incidentCtrl[Incident Controller]
       argocdWatcher[ArgoCD Watcher]
       promClient[Prometheus Client]
       wsServer[WebSocket Server]
     end
+    subgraph crds [CRDs]
+      appPersona[ApplicationPersona]
+      clusterPersona[ClusterPersona]
+      incidentMem[IncidentMemory]
+      dorguEvent[DorguEvent]
+    end
     argocd[ArgoCD]
-    prometheus[Prometheus]
-    deployments[Deployments]
+    metricsServer[metrics-server]
   end
 
+  health --> incidentMem
+  health --> clusterPersona
+  incidents --> incidentMem
+  incidents --> dorguEvent
   watch <-->|WebSocket| wsServer
-  sync <-->|WebSocket| wsServer
   persona --> appCtrl
   clusterCmd --> clusterCtrl
-  operator --> argocd
-  operator --> prometheus
-  operator --> deployments
+  healthRec --> detEngine
+  detEngine --> diagEngine
+  diagEngine --> incidentCtrl
+  eventPipe --> dorguEvent
+  incidentCtrl --> incidentMem
+  detEngine --> metricsServer
 ```
 
 ## Contributing & Security
