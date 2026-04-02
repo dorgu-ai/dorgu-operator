@@ -40,10 +40,13 @@ const (
 type Topic string
 
 const (
-	TopicPersonas    Topic = "personas"
-	TopicCluster     Topic = "cluster"
-	TopicDeployments Topic = "deployments"
-	TopicEvents      Topic = "events"
+	TopicPersonas     Topic = "personas"
+	TopicCluster      Topic = "cluster"
+	TopicDeployments  Topic = "deployments"
+	TopicEvents       Topic = "events"
+	TopicIncidents    Topic = "incidents"
+	TopicRemediations Topic = "remediations"
+	TopicHealth       Topic = "health"
 )
 
 // Message is the base WebSocket message structure.
@@ -88,6 +91,42 @@ type ValidationEvent struct {
 	IssueCount int      `json:"issueCount"`
 	Severity   string   `json:"severity,omitempty"` // highest severity
 	Issues     []string `json:"issues,omitempty"`
+}
+
+// IncidentEvent represents an incident lifecycle event.
+type IncidentEvent struct {
+	EventType   string `json:"eventType"` // created, updated, resolved
+	Name        string `json:"name"`
+	Namespace   string `json:"namespace"`
+	Severity    string `json:"severity"`
+	Category    string `json:"category"`
+	Signal      string `json:"signal"`
+	Phase       string `json:"phase"`
+	PersonaName string `json:"personaName"`
+	PersonaKind string `json:"personaKind"`
+	Summary     string `json:"summary,omitempty"`
+}
+
+// RemediationEvent represents a remediation lifecycle event.
+type RemediationEvent struct {
+	EventType   string `json:"eventType"` // created, approved, applied, completed, rolledback, rejected
+	Name        string `json:"name"`
+	Namespace   string `json:"namespace"`
+	Phase       string `json:"phase"`
+	ActionType  string `json:"actionType"`
+	Confidence  string `json:"confidence"`
+	PersonaName string `json:"personaName"`
+}
+
+// HealthUpdateEvent represents a periodic health summary broadcast.
+type HealthUpdateEvent struct {
+	EventType       string `json:"eventType"` // health-update
+	ActiveIncidents int    `json:"activeIncidents"`
+	PendingRemedies int    `json:"pendingRemediations"`
+	NodeCount       int    `json:"nodeCount"`
+	HealthyNodes    int    `json:"healthyNodes"`
+	CPUUtilization  string `json:"cpuUtilization"`
+	MemUtilization  string `json:"memUtilization"`
 }
 
 // ErrorPayload is the payload for error messages.
