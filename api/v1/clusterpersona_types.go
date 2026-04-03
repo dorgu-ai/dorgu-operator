@@ -385,7 +385,7 @@ type AddonInfo struct {
 	Name string `json:"name"`
 
 	// type categorizes the add-on.
-	// +kubebuilder:validation:Enum=gitops;monitoring;logging;ingress;service-mesh;secrets;cert-management;other
+	// +kubebuilder:validation:Enum=gitops;monitoring;logging;ingress;service-mesh;secrets;cert-management;database;other
 	// +optional
 	Type string `json:"type,omitempty"`
 

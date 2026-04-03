@@ -339,6 +339,7 @@ spec:
                       - service-mesh
                       - secrets
                       - cert-management
+                      - database
                       - other
                       type: string
                     version:
