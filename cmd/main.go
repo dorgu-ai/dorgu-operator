@@ -42,6 +42,7 @@ import (
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
 	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
 	"github.com/dorgu-ai/dorgu-operator/internal/events"
+	"github.com/dorgu-ai/dorgu-operator/internal/llm"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation"
 	dorguwebhook "github.com/dorgu-ai/dorgu-operator/internal/webhook"
 	dorguws "github.com/dorgu-ai/dorgu-operator/internal/websocket"
@@ -254,9 +255,40 @@ func main() {
 		// 2. Create detection engine.
 		detectionEngine := detection.NewEngine(setupLog, collectors...)
 
-		// 3. Create diagnosis engine.
-		ruleProvider := diagnosis.NewRuleBasedProvider(setupLog)
-		diagnosisEngine := diagnosis.NewEngine(setupLog, ruleProvider)
+		// 3. Create diagnosis engine with providers.
+		var diagnosisProviders []diagnosis.DiagnosisProvider
+		diagnosisProviders = append(diagnosisProviders, diagnosis.NewRuleBasedProvider(setupLog))
+
+		if cfg.llmProvider != "" {
+			apiKey := cfg.llmAPIKey
+			if apiKey == "" {
+				switch cfg.llmProvider {
+				case "claude":
+					apiKey = os.Getenv("ANTHROPIC_API_KEY")
+				case "gemini":
+					apiKey = os.Getenv("GEMINI_API_KEY")
+				}
+			}
+			if apiKey != "" {
+				llmClient, llmErr := llm.NewClient(cfg.llmProvider, apiKey)
+				if llmErr != nil {
+					setupLog.Error(llmErr, "failed to create LLM client, continuing without AI diagnosis")
+				} else {
+					if cfg.llmModel != "" {
+						if setter, ok := llmClient.(interface{ SetModel(string) }); ok {
+							setter.SetModel(cfg.llmModel)
+						}
+					}
+					diagnosisProviders = append(diagnosisProviders, diagnosis.NewAIProvider(llmClient, setupLog))
+					setupLog.Info("AI diagnosis enabled", "provider", cfg.llmProvider)
+				}
+			} else {
+				setupLog.Info("LLM provider configured but no API key found, AI diagnosis disabled",
+					"provider", cfg.llmProvider)
+			}
+		}
+
+		diagnosisEngine := diagnosis.NewEngine(setupLog, diagnosisProviders...)
 
 		// 4. Create event pipeline components.
 		classifier := events.NewClassifier()

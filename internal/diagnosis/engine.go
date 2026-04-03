@@ -44,7 +44,9 @@ func NewEngine(logger logr.Logger, providers ...DiagnosisProvider) *Engine {
 }
 
 // Analyze runs all providers against the given signals and returns aggregated diagnoses.
-// Diagnoses are sorted by confidence descending.
+// Diagnoses are deduplicated by (category + suggestedAction + affectedResources),
+// keeping the highest-confidence variant. This naturally prefers AI-enhanced results
+// when available. Diagnoses are sorted by confidence descending.
 func (e *Engine) Analyze(ctx context.Context, signals []detection.Signal) ([]Diagnosis, error) {
 	if len(signals) == 0 {
 		return nil, nil
@@ -65,11 +67,38 @@ func (e *Engine) Analyze(ctx context.Context, signals []detection.Signal) ([]Dia
 		allDiagnoses = append(allDiagnoses, diagnoses...)
 	}
 
-	sort.Slice(allDiagnoses, func(i, j int) bool {
-		return allDiagnoses[i].Confidence > allDiagnoses[j].Confidence
+	// Deduplicate: when two diagnoses match on (category + suggestedAction + resources),
+	// keep the one with higher confidence.
+	deduped := deduplicateDiagnoses(allDiagnoses)
+
+	sort.Slice(deduped, func(i, j int) bool {
+		return deduped[i].Confidence > deduped[j].Confidence
 	})
 
-	return allDiagnoses, nil
+	return deduped, nil
+}
+
+// deduplicateDiagnoses keeps the highest-confidence diagnosis per deduplication key.
+func deduplicateDiagnoses(diagnoses []Diagnosis) []Diagnosis {
+	best := make(map[string]Diagnosis)
+	var order []string
+
+	for _, d := range diagnoses {
+		key := deduplicationKey(&d)
+		existing, exists := best[key]
+		if !exists {
+			order = append(order, key)
+			best[key] = d
+		} else if d.Confidence > existing.Confidence {
+			best[key] = d
+		}
+	}
+
+	result := make([]Diagnosis, 0, len(order))
+	for _, key := range order {
+		result = append(result, best[key])
+	}
+	return result
 }
 
 // Providers returns the list of registered providers.
