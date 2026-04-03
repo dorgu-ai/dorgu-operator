@@ -63,6 +63,7 @@ rules:
   - applicationpersonas/status
   - clusterpersonas/status
   - incidentmemories/status
+  - remediationactions/status
   verbs:
   - get
   - patch
@@ -80,6 +81,7 @@ rules:
   - dorgu.io
   resources:
   - incidentmemories
+  - remediationactions
   verbs:
   - create
   - get

@@ -194,6 +194,89 @@ var _ = Describe("OpenObserve Addon Discovery", func() {
 	})
 })
 
+var _ = Describe("CNPG Addon Discovery", func() {
+	ctx := context.Background()
+
+	Context("checkAddon for cnpg-cloudnative-pg", func() {
+		It("returns Installed=false when namespace does not exist", func() {
+			By("ensuring the cnpg-system namespace does not exist")
+			ns := &corev1.Namespace{}
+			err := k8sClient.Get(ctx, types.NamespacedName{Name: "cnpg-system"}, ns)
+			if err == nil {
+				Expect(k8sClient.Delete(ctx, ns)).To(Succeed())
+			}
+
+			By("calling checkAddon for cnpg")
+			r := &ClusterPersonaReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+			addon := r.checkAddon(ctx, "cnpg-cloudnative-pg", "cnpg-system", "database")
+
+			By("verifying the addon is not installed")
+			Expect(addon.Installed).To(BeFalse())
+			Expect(addon.Name).To(Equal("cnpg-cloudnative-pg"))
+			Expect(addon.Type).To(Equal("database"))
+			Expect(addon.Namespace).To(Equal("cnpg-system"))
+		})
+
+		It("returns Installed=true when matching pod exists in namespace", func() {
+			By("creating the cnpg-system namespace")
+			ns := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "cnpg-system",
+				},
+			}
+			err := k8sClient.Get(ctx, types.NamespacedName{Name: "cnpg-system"}, ns)
+			if err != nil && errors.IsNotFound(err) {
+				Expect(k8sClient.Create(ctx, ns)).To(Succeed())
+			}
+
+			By("creating a running CNPG controller pod")
+			pod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "cnpg-cloudnative-pg-controller-manager-abc123",
+					Namespace: "cnpg-system",
+					Labels: map[string]string{
+						"app.kubernetes.io/version": "1.25.0",
+					},
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:  "manager",
+							Image: "ghcr.io/cloudnative-pg/cloudnative-pg:1.25.0",
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+
+			By("patching pod status to Running")
+			pod.Status.Phase = corev1.PodRunning
+			Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
+
+			By("calling checkAddon for cnpg")
+			r := &ClusterPersonaReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+			addon := r.checkAddon(ctx, "cnpg-cloudnative-pg", "cnpg-system", "database")
+
+			By("verifying the addon is installed with correct version and health")
+			Expect(addon.Installed).To(BeTrue())
+			Expect(addon.Version).To(Equal("1.25.0"))
+			Expect(addon.Type).To(Equal("database"))
+			Expect(addon.Healthy).NotTo(BeNil())
+			Expect(*addon.Healthy).To(BeTrue())
+
+			By("cleaning up")
+			Expect(k8sClient.Delete(ctx, pod)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, ns)).To(Succeed())
+		})
+	})
+})
+
 var _ = Describe("isHexDigest", func() {
 	It("returns true for long hex strings", func() {
 		Expect(isHexDigest("d56f135b6462cfc476447cfe564b83a45e8bb7da2774963b00d12161112270b7")).To(BeTrue())

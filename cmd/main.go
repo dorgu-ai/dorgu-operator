@@ -43,6 +43,7 @@ import (
 	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
 	"github.com/dorgu-ai/dorgu-operator/internal/events"
 	"github.com/dorgu-ai/dorgu-operator/internal/llm"
+	"github.com/dorgu-ai/dorgu-operator/internal/remediation"
 	dorguwebhook "github.com/dorgu-ai/dorgu-operator/internal/webhook"
 	dorguws "github.com/dorgu-ai/dorgu-operator/internal/websocket"
 	// +kubebuilder:scaffold:imports
@@ -309,13 +310,18 @@ func main() {
 			os.Exit(1)
 		}
 
-		// 7. Start health check reconciler.
+		// 7. Create remediation proposer with safety guardrails.
+		safetyChecker := remediation.NewSafetyChecker(mgr.GetClient(), setupLog)
+		proposer := remediation.NewProposer(mgr.GetClient(), safetyChecker, setupLog)
+
+		// 8. Start health check reconciler.
 		healthReconciler := &controller.HealthCheckReconciler{
 			Client:            mgr.GetClient(),
 			Detection:         detectionEngine,
 			Diagnosis:         diagnosisEngine,
 			EventStore:        eventStore,
 			EventEmitter:      emitter,
+			Proposer:          proposer,
 			Logger:            setupLog.WithName("health-check"),
 			ReconcileInterval: cfg.healthCheckInterval,
 		}
@@ -324,7 +330,7 @@ func main() {
 			os.Exit(1)
 		}
 
-		// 8. Register incident controller.
+		// 9. Register incident controller.
 		if err := (&controller.IncidentController{
 			Client: mgr.GetClient(),
 			Logger: setupLog.WithName("incident-controller"),
