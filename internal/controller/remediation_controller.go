@@ -32,21 +32,21 @@ import (
 
 // RemediationAction phase constants.
 const (
-	RemediationPhasePending   = "Pending"
-	RemediationPhaseApproved  = "Approved"
-	RemediationPhaseApplying  = "Applying"
-	RemediationPhaseVerifying = "Verifying"
-	RemediationPhaseCompleted = "Completed"
+	RemediationPhasePending    = "Pending"
+	RemediationPhaseApproved   = "Approved"
+	RemediationPhaseApplying   = "Applying"
+	RemediationPhaseVerifying  = "Verifying"
+	RemediationPhaseCompleted  = "Completed"
 	RemediationPhaseRolledBack = "RolledBack"
-	RemediationPhaseFailed    = "Failed"
-	RemediationPhaseRejected  = "Rejected"
-	RemediationPhaseExpired   = "Expired"
+	RemediationPhaseFailed     = "Failed"
+	RemediationPhaseRejected   = "Rejected"
+	RemediationPhaseExpired    = "Expired"
 )
 
 // RemediationAction condition types.
 const (
-	ConditionApplied  = "Applied"
-	ConditionVerified = "Verified"
+	ConditionApplied    = "Applied"
+	ConditionVerified   = "Verified"
 	ConditionRolledBack = "RolledBack"
 )
 

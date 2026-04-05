@@ -32,8 +32,8 @@ import (
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
 	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
 	"github.com/dorgu-ai/dorgu-operator/internal/events"
-	"github.com/dorgu-ai/dorgu-operator/internal/websocket"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation"
+	"github.com/dorgu-ai/dorgu-operator/internal/websocket"
 )
 
 const (

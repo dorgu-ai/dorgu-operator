@@ -235,12 +235,12 @@ func TestExecutor_Apply_InvalidPatchJSON(t *testing.T) {
 
 func TestJsonMergePatch(t *testing.T) {
 	tests := []struct {
-		name     string
-		target   string
-		patch    string
-		wantKey  string
-		wantVal  string
-		wantErr  bool
+		name    string
+		target  string
+		patch   string
+		wantKey string
+		wantVal string
+		wantErr bool
 	}{
 		{
 			name:    "simple value replacement",

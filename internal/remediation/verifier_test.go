@@ -36,14 +36,18 @@ type mockCollector struct {
 	err     error
 }
 
-func (m *mockCollector) Name() string                                   { return "mock" }
-func (m *mockCollector) Collect(_ context.Context) ([]detection.Signal, error) { return m.signals, m.err }
+func (m *mockCollector) Name() string { return "mock" }
+func (m *mockCollector) Collect(_ context.Context) ([]detection.Signal, error) {
+	return m.signals, m.err
+}
 
 func newTestVerifier(signals []detection.Signal, collectErr error, objs ...interface{}) *Verifier {
 	collector := &mockCollector{signals: signals, err: collectErr}
 	engine := detection.NewEngine(logr.Discard(), collector)
 
-	var clientObjs []interface{ GetObjectKind() interface{ GroupVersionKind() interface{} } }
+	var clientObjs []interface {
+		GetObjectKind() interface{ GroupVersionKind() interface{} }
+	}
 	_ = clientObjs // suppress unused
 
 	builder := fake.NewClientBuilder().
