@@ -85,17 +85,17 @@ func TestEngine_SingleProvider(t *testing.T) {
 	}
 }
 
-func TestEngine_MultipleProviders(t *testing.T) {
+func TestEngine_MultipleProviders_DifferentCategories(t *testing.T) {
 	p1 := &mockProvider{
 		name: "rule-based",
 		diagnoses: []Diagnosis{
-			{Summary: "rule-based diagnosis", Confidence: 0.70, Provider: "rule-based"},
+			{Summary: "rule-based diagnosis", Confidence: 0.70, Provider: "rule-based", Category: "resource", SuggestedAction: "resource-adjustment"},
 		},
 	}
 	p2 := &mockProvider{
 		name: "ai-enhanced",
 		diagnoses: []Diagnosis{
-			{Summary: "ai-enhanced diagnosis", Confidence: 0.90, Provider: "ai-enhanced"},
+			{Summary: "ai-enhanced diagnosis", Confidence: 0.90, Provider: "ai-enhanced", Category: "health", SuggestedAction: "investigate"},
 		},
 	}
 	engine := NewEngine(logr.Discard(), p1, p2)
@@ -122,6 +122,65 @@ func TestEngine_MultipleProviders(t *testing.T) {
 	}
 	if diagnoses[0].Provider != "ai-enhanced" {
 		t.Errorf("highest confidence diagnosis provider = %q, want %q", diagnoses[0].Provider, "ai-enhanced")
+	}
+}
+
+func TestEngine_Deduplication_KeepsHigherConfidence(t *testing.T) {
+	// Two providers produce diagnoses with the same dedup key (category + action + resources).
+	// Engine should keep only the higher-confidence one.
+	p1 := &mockProvider{
+		name: "rule-based",
+		diagnoses: []Diagnosis{
+			{
+				Summary:         "rule-based OOM",
+				Confidence:      0.70,
+				Provider:        "rule-based",
+				Category:        "resource",
+				SuggestedAction: "resource-adjustment",
+				AffectedResources: []dorguv1.ResourceReference{
+					{Kind: "Pod", Name: "api-pod", Namespace: "default"},
+				},
+			},
+		},
+	}
+	p2 := &mockProvider{
+		name: "ai-enhanced",
+		diagnoses: []Diagnosis{
+			{
+				Summary:         "AI-enhanced OOM explanation",
+				Confidence:      0.90,
+				Provider:        "ai-enhanced",
+				Category:        "resource",
+				SuggestedAction: "resource-adjustment",
+				AffectedResources: []dorguv1.ResourceReference{
+					{Kind: "Pod", Name: "api-pod", Namespace: "default"},
+				},
+			},
+		},
+	}
+	engine := NewEngine(logr.Discard(), p1, p2)
+
+	signals := []detection.Signal{
+		{
+			Type:       detection.SignalOOMKilled,
+			Severity:   detection.SeverityCritical,
+			Resource:   dorguv1.ResourceReference{Kind: "Pod", Name: "api-pod", Namespace: "default"},
+			DetectedAt: time.Now(),
+		},
+	}
+
+	diagnoses, err := engine.Analyze(context.Background(), signals)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(diagnoses) != 1 {
+		t.Fatalf("expected 1 deduplicated diagnosis, got %d", len(diagnoses))
+	}
+	if diagnoses[0].Provider != "ai-enhanced" {
+		t.Errorf("expected ai-enhanced provider (higher confidence), got %q", diagnoses[0].Provider)
+	}
+	if diagnoses[0].Confidence != 0.90 {
+		t.Errorf("expected confidence 0.90, got %v", diagnoses[0].Confidence)
 	}
 }
 

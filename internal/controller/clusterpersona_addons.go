@@ -33,7 +33,7 @@ func (r *ClusterPersonaReconciler) discoverAddons(ctx context.Context) []dorguv1
 	// To add a new addon detector:
 	//   r.checkAddon(ctx, podNameContains, namespace, addonType)
 	// Valid addonType values: gitops, monitoring, logging, ingress,
-	//   service-mesh, secrets, cert-management, other
+	//   service-mesh, secrets, cert-management, database, other
 	// podNameContains: a substring of the main component's pod name
 
 	// Check for ArgoCD
@@ -70,6 +70,10 @@ func (r *ClusterPersonaReconciler) discoverAddons(ctx context.Context) []dorguv1
 	// Check for OpenObserve (installed by 'dorgu cluster setup')
 	openObserve := r.checkAddon(ctx, "openobserve", "openobserve", "monitoring")
 	addons = append(addons, openObserve)
+
+	// Check for CloudNativePG (CNPG) — PostgreSQL operator, dependency for OpenObserve
+	cnpg := r.checkAddon(ctx, "cnpg-cloudnative-pg", "cnpg-system", "database")
+	addons = append(addons, cnpg)
 
 	return addons
 }

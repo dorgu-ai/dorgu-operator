@@ -33,6 +33,7 @@ import (
 	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
 	"github.com/dorgu-ai/dorgu-operator/internal/events"
 	"github.com/dorgu-ai/dorgu-operator/internal/websocket"
+	"github.com/dorgu-ai/dorgu-operator/internal/remediation"
 )
 
 const (
@@ -68,6 +69,9 @@ const (
 // +kubebuilder:rbac:groups=dorgu.io,resources=incidentmemories/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=dorgu.io,resources=applicationpersonas,verbs=get;list;watch
 // +kubebuilder:rbac:groups=dorgu.io,resources=applicationpersonas/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=dorgu.io,resources=remediationactions,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups=dorgu.io,resources=remediationactions/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=dorgu.io,resources=clusterpersonas,verbs=get;list;watch
 // +kubebuilder:rbac:groups=dorgu.io,resources=dorguevents,verbs=get;list;watch;create
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
@@ -81,6 +85,7 @@ type HealthCheckReconciler struct {
 	Diagnosis         *diagnosis.Engine
 	EventStore        events.EventStore
 	EventEmitter      events.Emitter
+	Proposer          remediation.RemediationProposer
 	Logger            logr.Logger
 	ReconcileInterval time.Duration
 	WebSocket         *websocket.Server
@@ -165,7 +170,7 @@ func (r *HealthCheckReconciler) reconcile(ctx context.Context) {
 }
 
 // processDiagnosis creates or updates an IncidentMemory for a diagnosis,
-// stores events, and emits K8s events for high-severity signals.
+// stores events, emits K8s events for high-severity signals, and proposes remediation.
 func (r *HealthCheckReconciler) processDiagnosis(
 	ctx context.Context,
 	diag *diagnosis.Diagnosis,
@@ -183,13 +188,35 @@ func (r *HealthCheckReconciler) processDiagnosis(
 		return fmt.Errorf("finding matching incident: %w", err)
 	}
 
+	var incident *dorguv1.IncidentMemory
 	if existing != nil {
 		// Update existing incident.
-		return r.updateExistingIncident(ctx, existing, diag, now)
+		if err := r.updateExistingIncident(ctx, existing, diag, now); err != nil {
+			return err
+		}
+		incident = existing
+	} else {
+		// Create new IncidentMemory.
+		if err := r.createIncident(ctx, diag, now); err != nil {
+			return err
+		}
+		// Re-fetch the incident for proposer.
+		incident, _ = r.findMatchingIncident(ctx, diag)
 	}
 
-	// Create new IncidentMemory.
-	return r.createIncident(ctx, diag, now)
+	// Propose remediation if proposer is configured and incident is not resolved.
+	if r.Proposer != nil && incident != nil && incident.Status.Phase != PhaseResolved {
+		result, proposeErr := r.Proposer.Propose(ctx, *diag, incident)
+		if proposeErr != nil {
+			r.Logger.Error(proposeErr, "failed to propose remediation", "incident", incident.Name)
+		} else if result.Proposed {
+			r.Logger.Info("remediation proposed", "action", result.Action.Name, "incident", incident.Name)
+		} else if result.SkipReason != "" {
+			r.Logger.V(1).Info("remediation skipped", "reason", result.SkipReason, "incident", incident.Name)
+		}
+	}
+
+	return nil
 }
 
 // findMatchingIncident searches for an active IncidentMemory matching a diagnosis.

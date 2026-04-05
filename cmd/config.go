@@ -65,6 +65,11 @@ type operatorConfig struct {
 	// Metrics-server integration
 	enableMetricsServer bool
 
+	// LLM (AI diagnosis)
+	llmProvider string // "claude", "gemini", or "" (disabled)
+	llmAPIKey   string // API key (overrides env vars)
+	llmModel    string // model override
+
 	// Logging
 	zapOpts zap.Options
 }
@@ -108,6 +113,14 @@ func parseFlags() operatorConfig {
 		"Health check reconciler interval.")
 	flag.BoolVar(&cfg.enableMetricsServer, "enable-metrics-server", true,
 		"Enable metrics-server integration for detection.")
+
+	// LLM flags
+	flag.StringVar(&cfg.llmProvider, "llm-provider", "",
+		"LLM provider for AI-enhanced diagnosis: 'claude' or 'gemini' (default: disabled).")
+	flag.StringVar(&cfg.llmAPIKey, "llm-api-key", "",
+		"API key for the LLM provider (overrides ANTHROPIC_API_KEY / GEMINI_API_KEY env vars).")
+	flag.StringVar(&cfg.llmModel, "llm-model", "",
+		"Override the default model for the LLM provider.")
 
 	cfg.zapOpts = zap.Options{Development: true}
 	cfg.zapOpts.BindFlags(flag.CommandLine)
