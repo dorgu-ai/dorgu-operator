@@ -219,6 +219,18 @@ func main() {
 			},
 		})
 	}
+	// Start WebSocket server if enabled (created before health check so it can be injected).
+	var wsServer *dorguws.Server
+	if cfg.enableWebSocket {
+		setupLog.Info("Starting WebSocket server", "addr", cfg.webSocketAddr)
+		wsServer = dorguws.NewServer(mgr.GetClient(), cfg.webSocketAddr)
+		go func() {
+			if err := wsServer.Start(ctrl.SetupSignalHandler()); err != nil {
+				setupLog.Error(err, "WebSocket server error")
+			}
+		}()
+	}
+
 	// Phase 2a: Health check reconciler + event pipeline + incident controller.
 	// All components gated behind --enable-health-check flag.
 	if cfg.enableHealthCheck {
@@ -324,6 +336,7 @@ func main() {
 			Proposer:          proposer,
 			Logger:            setupLog.WithName("health-check"),
 			ReconcileInterval: cfg.healthCheckInterval,
+			WebSocket:         wsServer,
 		}
 		if err := mgr.Add(healthReconciler); err != nil {
 			setupLog.Error(err, "unable to start health check reconciler")
@@ -354,17 +367,6 @@ func main() {
 	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
 		setupLog.Error(err, "unable to set up ready check")
 		os.Exit(1)
-	}
-
-	// Start WebSocket server if enabled
-	if cfg.enableWebSocket {
-		setupLog.Info("Starting WebSocket server", "addr", cfg.webSocketAddr)
-		wsServer := dorguws.NewServer(mgr.GetClient(), cfg.webSocketAddr)
-		go func() {
-			if err := wsServer.Start(ctrl.SetupSignalHandler()); err != nil {
-				setupLog.Error(err, "WebSocket server error")
-			}
-		}()
 	}
 
 	setupLog.Info("starting manager")

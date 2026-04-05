@@ -316,6 +316,322 @@ func TestWebSocketServer_BroadcastClusterEvent(t *testing.T) {
 	})
 }
 
+func TestWebSocketServer_BroadcastIncident(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = dorguv1.AddToScheme(scheme)
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	server := NewServer(k8sClient, ":0")
+
+	// Start the broadcast handler
+	go server.handleBroadcast()
+
+	// Test that BroadcastIncident doesn't panic with no clients
+	assert.NotPanics(t, func() {
+		server.BroadcastIncident(IncidentEvent{
+			EventType:   "created",
+			Name:        "im-default-api-oom-abc123",
+			Namespace:   "default",
+			Severity:    "critical",
+			Category:    "resource",
+			Signal:      "OOMKilled",
+			Phase:       "Detected",
+			PersonaName: "api-server",
+			PersonaKind: "ApplicationPersona",
+			Summary:     "Pod OOMKilled due to memory pressure",
+		})
+	})
+}
+
+func TestWebSocketServer_BroadcastIncident_WithSubscriber(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = dorguv1.AddToScheme(scheme)
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	server := NewServer(k8sClient, ":0")
+
+	httpServer := httptest.NewServer(http.HandlerFunc(server.handleWebSocket))
+	defer httpServer.Close()
+
+	// Start the broadcast handler
+	go server.handleBroadcast()
+
+	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http")
+	dialer := websocket.Dialer{}
+	conn, _, err := dialer.Dial(wsURL, nil)
+	require.NoError(t, err)
+	defer func() { _ = conn.Close() }()
+
+	// Subscribe to incidents topic
+	subscribeMsg := Message{
+		Type:      MessageTypeSubscribe,
+		Topic:     TopicIncidents,
+		RequestID: "sub-incidents",
+		Timestamp: time.Now(),
+	}
+	err = conn.WriteJSON(subscribeMsg)
+	require.NoError(t, err)
+
+	// Read subscribe response
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, _, err = conn.ReadMessage()
+	require.NoError(t, err)
+
+	// Broadcast an incident event
+	server.BroadcastIncident(IncidentEvent{
+		EventType:   "created",
+		Name:        "im-default-api-oom-abc123",
+		Namespace:   "default",
+		Severity:    "critical",
+		Category:    "resource",
+		Signal:      "OOMKilled",
+		Phase:       "Detected",
+		PersonaName: "api-server",
+		PersonaKind: "ApplicationPersona",
+		Summary:     "Pod OOMKilled due to memory pressure",
+	})
+
+	// Read the broadcast event
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, data, err := conn.ReadMessage()
+	require.NoError(t, err)
+
+	var msg Message
+	err = json.Unmarshal(data, &msg)
+	require.NoError(t, err)
+
+	assert.Equal(t, MessageTypeEvent, msg.Type)
+	assert.Equal(t, TopicIncidents, msg.Topic)
+
+	var event IncidentEvent
+	err = json.Unmarshal(msg.Payload, &event)
+	require.NoError(t, err)
+
+	assert.Equal(t, "created", event.EventType)
+	assert.Equal(t, "im-default-api-oom-abc123", event.Name)
+	assert.Equal(t, "critical", event.Severity)
+	assert.Equal(t, "OOMKilled", event.Signal)
+	assert.Equal(t, "api-server", event.PersonaName)
+}
+
+func TestWebSocketServer_BroadcastRemediation(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = dorguv1.AddToScheme(scheme)
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	server := NewServer(k8sClient, ":0")
+
+	go server.handleBroadcast()
+
+	assert.NotPanics(t, func() {
+		server.BroadcastRemediation(RemediationEvent{
+			EventType:   "created",
+			Name:        "ra-fix-oom-api",
+			Namespace:   "default",
+			Phase:       "Pending",
+			ActionType:  "persona-update",
+			Confidence:  "0.85",
+			PersonaName: "api-server",
+		})
+	})
+}
+
+func TestWebSocketServer_BroadcastRemediation_WithSubscriber(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = dorguv1.AddToScheme(scheme)
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	server := NewServer(k8sClient, ":0")
+
+	httpServer := httptest.NewServer(http.HandlerFunc(server.handleWebSocket))
+	defer httpServer.Close()
+
+	go server.handleBroadcast()
+
+	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http")
+	dialer := websocket.Dialer{}
+	conn, _, err := dialer.Dial(wsURL, nil)
+	require.NoError(t, err)
+	defer func() { _ = conn.Close() }()
+
+	// Subscribe to remediations
+	err = conn.WriteJSON(Message{
+		Type:      MessageTypeSubscribe,
+		Topic:     TopicRemediations,
+		RequestID: "sub-remediations",
+		Timestamp: time.Now(),
+	})
+	require.NoError(t, err)
+
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, _, err = conn.ReadMessage()
+	require.NoError(t, err)
+
+	// Broadcast a remediation event
+	server.BroadcastRemediation(RemediationEvent{
+		EventType:   "approved",
+		Name:        "ra-fix-oom-api",
+		Namespace:   "default",
+		Phase:       "Approved",
+		ActionType:  "persona-update",
+		Confidence:  "0.85",
+		PersonaName: "api-server",
+	})
+
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, data, err := conn.ReadMessage()
+	require.NoError(t, err)
+
+	var msg Message
+	err = json.Unmarshal(data, &msg)
+	require.NoError(t, err)
+
+	assert.Equal(t, MessageTypeEvent, msg.Type)
+	assert.Equal(t, TopicRemediations, msg.Topic)
+
+	var event RemediationEvent
+	err = json.Unmarshal(msg.Payload, &event)
+	require.NoError(t, err)
+
+	assert.Equal(t, "approved", event.EventType)
+	assert.Equal(t, "ra-fix-oom-api", event.Name)
+	assert.Equal(t, "0.85", event.Confidence)
+}
+
+func TestWebSocketServer_BroadcastHealthUpdate(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = dorguv1.AddToScheme(scheme)
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	server := NewServer(k8sClient, ":0")
+
+	go server.handleBroadcast()
+
+	assert.NotPanics(t, func() {
+		server.BroadcastHealthUpdate(HealthUpdateEvent{
+			EventType:       "health-update",
+			ActiveIncidents: 2,
+			PendingRemedies: 1,
+			NodeCount:       3,
+			HealthyNodes:    3,
+		})
+	})
+}
+
+func TestWebSocketServer_BroadcastHealthUpdate_WithSubscriber(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = dorguv1.AddToScheme(scheme)
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	server := NewServer(k8sClient, ":0")
+
+	httpServer := httptest.NewServer(http.HandlerFunc(server.handleWebSocket))
+	defer httpServer.Close()
+
+	go server.handleBroadcast()
+
+	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http")
+	dialer := websocket.Dialer{}
+	conn, _, err := dialer.Dial(wsURL, nil)
+	require.NoError(t, err)
+	defer func() { _ = conn.Close() }()
+
+	// Subscribe to health topic
+	err = conn.WriteJSON(Message{
+		Type:      MessageTypeSubscribe,
+		Topic:     TopicHealth,
+		RequestID: "sub-health",
+		Timestamp: time.Now(),
+	})
+	require.NoError(t, err)
+
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, _, err = conn.ReadMessage()
+	require.NoError(t, err)
+
+	// Broadcast health update
+	server.BroadcastHealthUpdate(HealthUpdateEvent{
+		EventType:       "health-update",
+		ActiveIncidents: 2,
+		PendingRemedies: 1,
+		NodeCount:       3,
+		HealthyNodes:    2,
+		CPUUtilization:  "65%",
+		MemUtilization:  "78%",
+	})
+
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, data, err := conn.ReadMessage()
+	require.NoError(t, err)
+
+	var msg Message
+	err = json.Unmarshal(data, &msg)
+	require.NoError(t, err)
+
+	assert.Equal(t, MessageTypeEvent, msg.Type)
+	assert.Equal(t, TopicHealth, msg.Topic)
+
+	var event HealthUpdateEvent
+	err = json.Unmarshal(msg.Payload, &event)
+	require.NoError(t, err)
+
+	assert.Equal(t, "health-update", event.EventType)
+	assert.Equal(t, 2, event.ActiveIncidents)
+	assert.Equal(t, 1, event.PendingRemedies)
+	assert.Equal(t, 3, event.NodeCount)
+	assert.Equal(t, 2, event.HealthyNodes)
+	assert.Equal(t, "65%", event.CPUUtilization)
+	assert.Equal(t, "78%", event.MemUtilization)
+}
+
+func TestWebSocketServer_TopicIsolation(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = dorguv1.AddToScheme(scheme)
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	server := NewServer(k8sClient, ":0")
+
+	httpServer := httptest.NewServer(http.HandlerFunc(server.handleWebSocket))
+	defer httpServer.Close()
+
+	go server.handleBroadcast()
+
+	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http")
+	dialer := websocket.Dialer{}
+	conn, _, err := dialer.Dial(wsURL, nil)
+	require.NoError(t, err)
+	defer func() { _ = conn.Close() }()
+
+	// Subscribe only to incidents — should NOT receive remediation events
+	err = conn.WriteJSON(Message{
+		Type:      MessageTypeSubscribe,
+		Topic:     TopicIncidents,
+		RequestID: "sub-incidents-only",
+		Timestamp: time.Now(),
+	})
+	require.NoError(t, err)
+
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, _, err = conn.ReadMessage()
+	require.NoError(t, err)
+
+	// Broadcast a remediation event (client should NOT receive it)
+	server.BroadcastRemediation(RemediationEvent{
+		EventType:   "created",
+		Name:        "ra-fix-something",
+		Namespace:   "default",
+		Phase:       "Pending",
+		ActionType:  "persona-update",
+		Confidence:  "0.90",
+		PersonaName: "some-app",
+	})
+
+	// Try to read — should timeout since the client is not subscribed to remediations
+	_ = conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	_, _, err = conn.ReadMessage()
+	assert.Error(t, err, "should timeout since client is not subscribed to remediations topic")
+}
+
 func TestWebSocketServer_InvalidMessage(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = dorguv1.AddToScheme(scheme)

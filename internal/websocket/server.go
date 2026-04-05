@@ -209,6 +209,39 @@ func (s *Server) BroadcastPersonaEvent(eventType, namespace, name, phase, health
 	s.Broadcast(msg)
 }
 
+// BroadcastIncident broadcasts an incident lifecycle event.
+func (s *Server) BroadcastIncident(event IncidentEvent) {
+	msg, err := NewEventMessage(TopicIncidents, event)
+	if err != nil {
+		log.Error(err, "Failed to create incident event message")
+		return
+	}
+
+	s.Broadcast(msg)
+}
+
+// BroadcastRemediation broadcasts a remediation lifecycle event.
+func (s *Server) BroadcastRemediation(event RemediationEvent) {
+	msg, err := NewEventMessage(TopicRemediations, event)
+	if err != nil {
+		log.Error(err, "Failed to create remediation event message")
+		return
+	}
+
+	s.Broadcast(msg)
+}
+
+// BroadcastHealthUpdate broadcasts a periodic health summary.
+func (s *Server) BroadcastHealthUpdate(event HealthUpdateEvent) {
+	msg, err := NewEventMessage(TopicHealth, event)
+	if err != nil {
+		log.Error(err, "Failed to create health update event message")
+		return
+	}
+
+	s.Broadcast(msg)
+}
+
 // BroadcastClusterEvent broadcasts a cluster event.
 func (s *Server) BroadcastClusterEvent(eventType, name, phase string, nodeCount, appCount int) {
 	event := ClusterEvent{

@@ -32,6 +32,7 @@ import (
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
 	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
 	"github.com/dorgu-ai/dorgu-operator/internal/events"
+	"github.com/dorgu-ai/dorgu-operator/internal/websocket"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation"
 )
 
@@ -87,6 +88,7 @@ type HealthCheckReconciler struct {
 	Proposer          remediation.RemediationProposer
 	Logger            logr.Logger
 	ReconcileInterval time.Duration
+	WebSocket         *websocket.Server
 }
 
 // Start begins the health check reconciliation loop. Blocks until ctx is cancelled.
@@ -159,6 +161,11 @@ func (r *HealthCheckReconciler) reconcile(ctx context.Context) {
 	// 4. Check for resolved incidents.
 	if err := r.resolveCleared(ctx, activeSignalKeys); err != nil {
 		r.Logger.Error(err, "failed to resolve cleared incidents")
+	}
+
+	// 5. Broadcast aggregate health update via WebSocket.
+	if r.WebSocket != nil {
+		r.broadcastHealthSummary(ctx)
 	}
 }
 
@@ -302,6 +309,26 @@ func (r *HealthCheckReconciler) updateExistingIncident(
 		"occurrenceCount", im.Status.OccurrenceCount,
 	)
 
+	// Broadcast incident update via WebSocket.
+	if r.WebSocket != nil {
+		summary := ""
+		if im.Spec.RootCause != nil {
+			summary = im.Spec.RootCause.Summary
+		}
+		r.WebSocket.BroadcastIncident(websocket.IncidentEvent{
+			EventType:   "updated",
+			Name:        im.Name,
+			Namespace:   im.Namespace,
+			Severity:    im.Spec.Severity,
+			Category:    im.Spec.Category,
+			Signal:      im.Spec.Detection.Signal,
+			Phase:       im.Status.Phase,
+			PersonaName: im.Spec.PersonaRef.Name,
+			PersonaKind: im.Spec.PersonaRef.Kind,
+			Summary:     summary,
+		})
+	}
+
 	return nil
 }
 
@@ -375,6 +402,26 @@ func (r *HealthCheckReconciler) createIncident(
 		"severity", diag.Severity,
 		"signal", primarySignal,
 	)
+
+	// Broadcast incident creation via WebSocket.
+	if r.WebSocket != nil {
+		summary := ""
+		if diag.Summary != "" {
+			summary = diag.Summary
+		}
+		r.WebSocket.BroadcastIncident(websocket.IncidentEvent{
+			EventType:   "created",
+			Name:        im.Name,
+			Namespace:   im.Namespace,
+			Severity:    string(diag.Severity),
+			Category:    diag.Category,
+			Signal:      string(primarySignal),
+			Phase:       PhaseDetected,
+			PersonaName: diag.PersonaRef.Name,
+			PersonaKind: diag.PersonaRef.Kind,
+			Summary:     summary,
+		})
+	}
 
 	// Store contributing signals as DorguEvents.
 	r.storeSignalEvents(ctx, diag, im)
@@ -451,9 +498,59 @@ func (r *HealthCheckReconciler) resolveCleared(ctx context.Context, activeSignal
 			"signal", im.Spec.Detection.Signal,
 			"lastSeen", im.Spec.Detection.LastSeen.Time,
 		)
+
+		// Broadcast incident resolution via WebSocket.
+		if r.WebSocket != nil {
+			r.WebSocket.BroadcastIncident(websocket.IncidentEvent{
+				EventType:   "resolved",
+				Name:        im.Name,
+				Namespace:   im.Namespace,
+				Severity:    im.Spec.Severity,
+				Category:    im.Spec.Category,
+				Signal:      im.Spec.Detection.Signal,
+				Phase:       PhaseResolved,
+				PersonaName: im.Spec.PersonaRef.Name,
+				PersonaKind: im.Spec.PersonaRef.Kind,
+			})
+		}
 	}
 
 	return nil
+}
+
+// broadcastHealthSummary collects aggregate health data and broadcasts it.
+func (r *HealthCheckReconciler) broadcastHealthSummary(ctx context.Context) {
+	// Count active incidents.
+	var activeIncidents dorguv1.IncidentMemoryList
+	activeCount := 0
+	if err := r.Client.List(ctx, &activeIncidents,
+		client.MatchingLabels{LabelPhase: PhaseDetected},
+	); err == nil {
+		activeCount += len(activeIncidents.Items)
+	}
+	var investigatingIncidents dorguv1.IncidentMemoryList
+	if err := r.Client.List(ctx, &investigatingIncidents,
+		client.MatchingLabels{LabelPhase: PhaseInvestigating},
+	); err == nil {
+		activeCount += len(investigatingIncidents.Items)
+	}
+
+	// Count pending remediations.
+	var pendingRemedies dorguv1.RemediationActionList
+	pendingCount := 0
+	if err := r.Client.List(ctx, &pendingRemedies); err == nil {
+		for i := range pendingRemedies.Items {
+			if pendingRemedies.Items[i].Status.Phase == "Pending" {
+				pendingCount++
+			}
+		}
+	}
+
+	r.WebSocket.BroadcastHealthUpdate(websocket.HealthUpdateEvent{
+		EventType:       "health-update",
+		ActiveIncidents: activeCount,
+		PendingRemedies: pendingCount,
+	})
 }
 
 // storeSignalEvents stores contributing signals as DorguEvents via the event store.
