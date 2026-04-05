@@ -352,7 +352,23 @@ func main() {
 			os.Exit(1)
 		}
 
-		setupLog.Info("Phase 2a health check reconciler enabled",
+		// 10. Register remediation controller (executor + verifier + rollback).
+		executor := remediation.NewExecutor(mgr.GetClient(), setupLog)
+		verifier := remediation.NewVerifier(detectionEngine, mgr.GetClient(), setupLog)
+		rollbackHandler := remediation.NewRollback(mgr.GetClient(), setupLog)
+
+		if err := (&controller.RemediationController{
+			Client:   mgr.GetClient(),
+			Executor: executor,
+			Verifier: verifier,
+			Rollback: rollbackHandler,
+			Logger:   setupLog.WithName("remediation-controller"),
+		}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "RemediationAction")
+			os.Exit(1)
+		}
+
+		setupLog.Info("Phase 2a/2b health check and remediation enabled",
 			"interval", cfg.healthCheckInterval,
 			"metricsServer", cfg.enableMetricsServer,
 		)
