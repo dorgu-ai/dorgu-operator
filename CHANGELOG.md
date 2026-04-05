@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-04-05
+
+### Added
+
+- **Remediation engine** — generates RemediationAction CRDs from diagnosed incidents with resource adjustment proposals (memory/CPU increases for OOM and saturation). Integrated into the health check reconciler's detect→diagnose→propose loop.
+- **Safety guardrails** — rate limiting (5 per persona per hour, 1 concurrent), blast radius caps (max 2x resource increase), dry-run default (all proposals require approval), and namespace deny list (kube-system excluded).
+- **Remediation controller** — watches RemediationAction CRDs through the full lifecycle: Pending → Approved → Applying → Verifying → Completed (or RolledBack/Failed). Applies JSON merge patches to ApplicationPersona CRDs. Auto-rollback on degradation using pre-patch state snapshots.
+- **Post-apply verification** — re-runs detection engine after configurable wait period (default 10m) to confirm remediation improved health. Updates IncidentMemory with resolution details (action, outcome, duration).
+- **AI-enhanced diagnosis (BYOK)** — `AIProvider` wraps rule-based diagnosis with LLM-generated explanations. Supports Anthropic Claude and Google Gemini via `--llm-provider` flag and `ANTHROPIC_API_KEY`/`GEMINI_API_KEY` env vars. Graceful degradation when no key configured.
+- **WebSocket broadcast** — broadcasts incident, remediation, and health update events to connected CLI clients for real-time streaming (`dorgu health --watch`).
+- **CloudNativePG addon discovery** — CNPG now appears in ClusterPersona addon list after blessed stack installation.
+- `--llm-provider` flag for AI diagnosis provider selection (claude, gemini).
+- `--llm-api-key` flag for API key override (prefers env vars).
+- `--llm-model` flag for model override.
+
+### Fixed
+
+- Apply gofmt formatting to remediation controller files.
+
 ## [0.4.1] - 2026-03-31
 
 ### Fixed
