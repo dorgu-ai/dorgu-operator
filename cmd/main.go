@@ -219,13 +219,18 @@ func main() {
 			},
 		})
 	}
+	// Create a single signal-handler context shared by all components.
+	// ctrl.SetupSignalHandler() must only be called once — a second call
+	// panics with "close of closed channel".
+	signalCtx := ctrl.SetupSignalHandler()
+
 	// Start WebSocket server if enabled (created before health check so it can be injected).
 	var wsServer *dorguws.Server
 	if cfg.enableWebSocket {
 		setupLog.Info("Starting WebSocket server", "addr", cfg.webSocketAddr)
 		wsServer = dorguws.NewServer(mgr.GetClient(), cfg.webSocketAddr)
 		go func() {
-			if err := wsServer.Start(ctrl.SetupSignalHandler()); err != nil {
+			if err := wsServer.Start(signalCtx); err != nil {
 				setupLog.Error(err, "WebSocket server error")
 			}
 		}()
@@ -386,7 +391,7 @@ func main() {
 	}
 
 	setupLog.Info("starting manager")
-	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
+	if err := mgr.Start(signalCtx); err != nil {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)
 	}
