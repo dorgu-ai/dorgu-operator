@@ -271,6 +271,9 @@ func main() {
 
 		// 2. Create detection engine.
 		detectionEngine := detection.NewEngine(setupLog, collectors...)
+		detectionEngine.SetPersonaCorrelator(
+			detection.NewPersonaCorrelator(mgr.GetClient(), setupLog.WithName("persona-correlator")),
+		)
 
 		// 3. Create diagnosis engine with providers.
 		var diagnosisProviders []diagnosis.DiagnosisProvider

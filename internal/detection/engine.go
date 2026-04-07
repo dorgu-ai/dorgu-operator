@@ -36,7 +36,13 @@ type SignalCollector interface {
 // Engine orchestrates signal collection from all registered collectors.
 type Engine struct {
 	collectors []SignalCollector
+	correlator PersonaCorrelator
 	logger     logr.Logger
+}
+
+// SetPersonaCorrelator sets the correlator used to link signals to personas.
+func (e *Engine) SetPersonaCorrelator(c PersonaCorrelator) {
+	e.correlator = c
 }
 
 // NewEngine creates a detection engine with the given collectors.
@@ -60,6 +66,11 @@ func (e *Engine) CollectAll(ctx context.Context) ([]Signal, error) {
 			continue
 		}
 		allSignals = append(allSignals, signals...)
+	}
+
+	// Correlate signals to ApplicationPersonas.
+	if e.correlator != nil {
+		e.correlator.Correlate(ctx, allSignals)
 	}
 
 	sort.Slice(allSignals, func(i, j int) bool {
