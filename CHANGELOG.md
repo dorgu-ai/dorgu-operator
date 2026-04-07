@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-04-07
+
+### Fixed
+
+- Fix ApplicationPersona reconciler only matching deployments with `app.kubernetes.io/name` label. Now falls back to common `app` label, matching the pattern already used by the events correlator.
+
 ## [0.5.1] - 2026-04-07
 
 ### Fixed
