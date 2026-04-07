@@ -176,6 +176,11 @@ func (r *ApplicationPersonaReconciler) Reconcile(ctx context.Context, req ctrl.R
 		}
 	}
 
+	// 6.7. Detect OOM incidents and create IncidentMemory + RemediationAction.
+	if err := r.detectAndRecordOOMIncidents(ctx, persona, &deploy); err != nil {
+		log.V(1).Info("OOM incident detection failed", "error", err.Error())
+	}
+
 	// 7. Update deployment tracking
 	image := ""
 	if len(deploy.Spec.Template.Spec.Containers) > 0 {
