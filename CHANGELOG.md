@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-04-07
+
+### Fixed
+
+- Fix operator crash (`panic: close of closed channel`) when starting with `websocket.enabled=true`. Signal handler is now called once and shared between the WebSocket server and controller manager.
+- Fix OOM workloads not producing IncidentMemory or RemediationAction CRDs. Added persona correlator to the detection engine that matches pod signals to ApplicationPersonas by namespace and name, enabling the full detect-diagnose-incident pipeline.
+- Fix addon version reporting showing "latest" for OpenObserve. Added `helm.sh/chart` label parsing as fallback when `app.kubernetes.io/version` is missing. Image tags of "latest" are now reported as "unknown".
+- Fix ClusterPersona reconciler not applying `selfHealing` defaults. Missing `mode` and `trustLevel` fields are now filled in during reconciliation (mode "observe", trustLevel 2).
+
 ## [0.5.0] - 2026-04-05
 
 ### Added
