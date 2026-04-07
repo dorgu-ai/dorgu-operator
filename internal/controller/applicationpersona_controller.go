@@ -87,7 +87,7 @@ func (r *ApplicationPersonaReconciler) Reconcile(ctx context.Context, req ctrl.R
 
 	log.Info("Reconciling ApplicationPersona", "name", persona.Spec.Name)
 
-	// 2. Find matching Deployments by label
+	// 2. Find matching Deployments by label (try app.kubernetes.io/name first, fall back to app)
 	deployments := &appsv1.DeploymentList{}
 	selector := labels.SelectorFromSet(labels.Set{
 		"app.kubernetes.io/name": persona.Spec.Name,
@@ -98,6 +98,20 @@ func (r *ApplicationPersonaReconciler) Reconcile(ctx context.Context, req ctrl.R
 	}); err != nil {
 		log.Error(err, "Failed to list deployments")
 		return ctrl.Result{}, err
+	}
+
+	// Fallback: try common "app" label if no match with recommended label
+	if len(deployments.Items) == 0 {
+		fallbackSelector := labels.SelectorFromSet(labels.Set{
+			"app": persona.Spec.Name,
+		})
+		if err := r.List(ctx, deployments, &client.ListOptions{
+			Namespace:     req.Namespace,
+			LabelSelector: fallbackSelector,
+		}); err != nil {
+			log.Error(err, "Failed to list deployments with fallback label")
+			return ctrl.Result{}, err
+		}
 	}
 
 	now := metav1.Now()
@@ -265,7 +279,11 @@ func (r *ApplicationPersonaReconciler) deploymentToPersona(ctx context.Context, 
 		return nil
 	}
 
+	// Check both label keys (recommended + common)
 	appName := deploy.Labels["app.kubernetes.io/name"]
+	if appName == "" {
+		appName = deploy.Labels["app"]
+	}
 	if appName == "" {
 		return nil
 	}
