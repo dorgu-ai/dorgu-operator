@@ -108,11 +108,13 @@ func (r *ClusterPersonaReconciler) checkAddon(ctx context.Context, deploymentNam
 			// Prefer app.kubernetes.io/version label (set by Helm charts)
 			if v, ok := pod.Labels["app.kubernetes.io/version"]; ok && v != "" {
 				addon.Version = v
+			} else if v := extractVersionFromHelmChartLabel(pod.Labels); v != "" {
+				addon.Version = v
 			} else if len(pod.Spec.Containers) > 0 {
 				image := pod.Spec.Containers[0].Image
 				if parts := strings.Split(image, ":"); len(parts) > 1 {
 					tag := parts[len(parts)-1]
-					if isHexDigest(tag) {
+					if isHexDigest(tag) || tag == "latest" {
 						addon.Version = "unknown"
 					} else {
 						addon.Version = tag
@@ -128,6 +130,30 @@ func (r *ClusterPersonaReconciler) checkAddon(ctx context.Context, deploymentNam
 	}
 
 	return addon
+}
+
+// extractVersionFromHelmChartLabel extracts version from the helm.sh/chart label.
+// The label format is "<chart-name>-<version>", e.g., "openobserve-0.60.0".
+// Returns the version portion, or empty string if label is missing or unparseable.
+func extractVersionFromHelmChartLabel(labels map[string]string) string {
+	chartLabel, ok := labels["helm.sh/chart"]
+	if !ok || chartLabel == "" {
+		return ""
+	}
+	// Find the last hyphen followed by a digit or 'v' + digit — that's where the version starts.
+	for i := len(chartLabel) - 1; i >= 0; i-- {
+		if chartLabel[i] != '-' || i+1 >= len(chartLabel) {
+			continue
+		}
+		next := chartLabel[i+1]
+		if next >= '0' && next <= '9' {
+			return chartLabel[i+1:]
+		}
+		if next == 'v' && i+2 < len(chartLabel) && chartLabel[i+2] >= '0' && chartLabel[i+2] <= '9' {
+			return chartLabel[i+1:]
+		}
+	}
+	return ""
 }
 
 // isHexDigest returns true if s looks like a hex digest (40+ hex characters
