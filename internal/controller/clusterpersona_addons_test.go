@@ -194,6 +194,109 @@ var _ = Describe("OpenObserve Addon Discovery", func() {
 	})
 })
 
+var _ = Describe("OpenObserve Helm Chart Label Fallback", func() {
+	ctx := context.Background()
+
+	It("uses helm.sh/chart label when app.kubernetes.io/version is missing", func() {
+		By("creating the test namespace")
+		ns := &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{Name: "oo-helm-test"},
+		}
+		err := k8sClient.Get(ctx, types.NamespacedName{Name: ns.Name}, ns)
+		if err != nil && errors.IsNotFound(err) {
+			Expect(k8sClient.Create(ctx, ns)).To(Succeed())
+		}
+
+		By("creating an openobserve pod with helm.sh/chart label but no version label and 'latest' image tag")
+		pod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "openobserve-helm-0",
+				Namespace: ns.Name,
+				Labels: map[string]string{
+					"helm.sh/chart": "openobserve-0.60.0",
+				},
+			},
+			Spec: corev1.PodSpec{
+				Containers: []corev1.Container{
+					{Name: "openobserve", Image: "openobserve/openobserve:latest"},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+		pod.Status.Phase = corev1.PodRunning
+		Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
+
+		By("calling checkAddon")
+		r := &ClusterPersonaReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+		addon := r.checkAddon(ctx, "openobserve", ns.Name, "monitoring")
+
+		By("verifying chart version is extracted from helm.sh/chart label")
+		Expect(addon.Installed).To(BeTrue())
+		Expect(addon.Version).To(Equal("0.60.0"))
+
+		By("cleaning up")
+		Expect(k8sClient.Delete(ctx, pod)).To(Succeed())
+		Expect(k8sClient.Delete(ctx, ns)).To(Succeed())
+	})
+
+	It("returns unknown for 'latest' image tag when no labels provide version", func() {
+		By("creating the test namespace")
+		ns := &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{Name: "oo-latest-test"},
+		}
+		err := k8sClient.Get(ctx, types.NamespacedName{Name: ns.Name}, ns)
+		if err != nil && errors.IsNotFound(err) {
+			Expect(k8sClient.Create(ctx, ns)).To(Succeed())
+		}
+
+		By("creating a pod with 'latest' tag and no version labels")
+		pod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "openobserve-nolabel-0",
+				Namespace: ns.Name,
+			},
+			Spec: corev1.PodSpec{
+				Containers: []corev1.Container{
+					{Name: "openobserve", Image: "openobserve/openobserve:latest"},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+		pod.Status.Phase = corev1.PodRunning
+		Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
+
+		By("calling checkAddon")
+		r := &ClusterPersonaReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+		addon := r.checkAddon(ctx, "openobserve", ns.Name, "monitoring")
+
+		By("verifying 'latest' is treated as 'unknown'")
+		Expect(addon.Installed).To(BeTrue())
+		Expect(addon.Version).To(Equal("unknown"))
+
+		By("cleaning up")
+		Expect(k8sClient.Delete(ctx, pod)).To(Succeed())
+		Expect(k8sClient.Delete(ctx, ns)).To(Succeed())
+	})
+})
+
+var _ = Describe("extractVersionFromHelmChartLabel", func() {
+	It("extracts version from openobserve chart", func() {
+		Expect(extractVersionFromHelmChartLabel(map[string]string{"helm.sh/chart": "openobserve-0.60.0"})).To(Equal("0.60.0"))
+	})
+	It("extracts version from ingress-nginx chart", func() {
+		Expect(extractVersionFromHelmChartLabel(map[string]string{"helm.sh/chart": "ingress-nginx-4.11.3"})).To(Equal("4.11.3"))
+	})
+	It("extracts version with v-prefix from cert-manager chart", func() {
+		Expect(extractVersionFromHelmChartLabel(map[string]string{"helm.sh/chart": "cert-manager-v1.16.3"})).To(Equal("v1.16.3"))
+	})
+	It("returns empty for missing label", func() {
+		Expect(extractVersionFromHelmChartLabel(map[string]string{})).To(Equal(""))
+	})
+	It("returns empty for label without version", func() {
+		Expect(extractVersionFromHelmChartLabel(map[string]string{"helm.sh/chart": "no-version-here"})).To(Equal(""))
+	})
+})
+
 var _ = Describe("CNPG Addon Discovery", func() {
 	ctx := context.Background()
 

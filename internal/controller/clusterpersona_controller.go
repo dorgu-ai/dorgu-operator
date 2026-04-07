@@ -81,6 +81,13 @@ func (r *ClusterPersonaReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 	log.Info("Reconciling ClusterPersona", "name", clusterPersona.Spec.Name)
 
+	// Apply selfHealing defaults for CRDs that omit the block entirely.
+	if updated := applySelfHealingDefaults(clusterPersona); updated {
+		if err := r.Update(ctx, clusterPersona); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
 	now := metav1.Now()
 	clusterPersona.Status.Phase = clusterPhaseDiscovering
 	clusterPersona.Status.LastDiscovery = &now
@@ -159,6 +166,33 @@ func (r *ClusterPersonaReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		"apps", clusterPersona.Status.ApplicationCount)
 
 	return ctrl.Result{RequeueAfter: clusterRequeueInterval}, nil
+}
+
+// applySelfHealingDefaults fills in missing selfHealing policy defaults.
+// Returns true if any field was changed.
+func applySelfHealingDefaults(persona *dorguv1.ClusterPersona) bool {
+	changed := false
+
+	if persona.Spec.Policies == nil {
+		persona.Spec.Policies = &dorguv1.ClusterPolicies{}
+		changed = true
+	}
+	if persona.Spec.Policies.SelfHealing == nil {
+		persona.Spec.Policies.SelfHealing = &dorguv1.SelfHealingPolicy{}
+		changed = true
+	}
+
+	sh := persona.Spec.Policies.SelfHealing
+	if sh.Mode == "" {
+		sh.Mode = "observe"
+		changed = true
+	}
+	if sh.TrustLevel == 0 {
+		sh.TrustLevel = 2
+		changed = true
+	}
+
+	return changed
 }
 
 // SetupWithManager sets up the controller with the Manager.
