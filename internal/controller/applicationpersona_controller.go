@@ -36,6 +36,7 @@ import (
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/metrics"
+	"github.com/dorgu-ai/dorgu-operator/internal/websocket"
 )
 
 const (
@@ -63,6 +64,7 @@ type ApplicationPersonaReconciler struct {
 	client.Client
 	Scheme        *runtime.Scheme
 	PrometheusURL string // Optional Prometheus URL for metrics baseline
+	WebSocket     *websocket.Server
 }
 
 // +kubebuilder:rbac:groups=dorgu.io,resources=applicationpersonas,verbs=get;list;watch;create;update;patch;delete

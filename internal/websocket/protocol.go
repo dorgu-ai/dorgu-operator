@@ -109,13 +109,14 @@ type IncidentEvent struct {
 
 // RemediationEvent represents a remediation lifecycle event.
 type RemediationEvent struct {
-	EventType   string `json:"eventType"` // created, approved, applied, completed, rolledback, rejected
+	EventType   string `json:"eventType"` // created, approved, applied, completed, rolledback, rejected, failed
 	Name        string `json:"name"`
 	Namespace   string `json:"namespace"`
 	Phase       string `json:"phase"`
 	ActionType  string `json:"actionType"`
-	Confidence  string `json:"confidence"`
+	Confidence  string `json:"confidence,omitempty"`
 	PersonaName string `json:"personaName"`
+	PersonaKind string `json:"personaKind,omitempty"`
 }
 
 // HealthUpdateEvent represents a periodic health summary broadcast.
@@ -154,6 +155,50 @@ type PersonaSummary struct {
 	Tier      string `json:"tier"`
 	Phase     string `json:"phase"`
 	Health    string `json:"health"`
+}
+
+// ListIncidentsRequest is the request payload for listing incidents.
+type ListIncidentsRequest struct {
+	Namespace string `json:"namespace,omitempty"`
+}
+
+// IncidentSummary is a summary of an IncidentMemory CRD.
+type IncidentSummary struct {
+	Name        string `json:"name"`
+	Namespace   string `json:"namespace"`
+	Severity    string `json:"severity"`
+	Category    string `json:"category"`
+	Signal      string `json:"signal"`
+	Phase       string `json:"phase"`
+	PersonaName string `json:"personaName"`
+	PersonaKind string `json:"personaKind,omitempty"`
+	Summary     string `json:"summary,omitempty"`
+}
+
+// ListIncidentsResponse is the response payload for listing incidents.
+type ListIncidentsResponse struct {
+	Incidents []IncidentSummary `json:"incidents"`
+}
+
+// ListRemediationsRequest is the request payload for listing remediation actions.
+type ListRemediationsRequest struct {
+	Namespace string `json:"namespace,omitempty"`
+}
+
+// RemediationSummary is a summary of a RemediationAction CRD.
+type RemediationSummary struct {
+	Name        string `json:"name"`
+	Namespace   string `json:"namespace"`
+	ActionType  string `json:"actionType"`
+	Phase       string `json:"phase"`
+	Confidence  string `json:"confidence,omitempty"`
+	PersonaName string `json:"personaName"`
+	PersonaKind string `json:"personaKind,omitempty"`
+}
+
+// ListRemediationsResponse is the response payload for listing remediation actions.
+type ListRemediationsResponse struct {
+	Remediations []RemediationSummary `json:"remediations"`
 }
 
 // GetClusterRequest is the request payload for getting cluster info.

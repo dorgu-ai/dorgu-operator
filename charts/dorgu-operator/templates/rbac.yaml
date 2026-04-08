@@ -29,6 +29,24 @@ rules:
   - apiGroups: ["dorgu.io"]
     resources: ["clusterpersonas/finalizers"]
     verbs: ["update"]
+  # IncidentMemory CRD (created by healthcheck reconciler; status updated by incident controller)
+  - apiGroups: ["dorgu.io"]
+    resources: ["incidentmemories"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: ["dorgu.io"]
+    resources: ["incidentmemories/status"]
+    verbs: ["get", "update", "patch"]
+  # RemediationAction CRD (created by proposer; lifecycle managed by remediation controller)
+  - apiGroups: ["dorgu.io"]
+    resources: ["remediationactions"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: ["dorgu.io"]
+    resources: ["remediationactions/status"]
+    verbs: ["get", "update", "patch"]
+  # DorguEvent CRD (event pipeline)
+  - apiGroups: ["dorgu.io"]
+    resources: ["dorguevents"]
+    verbs: ["create", "get", "list", "watch"]
   # Deployments (read-only; for ApplicationPersona validation)
   - apiGroups: ["apps"]
     resources: ["deployments"]

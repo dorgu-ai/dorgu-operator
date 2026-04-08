@@ -26,6 +26,7 @@ import (
 	"github.com/go-logr/logr"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
@@ -211,6 +212,19 @@ func (r *HealthCheckReconciler) processDiagnosis(
 			r.Logger.Error(proposeErr, "failed to propose remediation", "incident", incident.Name)
 		} else if result.Proposed {
 			r.Logger.Info("remediation proposed", "action", result.Action.Name, "incident", incident.Name)
+			// Broadcast remediation creation via WebSocket.
+			if r.WebSocket != nil && result.Action != nil {
+				r.WebSocket.BroadcastRemediation(websocket.RemediationEvent{
+					EventType:   "created",
+					Name:        result.Action.Name,
+					Namespace:   result.Action.Namespace,
+					ActionType:  result.Action.Spec.Action.Type,
+					Phase:       result.Action.Status.Phase,
+					Confidence:  result.Action.Spec.Confidence,
+					PersonaName: result.Action.Spec.PersonaRef.Name,
+					PersonaKind: result.Action.Spec.PersonaRef.Kind,
+				})
+			}
 		} else if result.SkipReason != "" {
 			r.Logger.V(1).Info("remediation skipped", "reason", result.SkipReason, "incident", incident.Name)
 		}
@@ -290,17 +304,18 @@ func (r *HealthCheckReconciler) updateExistingIncident(
 		return fmt.Errorf("updating IncidentMemory %s: %w", im.Name, err)
 	}
 
-	// Re-fetch to get updated ResourceVersion before status update.
-	key := client.ObjectKeyFromObject(im)
-	if err := r.Client.Get(ctx, key, im); err != nil {
-		return fmt.Errorf("re-fetching IncidentMemory %s: %w", im.Name, err)
-	}
-
-	// Update status subresource.
-	im.Status.OccurrenceCount++
-	im.Status.LastOccurrence = &now
-
-	if err := r.Client.Status().Update(ctx, im); err != nil {
+	// Update status subresource with retry-on-conflict. Re-fetching inside
+	// the loop ensures we always carry the latest ResourceVersion even if a
+	// concurrent controller wrote to the object between attempts.
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		if err := r.Client.Get(ctx, client.ObjectKeyFromObject(im), im); err != nil {
+			return err
+		}
+		im.Status.OccurrenceCount++
+		im.Status.LastOccurrence = &now
+		return r.Client.Status().Update(ctx, im)
+	})
+	if err != nil {
 		return fmt.Errorf("updating IncidentMemory status %s: %w", im.Name, err)
 	}
 

@@ -167,10 +167,19 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Create WebSocket server upfront (before health check) so it can be injected
+	// into all controllers that need to broadcast lifecycle events.
+	var wsServer *dorguws.Server
+	if cfg.enableWebSocket {
+		setupLog.Info("Starting WebSocket server", "addr", cfg.webSocketAddr)
+		wsServer = dorguws.NewServer(mgr.GetClient(), cfg.webSocketAddr)
+	}
+
 	if err := (&controller.ApplicationPersonaReconciler{
 		Client:        mgr.GetClient(),
 		Scheme:        mgr.GetScheme(),
 		PrometheusURL: cfg.prometheusURL,
+		WebSocket:     wsServer,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ApplicationPersona")
 		os.Exit(1)
@@ -224,11 +233,9 @@ func main() {
 	// panics with "close of closed channel".
 	signalCtx := ctrl.SetupSignalHandler()
 
-	// Start WebSocket server if enabled (created before health check so it can be injected).
-	var wsServer *dorguws.Server
-	if cfg.enableWebSocket {
-		setupLog.Info("Starting WebSocket server", "addr", cfg.webSocketAddr)
-		wsServer = dorguws.NewServer(mgr.GetClient(), cfg.webSocketAddr)
+	// Start the WebSocket server (already constructed above so it can be
+	// injected into the ApplicationPersonaReconciler before Setup).
+	if wsServer != nil {
 		go func() {
 			if err := wsServer.Start(signalCtx); err != nil {
 				setupLog.Error(err, "WebSocket server error")
@@ -366,11 +373,12 @@ func main() {
 		rollbackHandler := remediation.NewRollback(mgr.GetClient(), setupLog)
 
 		if err := (&controller.RemediationController{
-			Client:   mgr.GetClient(),
-			Executor: executor,
-			Verifier: verifier,
-			Rollback: rollbackHandler,
-			Logger:   setupLog.WithName("remediation-controller"),
+			Client:    mgr.GetClient(),
+			Executor:  executor,
+			Verifier:  verifier,
+			Rollback:  rollbackHandler,
+			Logger:    setupLog.WithName("remediation-controller"),
+			WebSocket: wsServer,
 		}).SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "RemediationAction")
 			os.Exit(1)
