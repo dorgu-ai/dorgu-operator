@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-04-09
+
+### Fixed
+
+- Fix Helm chart ClusterRole missing RBAC rules for `incidentmemories`, `remediationactions`, `dorguevents`, and their `/status` subresources. Operators deployed via Helm were silently unable to create or update incident and remediation CRDs.
+- Fix "object has been modified" status update conflicts in `HealthCheckReconciler` and `RemediationController`. Status updates are now retried with `retry.RetryOnConflict` and a re-fetch before each attempt, preventing concurrent reconciler races from failing incident updates silently.
+- Fix `RemediationAction` lifecycle events not broadcasting over WebSocket. The `RemediationController` now calls `BroadcastRemediation` at each phase transition (created, approved, completed, rolledback, rejected, failed).
+- Fix WebSocket `request` handler returning `unknown_topic` error for `incidents` and `remediations` topics. Clients can now request an initial snapshot of active incidents and pending remediations on connect.
+
 ## [0.5.2] - 2026-04-07
 
 ### Fixed
