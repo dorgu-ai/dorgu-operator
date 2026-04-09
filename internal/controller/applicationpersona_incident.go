@@ -26,9 +26,11 @@ import (
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
+	"github.com/dorgu-ai/dorgu-operator/internal/websocket"
 )
 
 // detectAndRecordOOMIncidents scans pods for OOM signals and creates/updates
@@ -102,13 +104,17 @@ func (r *ApplicationPersonaReconciler) detectAndRecordOOMIncidents(
 		if updateErr := r.Update(ctx, existing); updateErr != nil {
 			return fmt.Errorf("updating IncidentMemory: %w", updateErr)
 		}
-		// Re-fetch for status update.
-		if getErr := r.Get(ctx, client.ObjectKeyFromObject(existing), existing); getErr != nil {
-			return fmt.Errorf("re-fetching IncidentMemory: %w", getErr)
-		}
-		existing.Status.OccurrenceCount++
-		existing.Status.LastOccurrence = &now
-		if statusErr := r.Status().Update(ctx, existing); statusErr != nil {
+		// Update status with retry-on-conflict. Re-fetching inside the loop
+		// picks up any concurrent ResourceVersion bump from another controller.
+		statusErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			if getErr := r.Get(ctx, client.ObjectKeyFromObject(existing), existing); getErr != nil {
+				return getErr
+			}
+			existing.Status.OccurrenceCount++
+			existing.Status.LastOccurrence = &now
+			return r.Status().Update(ctx, existing)
+		})
+		if statusErr != nil {
 			return fmt.Errorf("updating IncidentMemory status: %w", statusErr)
 		}
 		return nil
@@ -249,6 +255,20 @@ func (r *ApplicationPersonaReconciler) proposeMemoryRemediation(
 	ra.Status.Phase = "Pending"
 	if err := r.Status().Update(ctx, ra); err != nil {
 		return fmt.Errorf("setting RemediationAction status: %w", err)
+	}
+
+	// Broadcast remediation creation via WebSocket.
+	if r.WebSocket != nil {
+		r.WebSocket.BroadcastRemediation(websocket.RemediationEvent{
+			EventType:   "created",
+			Name:        ra.Name,
+			Namespace:   ra.Namespace,
+			ActionType:  ra.Spec.Action.Type,
+			Phase:       ra.Status.Phase,
+			Confidence:  ra.Spec.Confidence,
+			PersonaName: ra.Spec.PersonaRef.Name,
+			PersonaKind: ra.Spec.PersonaRef.Kind,
+		})
 	}
 
 	return nil

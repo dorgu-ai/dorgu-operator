@@ -23,11 +23,13 @@ import (
 
 	"github.com/go-logr/logr"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation"
+	"github.com/dorgu-ai/dorgu-operator/internal/websocket"
 )
 
 // RemediationAction phase constants.
@@ -65,10 +67,11 @@ const (
 // +kubebuilder:rbac:groups=dorgu.io,resources=incidentmemories/status,verbs=get;update;patch
 type RemediationController struct {
 	client.Client
-	Executor *remediation.Executor
-	Verifier *remediation.Verifier
-	Rollback *remediation.Rollback
-	Logger   logr.Logger
+	Executor  *remediation.Executor
+	Verifier  *remediation.Verifier
+	Rollback  *remediation.Rollback
+	Logger    logr.Logger
+	WebSocket *websocket.Server
 }
 
 // Reconcile drives the RemediationAction through its lifecycle state machine.
@@ -123,6 +126,8 @@ func (r *RemediationController) handleApproved(ctx context.Context, logger logr.
 	if err := r.Status().Update(ctx, action); err != nil {
 		return ctrl.Result{}, fmt.Errorf("updating status to Applying: %w", err)
 	}
+
+	r.broadcastRemediation(action, "approved")
 
 	logger.Info("patch applied, waiting for verification window")
 
@@ -192,6 +197,8 @@ func (r *RemediationController) handleVerificationHealthy(ctx context.Context, l
 		return ctrl.Result{}, fmt.Errorf("updating status to Completed: %w", err)
 	}
 
+	r.broadcastRemediation(action, "completed")
+
 	// Update incident with resolution info.
 	if err := r.updateIncidentResolution(ctx, action, "resolved"); err != nil {
 		logger.Error(err, "failed to update incident resolution")
@@ -216,6 +223,8 @@ func (r *RemediationController) handleVerificationDegraded(ctx context.Context, 
 	if err := r.Status().Update(ctx, action); err != nil {
 		return ctrl.Result{}, fmt.Errorf("updating status to RolledBack: %w", err)
 	}
+
+	r.broadcastRemediation(action, "rolledback")
 
 	// Update incident with rollback info.
 	if err := r.updateIncidentResolution(ctx, action, "rollback"); err != nil {
@@ -255,6 +264,8 @@ func (r *RemediationController) transitionToFailed(ctx context.Context, action *
 	if err := r.Status().Update(ctx, action); err != nil {
 		return fmt.Errorf("updating status to Failed: %w", err)
 	}
+
+	r.broadcastRemediation(action, "failed")
 
 	// Update incident with failure info.
 	if err := r.updateIncidentResolution(ctx, action, "failed"); err != nil {
@@ -299,20 +310,33 @@ func (r *RemediationController) updateIncidentResolution(ctx context.Context, ac
 		Duration:  duration,
 	}
 
-	if err := r.Update(ctx, &incident); err != nil {
-		return fmt.Errorf("updating IncidentMemory spec: %w", err)
-	}
-
-	// If resolved, update incident status phase.
+	// Set the resolved phase label on the metadata here (before the spec
+	// update) so it lands on the same write — labels are metadata, so a
+	// Status().Update() below cannot persist them.
 	if outcome == "resolved" {
-		incident.Status.Phase = PhaseResolved
 		if incident.Labels == nil {
 			incident.Labels = make(map[string]string)
 		}
 		incident.Labels[LabelPhase] = PhaseResolved
+	}
 
-		if err := r.Status().Update(ctx, &incident); err != nil {
-			return fmt.Errorf("updating IncidentMemory status: %w", err)
+	if err := r.Update(ctx, &incident); err != nil {
+		return fmt.Errorf("updating IncidentMemory spec: %w", err)
+	}
+
+	// If resolved, update incident status phase. Re-fetch inside the retry
+	// loop so we pick up the new ResourceVersion after our own spec update
+	// (and any concurrent writes from the healthcheck reconciler).
+	if outcome == "resolved" {
+		statusErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			if err := r.Get(ctx, key, &incident); err != nil {
+				return err
+			}
+			incident.Status.Phase = PhaseResolved
+			return r.Status().Update(ctx, &incident)
+		})
+		if statusErr != nil {
+			return fmt.Errorf("updating IncidentMemory status: %w", statusErr)
 		}
 	}
 
@@ -345,4 +369,22 @@ func (r *RemediationController) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&dorguv1.RemediationAction{}).
 		Complete(r)
+}
+
+// broadcastRemediation emits a WebSocket event describing a RemediationAction
+// phase transition. Safe to call with a nil WebSocket server.
+func (r *RemediationController) broadcastRemediation(action *dorguv1.RemediationAction, eventType string) {
+	if r.WebSocket == nil {
+		return
+	}
+	r.WebSocket.BroadcastRemediation(websocket.RemediationEvent{
+		EventType:   eventType,
+		Name:        action.Name,
+		Namespace:   action.Namespace,
+		ActionType:  action.Spec.Action.Type,
+		Phase:       action.Status.Phase,
+		Confidence:  action.Spec.Confidence,
+		PersonaName: action.Spec.PersonaRef.Name,
+		PersonaKind: action.Spec.PersonaRef.Kind,
+	})
 }

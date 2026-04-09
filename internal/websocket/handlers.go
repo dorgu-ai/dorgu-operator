@@ -82,6 +82,10 @@ func (c *Client) handleRequest(msg *Message) {
 		c.handleListPersonas(ctx, msg)
 	case TopicCluster:
 		c.handleGetCluster(ctx, msg)
+	case TopicIncidents:
+		c.handleListIncidents(ctx, msg)
+	case TopicRemediations:
+		c.handleListRemediations(ctx, msg)
 	default:
 		c.sendError("unknown_topic", fmt.Sprintf("Unknown topic: %s", msg.Topic))
 	}
@@ -189,6 +193,96 @@ func (c *Client) handleGetCluster(ctx context.Context, msg *Message) {
 	}
 
 	response, _ := NewMessage(MessageTypeResponse, TopicCluster, resp)
+	response.RequestID = msg.RequestID
+	c.send <- response
+}
+
+// handleListIncidents handles listing IncidentMemory CRDs.
+func (c *Client) handleListIncidents(ctx context.Context, msg *Message) {
+	var req ListIncidentsRequest
+	if msg.Payload != nil {
+		if err := json.Unmarshal(msg.Payload, &req); err != nil {
+			c.sendError("invalid_payload", fmt.Sprintf("failed to parse incidents request: %v", err))
+			return
+		}
+	}
+
+	list := &dorguv1.IncidentMemoryList{}
+	opts := []client.ListOption{}
+	if req.Namespace != "" {
+		opts = append(opts, client.InNamespace(req.Namespace))
+	}
+
+	if err := c.server.client.List(ctx, list, opts...); err != nil {
+		c.sendError("list_failed", err.Error())
+		return
+	}
+
+	summaries := make([]IncidentSummary, 0, len(list.Items))
+	for i := range list.Items {
+		im := &list.Items[i]
+		summary := ""
+		if im.Spec.RootCause != nil {
+			summary = im.Spec.RootCause.Summary
+		}
+		summaries = append(summaries, IncidentSummary{
+			Name:        im.Name,
+			Namespace:   im.Namespace,
+			Severity:    im.Spec.Severity,
+			Category:    im.Spec.Category,
+			Signal:      im.Spec.Detection.Signal,
+			Phase:       im.Status.Phase,
+			PersonaName: im.Spec.PersonaRef.Name,
+			PersonaKind: im.Spec.PersonaRef.Kind,
+			Summary:     summary,
+		})
+	}
+
+	response, _ := NewMessage(MessageTypeResponse, TopicIncidents, ListIncidentsResponse{
+		Incidents: summaries,
+	})
+	response.RequestID = msg.RequestID
+	c.send <- response
+}
+
+// handleListRemediations handles listing RemediationAction CRDs.
+func (c *Client) handleListRemediations(ctx context.Context, msg *Message) {
+	var req ListRemediationsRequest
+	if msg.Payload != nil {
+		if err := json.Unmarshal(msg.Payload, &req); err != nil {
+			c.sendError("invalid_payload", fmt.Sprintf("failed to parse remediations request: %v", err))
+			return
+		}
+	}
+
+	list := &dorguv1.RemediationActionList{}
+	opts := []client.ListOption{}
+	if req.Namespace != "" {
+		opts = append(opts, client.InNamespace(req.Namespace))
+	}
+
+	if err := c.server.client.List(ctx, list, opts...); err != nil {
+		c.sendError("list_failed", err.Error())
+		return
+	}
+
+	summaries := make([]RemediationSummary, 0, len(list.Items))
+	for i := range list.Items {
+		ra := &list.Items[i]
+		summaries = append(summaries, RemediationSummary{
+			Name:        ra.Name,
+			Namespace:   ra.Namespace,
+			ActionType:  ra.Spec.Action.Type,
+			Phase:       ra.Status.Phase,
+			Confidence:  ra.Spec.Confidence,
+			PersonaName: ra.Spec.PersonaRef.Name,
+			PersonaKind: ra.Spec.PersonaRef.Kind,
+		})
+	}
+
+	response, _ := NewMessage(MessageTypeResponse, TopicRemediations, ListRemediationsResponse{
+		Remediations: summaries,
+	})
 	response.RequestID = msg.RequestID
 	c.send <- response
 }
