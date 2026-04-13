@@ -58,6 +58,22 @@ websocket:
     type: ClusterIP
     port: 9090
 
+# Health check reconciler — enables Phase 2a/2b detection, diagnosis, and remediation
+healthCheck:
+  enabled: false
+  interval: 60s
+
+# Metrics-server integration for container-level CPU/memory detection
+metricsServer:
+  enabled: true
+
+# LLM for AI-enhanced diagnosis (Phase 2b)
+# Prefer env vars (ANTHROPIC_API_KEY / GEMINI_API_KEY) over apiKey for production
+llm:
+  provider: ""  # "claude" or "gemini"; leave empty to disable AI diagnosis
+  apiKey: ""    # overrides env var; use a K8s Secret + envFrom for production
+  model: ""     # leave empty to use the provider default model
+
 resources:
   limits:
     cpu: 500m
