@@ -55,6 +55,22 @@ spec:
             - --enable-websocket=true
             - --websocket-addr=:{{ .Values.websocket.port }}
             {{- end }}
+            {{- if .Values.healthCheck.enabled }}
+            - --enable-health-check=true
+            - --health-check-interval={{ .Values.healthCheck.interval }}
+            {{- end }}
+            {{- if not .Values.metricsServer.enabled }}
+            - --enable-metrics-server=false
+            {{- end }}
+            {{- if .Values.llm.provider }}
+            - --llm-provider={{ .Values.llm.provider }}
+            {{- end }}
+            {{- if .Values.llm.apiKey }}
+            - --llm-api-key={{ .Values.llm.apiKey }}
+            {{- end }}
+            {{- if .Values.llm.model }}
+            - --llm-model={{ .Values.llm.model }}
+            {{- end }}
           ports:
             - name: healthz
               containerPort: 8081
