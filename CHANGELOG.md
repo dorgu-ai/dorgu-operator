@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-04-13
+
+### Added
+
+- **Helm chart: Phase 2a/2b values** — `healthCheck.enabled` and `healthCheck.interval` now expose the `--enable-health-check` and `--health-check-interval` operator flags via Helm. Previously, detection, diagnosis, and remediation were inaccessible through standard `helm install`.
+- **Helm chart: metrics-server toggle** — `metricsServer.enabled` (default true) controls `--enable-metrics-server` flag.
+- **Helm chart: LLM / AI diagnosis values** — `llm.provider`, `llm.apiKey`, and `llm.model` expose BYOK AI-enhanced diagnosis (Claude or Gemini) without requiring raw flag overrides.
+- Helm chart version bumped to `0.6.0` to align with operator release.
+
 ## [0.5.3] - 2026-04-09
 
 ### Fixed
