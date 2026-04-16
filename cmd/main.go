@@ -243,6 +243,18 @@ func main() {
 		}()
 	}
 
+	// Auto-create ClusterPersona on startup if none exists (ArgoCD-style bootstrap).
+	if cfg.autoCreateClusterPersona {
+		bootstrap := &controller.ClusterPersonaBootstrap{
+			Client: mgr.GetClient(),
+			Log:    setupLog.WithName("bootstrap"),
+		}
+		if err := mgr.Add(bootstrap); err != nil {
+			setupLog.Error(err, "unable to add ClusterPersona bootstrap runnable")
+			os.Exit(1)
+		}
+	}
+
 	// Phase 2a: Health check reconciler + event pipeline + incident controller.
 	// All components gated behind --enable-health-check flag.
 	if cfg.enableHealthCheck {
