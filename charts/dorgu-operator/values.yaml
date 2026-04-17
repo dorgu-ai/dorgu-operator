@@ -30,6 +30,12 @@ validation:
 leaderElection:
   enabled: true
 
+# Operator bootstrap behavior
+operator:
+  # Auto-create a default ClusterPersona named 'dorgu-cluster' on startup if none exists.
+  # Set to false if you manage ClusterPersonas via GitOps and do not want operator interference.
+  autoCreateClusterPersona: true
+
 # Metrics
 metrics:
   enabled: true

@@ -70,6 +70,9 @@ type operatorConfig struct {
 	llmAPIKey   string // API key (overrides env vars)
 	llmModel    string // model override
 
+	// Bootstrap
+	autoCreateClusterPersona bool
+
 	// Logging
 	zapOpts zap.Options
 }
@@ -121,6 +124,8 @@ func parseFlags() operatorConfig {
 		"API key for the LLM provider (overrides ANTHROPIC_API_KEY / GEMINI_API_KEY env vars).")
 	flag.StringVar(&cfg.llmModel, "llm-model", "",
 		"Override the default model for the LLM provider.")
+	flag.BoolVar(&cfg.autoCreateClusterPersona, "auto-create-cluster-persona", true,
+		"Auto-create a default ClusterPersona named 'dorgu-cluster' if none exists on startup.")
 
 	cfg.zapOpts = zap.Options{Development: true}
 	cfg.zapOpts.BindFlags(flag.CommandLine)

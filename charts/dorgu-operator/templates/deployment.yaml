@@ -71,6 +71,9 @@ spec:
             {{- if .Values.llm.model }}
             - --llm-model={{ .Values.llm.model }}
             {{- end }}
+            {{- if not .Values.operator.autoCreateClusterPersona }}
+            - --auto-create-cluster-persona=false
+            {{- end }}
           ports:
             - name: healthz
               containerPort: 8081
