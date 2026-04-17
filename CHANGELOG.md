@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-04-17
+
+### Added
+
+- Operator now auto-creates a default ClusterPersona named `dorgu-cluster` on startup if none exists. Gated behind `--auto-create-cluster-persona` (default `true`); disable with `--set operator.autoCreateClusterPersona=false` for GitOps-managed clusters. The persona carries `dorgu.io/bootstrap: "true"` and `dorgu.io/cluster-uid` annotations for multi-cluster traceability.
+
+### Fixed
+
+- Remediation skip reasons are now logged at INFO level (previously logged at verbose level, invisible at default operator log level).
+- AI diagnosis can no longer suppress `resource-adjustment` proposals by returning a non-proposable action (e.g., `investigate`). The guard allows the AI to freely change non-proposable base actions, but blocks downgrades from proposable to non-proposable.
+
 ## [0.6.0] - 2026-04-13
 
 ### Added
