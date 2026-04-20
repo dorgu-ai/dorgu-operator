@@ -94,6 +94,16 @@ func (p *Proposer) proposeResourceAdjustment(ctx context.Context, diag diagnosis
 		return nil, fmt.Errorf("getting application persona: %w", err)
 	}
 
+	// Never propose remediations for auto-discovered (unmanaged) personas.
+	// nil is treated as unmanaged — the +kubebuilder:default=true only applies when going
+	// through the API server admission webhook; programmatically created personas may have nil.
+	// Users must promote via `dorgu persona discover` to enable remediation.
+	if persona.Spec.Managed == nil || !*persona.Spec.Managed {
+		return &ProposalResult{
+			SkipReason: "persona is unmanaged (spec.managed=false); promote via dorgu persona discover",
+		}, nil
+	}
+
 	if persona.Spec.Resources == nil || persona.Spec.Resources.Limits == nil {
 		return &ProposalResult{SkipReason: "persona has no resource limits configured"}, nil
 	}

@@ -20,6 +20,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// PhaseUnmanaged is the status phase for auto-discovered personas whose source workload
+// has been deleted or that have not yet been promoted via `dorgu persona discover`.
+const PhaseUnmanaged = "Unmanaged"
+
 // ============================================================================
 // Spec types (owned by CLI / GitOps)
 // ============================================================================
@@ -76,6 +80,14 @@ type ApplicationPersonaSpec struct {
 	// policies defines security, deployment, and maintenance rules.
 	// +optional
 	Policies *PoliciesSpec `json:"policies,omitempty"`
+
+	// managed indicates whether this persona is actively managed by Dorgu.
+	// Auto-discovered personas are created with managed: false.
+	// Use `dorgu persona discover` to promote to managed: true, which enables
+	// remediation proposals.
+	// +kubebuilder:default=true
+	// +optional
+	Managed *bool `json:"managed,omitempty"`
 }
 
 // TechnicalProfile describes the application's tech stack.
@@ -260,7 +272,7 @@ type MaintenancePolicy struct {
 // ApplicationPersonaStatus defines the observed state of ApplicationPersona.
 type ApplicationPersonaStatus struct {
 	// phase summarises the overall persona lifecycle.
-	// +kubebuilder:validation:Enum=Pending;Active;Degraded;Failed
+	// +kubebuilder:validation:Enum=Pending;Active;Degraded;Failed;Unmanaged
 	// +optional
 	Phase string `json:"phase,omitempty"`
 

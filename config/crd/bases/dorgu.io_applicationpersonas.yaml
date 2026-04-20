@@ -95,6 +95,14 @@ spec:
                     default: 30s
                     type: string
                 type: object
+              managed:
+                default: true
+                description: |-
+                  managed indicates whether this persona is actively managed by Dorgu.
+                  Auto-discovered personas are created with managed: false.
+                  Use `dorgu persona discover` to promote to managed: true, which enables
+                  remediation proposals.
+                type: boolean
               name:
                 description: name is the application name.
                 type: string
@@ -520,6 +528,7 @@ spec:
                 - Active
                 - Degraded
                 - Failed
+                - Unmanaged
                 type: string
               recommendations:
                 description: recommendations suggests improvements.

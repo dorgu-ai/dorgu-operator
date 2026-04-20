@@ -36,6 +36,24 @@ operator:
   # Set to false if you manage ClusterPersonas via GitOps and do not want operator interference.
   autoCreateClusterPersona: true
 
+# Application discovery: auto-creates skeleton personas for unmanaged workloads.
+# Incidents are detected for auto-discovered personas; remediations are only proposed
+# after explicit promotion via `dorgu persona discover`.
+discovery:
+  enabled: true
+  excludeNamespaces:
+    - kube-system
+    - kube-public
+    - kube-node-lease
+    - dorgu-system
+    - monitoring
+    - cert-manager
+    - ingress-nginx
+    - argocd
+    - flux-system
+    - cattle-system
+    - local-path-storage
+
 # Metrics
 metrics:
   enabled: true

@@ -255,6 +255,25 @@ func main() {
 		}
 	}
 
+	// Phase 2c: App discovery — auto-create skeleton ApplicationPersonas for unmanaged workloads.
+	if cfg.enableDiscovery {
+		excludeNS := make(map[string]bool, len(cfg.discoveryExcludeNamespaces))
+		for _, ns := range cfg.discoveryExcludeNamespaces {
+			excludeNS[ns] = true
+		}
+		if err = (&controller.AppDiscoveryReconciler{
+			Client:            mgr.GetClient(),
+			Scheme:            mgr.GetScheme(),
+			Logger:            ctrl.Log.WithName("app-discovery"),
+			ExcludeNamespaces: excludeNS,
+		}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "AppDiscovery")
+			os.Exit(1)
+		}
+		setupLog.Info("AppDiscovery controller enabled",
+			"excludeNamespaces", cfg.discoveryExcludeNamespaces)
+	}
+
 	// Phase 2a: Health check reconciler + event pipeline + incident controller.
 	// All components gated behind --enable-health-check flag.
 	if cfg.enableHealthCheck {

@@ -74,6 +74,14 @@ spec:
             {{- if not .Values.operator.autoCreateClusterPersona }}
             - --auto-create-cluster-persona=false
             {{- end }}
+            {{- if not .Values.discovery.enabled }}
+            - --enable-discovery=false
+            {{- end }}
+            {{- if .Values.discovery.excludeNamespaces }}
+            {{- range .Values.discovery.excludeNamespaces }}
+            - --discovery-exclude-namespaces={{ . }}
+            {{- end }}
+            {{- end }}
           ports:
             - name: healthz
               containerPort: 8081

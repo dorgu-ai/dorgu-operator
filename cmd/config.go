@@ -18,10 +18,24 @@ package main
 
 import (
 	"flag"
+	"strings"
 	"time"
 
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 )
+
+// stringSliceFlag implements flag.Value for a repeated string flag.
+// Each --flag=val invocation appends to the slice.
+type stringSliceFlag []string
+
+func (s *stringSliceFlag) String() string {
+	return strings.Join(*s, ",")
+}
+
+func (s *stringSliceFlag) Set(val string) error {
+	*s = append(*s, val)
+	return nil
+}
 
 // operatorConfig holds all operator configuration parsed from command-line flags.
 type operatorConfig struct {
@@ -72,6 +86,10 @@ type operatorConfig struct {
 
 	// Bootstrap
 	autoCreateClusterPersona bool
+
+	// Discovery
+	enableDiscovery            bool
+	discoveryExcludeNamespaces []string
 
 	// Logging
 	zapOpts zap.Options
@@ -127,9 +145,23 @@ func parseFlags() operatorConfig {
 	flag.BoolVar(&cfg.autoCreateClusterPersona, "auto-create-cluster-persona", true,
 		"Auto-create a default ClusterPersona named 'dorgu-cluster' if none exists on startup.")
 
+	// Discovery flags
+	flag.BoolVar(&cfg.enableDiscovery, "enable-discovery", true,
+		"Auto-create skeleton ApplicationPersonas for unmanaged Deployments and StatefulSets.")
+	defaultExcludeNS := stringSliceFlag{
+		"kube-system", "kube-public", "kube-node-lease",
+		"dorgu-system", "monitoring", "cert-manager",
+		"ingress-nginx", "argocd", "flux-system",
+		"cattle-system", "local-path-storage",
+	}
+	excludeNSFlag := defaultExcludeNS
+	flag.Var(&excludeNSFlag, "discovery-exclude-namespaces",
+		"Namespaces excluded from auto-discovery (repeatable).")
+
 	cfg.zapOpts = zap.Options{Development: true}
 	cfg.zapOpts.BindFlags(flag.CommandLine)
 	flag.Parse()
 
+	cfg.discoveryExcludeNamespaces = []string(excludeNSFlag)
 	return cfg
 }

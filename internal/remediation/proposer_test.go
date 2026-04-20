@@ -34,6 +34,8 @@ import (
 	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
 )
 
+func boolPtr(b bool) *bool { return &b }
+
 func newTestPersona(namespace, name, memoryLimit, cpuLimit string) *dorguv1.ApplicationPersona {
 	return &dorguv1.ApplicationPersona{
 		ObjectMeta: metav1.ObjectMeta{
@@ -41,7 +43,8 @@ func newTestPersona(namespace, name, memoryLimit, cpuLimit string) *dorguv1.Appl
 			Namespace: namespace,
 		},
 		Spec: dorguv1.ApplicationPersonaSpec{
-			Name: name,
+			Name:    name,
+			Managed: boolPtr(true), // explicitly managed so proposer guard does not skip
 			Resources: &dorguv1.ResourceConstraints{
 				Limits: &dorguv1.ResourceValues{
 					Memory: memoryLimit,
@@ -503,6 +506,48 @@ func TestProposer_RollbackSpec(t *testing.T) {
 	assert.True(t, result.Action.Spec.Rollback.Enabled)
 	assert.Equal(t, int32(1), result.Action.Spec.Rollback.MaxRetries)
 	assert.NotNil(t, result.Action.Spec.Rollback.HealthCheckAfter)
+}
+
+func TestProposerSkipsUnmanagedPersona(t *testing.T) {
+	scheme := newTestScheme()
+	managed := false
+	persona := &dorguv1.ApplicationPersona{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "my-app",
+			Namespace: "default",
+		},
+		Spec: dorguv1.ApplicationPersonaSpec{
+			Name:    "my-app",
+			Type:    "worker",
+			Managed: &managed,
+			Resources: &dorguv1.ResourceConstraints{
+				Limits: &dorguv1.ResourceValues{
+					Memory: "256Mi",
+					CPU:    "500m",
+				},
+			},
+		},
+	}
+	incident := newTestIncident("default", "oom-unmanaged", "my-app", "OOMKilled")
+
+	c := fake.NewClientBuilder().WithScheme(scheme).
+		WithRuntimeObjects(persona).
+		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+
+	safety := NewSafetyChecker(c, testLogger())
+	proposer := NewProposer(c, safety, testLogger())
+
+	diag := newOOMDiagnosis("default", "my-app", detection.SeverityCritical)
+	result, err := proposer.Propose(context.Background(), diag, incident)
+
+	require.NoError(t, err)
+	assert.False(t, result.Proposed, "proposer must skip unmanaged personas")
+	assert.Contains(t, result.SkipReason, "unmanaged")
+
+	// Verify no RemediationAction was created.
+	raList := &dorguv1.RemediationActionList{}
+	require.NoError(t, c.List(context.Background(), raList))
+	assert.Empty(t, raList.Items, "no RemediationAction should be created for unmanaged personas")
 }
 
 func TestGenerateActionName_Format(t *testing.T) {
