@@ -1,0 +1,28 @@
+# Local Helm overrides for AI config. Copy to values-local.yaml (gitignored) and fill in.
+# DO NOT COMMIT real keys — only this *.example.yaml template is tracked in git.
+#
+# Install with:
+#   helm upgrade --install dorgu-operator ./charts/dorgu-operator \
+#     -n dorgu-system --create-namespace \
+#     -f charts/dorgu-operator/values.yaml \
+#     -f values-local.yaml
+#
+# Preferred (prod): reference a Secret created out-of-band so the raw key never
+# touches Helm values / `helm get values`:
+#   kubectl create secret generic dorgu-llm \
+#     --from-literal=ANTHROPIC_API_KEY=sk-ant-... -n dorgu-system
+llm:
+  provider: claude
+  existingSecret: dorgu-llm
+  # existingSecretKey: ANTHROPIC_API_KEY  # default
+aiRemediation:
+  enabled: true
+
+# Dev-only alternative (chart creates the Secret from the raw key — the key is then
+# visible to `helm get values`; use existingSecret for anything real):
+# llm:
+#   provider: claude
+#   apiKey: "sk-ant-REPLACE_ME"
+#   createSecret: true
+# aiRemediation:
+#   enabled: true

@@ -30,7 +30,7 @@ dorgu watch personas
 | **ApplicationPersona** | Namespaced | App identity and requirements: resources, scaling, health probes, security, ownership. Status includes validation, health, and active incident count. |
 | **ClusterPersona** | Cluster | Cluster identity and state: nodes, add-ons, capacity, self-healing policy (mode, trust level, rollback config). |
 | **IncidentMemory** | Namespaced | Detected incidents: signal, root cause, confidence score, affected resources, resolution tracking. Correlates to Personas. |
-| **RemediationAction** | Namespaced | Remediation proposals: YAML diff, approval workflow, rollback spec, trust level requirements. (Execution in Phase 2b.) |
+| **RemediationAction** | Namespaced | Remediation proposals: YAML diff, approval workflow, rollback spec, trust level requirements. Execution is implemented — approval → patch Persona → verify health → rollback on failure. |
 | **DorguEvent** | Namespaced | Classified cluster events with severity, category, persona correlation, and TTL-based cleanup. |
 
 ## Getting Started
@@ -44,7 +44,7 @@ Go 1.21+ (for building), Helm 3.x, kubectl, and a Kubernetes cluster (1.11+).
 ```bash
 # Install the operator
 helm install dorgu-operator oci://ghcr.io/dorgu-ai/dorgu-operator-charts/dorgu-operator \
-  --version 0.4.0 \
+  --version 0.6.0 \
   --namespace dorgu-system \
   --create-namespace
 ```
@@ -53,7 +53,7 @@ helm install dorgu-operator oci://ghcr.io/dorgu-ai/dorgu-operator-charts/dorgu-o
 
 ```bash
 helm install dorgu-operator oci://ghcr.io/dorgu-ai/dorgu-operator-charts/dorgu-operator \
-  --version 0.4.0 \
+  --version 0.6.0 \
   --namespace dorgu-system \
   --create-namespace \
   --set healthCheck.enabled=true \
@@ -64,7 +64,7 @@ helm install dorgu-operator oci://ghcr.io/dorgu-ai/dorgu-operator-charts/dorgu-o
 
 ```bash
 helm install dorgu-operator oci://ghcr.io/dorgu-ai/dorgu-operator-charts/dorgu-operator \
-  --version 0.4.0 \
+  --version 0.6.0 \
   --namespace dorgu-system \
   --create-namespace \
   --set healthCheck.enabled=true \
@@ -77,6 +77,44 @@ helm install dorgu-operator oci://ghcr.io/dorgu-ai/dorgu-operator-charts/dorgu-o
 ```
 
 **Public installs:** Image and Helm chart are published to GHCR on release. Set package visibility to **Public** in GitHub (package settings) so `helm install oci://...` works without login.
+
+### AI configuration (Anthropic)
+
+AI-enhanced diagnosis and AI-generated ordered remediation plans use Anthropic (Claude). The API key is injected as the `ANTHROPIC_API_KEY` env var from a Kubernetes Secret — it is **never** passed as an inline pod-spec arg (so it does not leak into `kubectl get pod -o yaml` or `helm get values`).
+
+**Never commit a real key.** Copy the template to a gitignored `values-local.yaml` and fill it in:
+
+```bash
+cp charts/dorgu-operator/values-local.example.yaml values-local.yaml   # values-local.yaml is gitignored
+```
+
+**Preferred (production)** — create the Secret out-of-band and reference it; the key never touches Helm values:
+
+```bash
+kubectl create secret generic dorgu-llm \
+  --from-literal=ANTHROPIC_API_KEY=sk-ant-... -n dorgu-system
+```
+
+```yaml
+# values-local.yaml
+llm:
+  provider: claude
+  existingSecret: dorgu-llm
+  # existingSecretKey: ANTHROPIC_API_KEY  # default
+aiRemediation:
+  enabled: true
+```
+
+Then install/upgrade with the override file last so it wins:
+
+```bash
+helm upgrade --install dorgu-operator ./charts/dorgu-operator \
+  -n dorgu-system --create-namespace \
+  -f charts/dorgu-operator/values.yaml \
+  -f values-local.yaml
+```
+
+**Dev alternative** — let the chart create the Secret from a raw key (set `llm.apiKey` + `llm.createSecret=true`). Note the raw key is then visible to `helm get values`; use `existingSecret` for anything real.
 
 ### Configuration Options
 
@@ -92,6 +130,13 @@ helm install dorgu-operator oci://ghcr.io/dorgu-ai/dorgu-operator-charts/dorgu-o
 | `prometheus.url` | Prometheus server URL | `""` |
 | `websocket.enabled` | Enable WebSocket server for CLI | `false` |
 | `websocket.port` | WebSocket server port | `9090` |
+| `llm.provider` | AI provider; `claude` enables Anthropic AI, empty disables it | `""` |
+| `llm.model` | Override the default model (empty = `claude-sonnet-4-6`) | `""` |
+| `llm.existingSecret` | Name of a pre-created Secret holding the API key (**preferred**) | `""` |
+| `llm.existingSecretKey` | Key within the Secret | `ANTHROPIC_API_KEY` |
+| `llm.apiKey` | **Dev only:** raw key; requires `createSecret=true` to be stored in a Secret | `""` |
+| `llm.createSecret` | When true + `apiKey` set, the chart creates a Secret for the key | `false` |
+| `aiRemediation.enabled` | Enable AI-generated ordered remediation plans (needs `llm.provider=claude`) | `false` |
 
 ### Deploy from Source
 

@@ -78,12 +78,28 @@ healthCheck:
 metricsServer:
   enabled: true
 
-# LLM for AI-enhanced diagnosis (Phase 2b)
-# Prefer env vars (ANTHROPIC_API_KEY / GEMINI_API_KEY) over apiKey for production
+# AI provider config (Anthropic only for v1). Bedrock/IRSA is a future workstream.
+# The API key is injected as the ANTHROPIC_API_KEY env var from a Kubernetes Secret —
+# never as an inline pod-spec arg.
+#   Production: create a Secret out-of-band and set llm.existingSecret (PREFERRED — the
+#               key never appears in `helm get values` / `helm template`).
+#   Dev:        set llm.apiKey + llm.createSecret=true (chart stores it in a Secret).
+# NEVER commit a real key — use values-local.yaml (gitignored). See values-local.example.yaml.
 llm:
-  provider: ""  # "claude" or "gemini"; leave empty to disable AI diagnosis
-  apiKey: ""    # overrides env var; use a K8s Secret + envFrom for production
-  model: ""     # leave empty to use the provider default model
+  provider: ""            # "claude" to enable Anthropic AI; empty disables AI
+  model: ""               # empty = provider default (claude-sonnet-4-6)
+  existingSecret: ""      # name of a pre-created Secret holding the API key (PREFERRED)
+  existingSecretKey: "ANTHROPIC_API_KEY"  # key within the Secret
+  apiKey: ""              # DEV ONLY: raw key; requires createSecret=true to be stored in a Secret
+  createSecret: false     # when true + apiKey set, chart creates a Secret for the key
+
+# AI-generated ordered remediation (WS1). When enabled + llm.provider set, the planner
+# produces ordered Steps[] on RemediationAction. Deterministic rules remain the floor.
+# Maps to the operator's --enable-ai-remediation flag; only takes effect when llm.provider
+# is set (the flag is omitted otherwise, so the operator default applies but AI stays off
+# without a provider/key).
+aiRemediation:
+  enabled: false          # maps to --enable-ai-remediation
 
 resources:
   limits:
