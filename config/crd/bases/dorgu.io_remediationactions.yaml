@@ -23,6 +23,9 @@ spec:
     - jsonPath: .spec.action.type
       name: Type
       type: string
+    - jsonPath: .spec.planSource
+      name: Plan
+      type: string
     - jsonPath: .spec.confidence
       name: Confidence
       type: string
@@ -57,7 +60,9 @@ spec:
             description: Spec defines the desired state of RemediationAction.
             properties:
               action:
-                description: Action describes the remediation to apply.
+                description: |-
+                  Action describes the remediation to apply.
+                  Retained for back-compat: when Steps is empty, Action is the plan of record.
                 properties:
                   patch:
                     description: Patch is the JSON merge patch to apply to the Persona
@@ -156,6 +161,16 @@ spec:
                 - kind
                 - name
                 type: object
+              planSource:
+                description: PlanSource records how the plan was produced.
+                enum:
+                - rule-based
+                - ai-anthropic
+                type: string
+              planSummary:
+                description: PlanSummary is the AI root-cause / plan explanation for
+                  the ordered plan.
+                type: string
               rollback:
                 description: Rollback configures automatic rollback behavior.
                 properties:
@@ -177,6 +192,81 @@ spec:
                 - enabled
                 - maxRetries
                 type: object
+              steps:
+                description: |-
+                  Steps is an ordered, multi-step remediation plan. When non-empty it is the
+                  plan of record (and supersedes the single Action for planning purposes).
+                  NOTE (this sprint): Steps is populated and validated but not yet executed;
+                  the controller/executor continue to apply the single Action.
+                items:
+                  description: |-
+                    RemediationStep is a single ordered action within a multi-step remediation plan.
+
+                    Step-safety invariant: only persona-update steps may be AutoExecutable. All
+                    other step types are advisory — recorded for a human/CLI/platform to apply —
+                    which preserves the operator's non-negotiable guarantee that it never writes
+                    workloads. See ValidateAutoExecutable.
+                  properties:
+                    autoExecutable:
+                      description: |-
+                        AutoExecutable indicates the operator may apply this step without external
+                        action. v1 invariant: this is true ONLY for persona-update steps.
+                      type: boolean
+                    description:
+                      description: Description is a human-readable summary of the
+                        action.
+                      type: string
+                    id:
+                      description: ID is a stable, per-plan identifier for the step.
+                      type: string
+                    order:
+                      description: Order is the 1-based execution order of this step
+                        within the plan.
+                      format: int32
+                      minimum: 1
+                      type: integer
+                    patch:
+                      description: Patch is the JSON merge patch to apply to the Persona
+                        spec (persona-update steps).
+                      x-kubernetes-preserve-unknown-fields: true
+                    prePatchState:
+                      description: PrePatchState is the snapshot of fields before
+                        the patch, for rollback.
+                      x-kubernetes-preserve-unknown-fields: true
+                    rationale:
+                      description: Rationale explains why this step is proposed (AI
+                        reasoning).
+                      type: string
+                    risk:
+                      description: Risk is the assessed risk level of applying this
+                        step.
+                      enum:
+                      - low
+                      - medium
+                      - high
+                      type: string
+                    type:
+                      description: Type classifies the step action.
+                      enum:
+                      - persona-update
+                      - workload-apply
+                      - restart
+                      - scale
+                      - config-change
+                      - manual
+                      type: string
+                  required:
+                  - autoExecutable
+                  - description
+                  - id
+                  - order
+                  - type
+                  type: object
+                  x-kubernetes-validations:
+                  - message: only persona-update steps may be autoExecutable
+                    rule: '!self.autoExecutable || self.type == ''persona-update'''
+                type: array
+                x-kubernetes-list-type: atomic
               trustLevel:
                 description: TrustLevel is the minimum trust level required to execute
                   this remediation.
@@ -266,6 +356,12 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              currentStep:
+                description: |-
+                  CurrentStep is the 1-based order of the step currently being executed.
+                  Schema only this sprint — not yet driven by the controller.
+                format: int32
+                type: integer
               phase:
                 description: Phase tracks the remediation lifecycle.
                 enum:
@@ -279,6 +375,42 @@ spec:
                 - Rejected
                 - Expired
                 type: string
+              stepStatuses:
+                description: |-
+                  StepStatuses tracks per-step execution outcome for the ordered plan.
+                  Schema only this sprint — not yet driven by the controller.
+                items:
+                  description: StepStatus tracks the execution outcome of a single
+                    RemediationStep.
+                  properties:
+                    appliedAt:
+                      description: AppliedAt is when the step was applied.
+                      format: date-time
+                      type: string
+                    order:
+                      description: Order is the 1-based order of the step this status
+                        refers to.
+                      format: int32
+                      minimum: 1
+                      type: integer
+                    phase:
+                      description: Phase tracks the step lifecycle.
+                      enum:
+                      - Pending
+                      - Applied
+                      - Verified
+                      - Failed
+                      - Skipped
+                      type: string
+                    verificationResult:
+                      description: VerificationResult is the outcome of post-apply
+                        verification for this step.
+                      type: string
+                  required:
+                  - order
+                  type: object
+                type: array
+                x-kubernetes-list-type: atomic
               verificationResult:
                 description: VerificationResult is the outcome of post-apply health
                   verification.
