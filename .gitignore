@@ -1,5 +1,6 @@
 # Claude plans for Development
 .claude/plans/
+graphify-out/
 
 # Binaries for programs and plugins
 *.exe
