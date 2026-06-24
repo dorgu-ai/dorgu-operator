@@ -44,6 +44,7 @@ import (
 	"github.com/dorgu-ai/dorgu-operator/internal/events"
 	"github.com/dorgu-ai/dorgu-operator/internal/llm"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation"
+	"github.com/dorgu-ai/dorgu-operator/internal/remediation/planner"
 	dorguwebhook "github.com/dorgu-ai/dorgu-operator/internal/webhook"
 	dorguws "github.com/dorgu-ai/dorgu-operator/internal/websocket"
 	// +kubebuilder:scaffold:imports
@@ -303,6 +304,10 @@ func main() {
 		var diagnosisProviders []diagnosis.DiagnosisProvider
 		diagnosisProviders = append(diagnosisProviders, diagnosis.NewRuleBasedProvider(setupLog))
 
+		// aiPlanner, when set, enables AI-generated ordered remediation plans in
+		// the proposer (constructed below). It degrades gracefully to rules.
+		var aiPlanner planner.Planner
+
 		if cfg.llmProvider != "" {
 			apiKey := cfg.llmAPIKey
 			if apiKey == "" {
@@ -325,6 +330,19 @@ func main() {
 					}
 					diagnosisProviders = append(diagnosisProviders, diagnosis.NewAIProvider(llmClient, setupLog))
 					setupLog.Info("AI diagnosis enabled", "provider", cfg.llmProvider)
+				}
+
+				// AI remediation planning is Anthropic-only for v1 and toggled
+				// independently of AI diagnosis.
+				if cfg.enableAIRemediation && cfg.llmProvider == "claude" {
+					claudePlanner, plannerErr := planner.NewClaudePlanner(apiKey)
+					if plannerErr != nil {
+						setupLog.Error(plannerErr, "failed to create AI remediation planner, continuing with rule-based remediation")
+					} else {
+						claudePlanner.SetModel(cfg.llmModel)
+						aiPlanner = claudePlanner
+						setupLog.Info("AI remediation planning enabled", "provider", cfg.llmProvider)
+					}
 				}
 			} else {
 				setupLog.Info("LLM provider configured but no API key found, AI diagnosis disabled",
@@ -356,7 +374,11 @@ func main() {
 
 		// 7. Create remediation proposer with safety guardrails.
 		safetyChecker := remediation.NewSafetyChecker(mgr.GetClient(), setupLog)
-		proposer := remediation.NewProposer(mgr.GetClient(), safetyChecker, setupLog)
+		var proposerOpts []remediation.ProposerOption
+		if aiPlanner != nil {
+			proposerOpts = append(proposerOpts, remediation.WithPlanner(aiPlanner))
+		}
+		proposer := remediation.NewProposer(mgr.GetClient(), safetyChecker, setupLog, proposerOpts...)
 
 		// 8. Start health check reconciler.
 		healthReconciler := &controller.HealthCheckReconciler{

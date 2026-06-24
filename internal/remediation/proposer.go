@@ -32,6 +32,7 @@ import (
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
 	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
+	"github.com/dorgu-ai/dorgu-operator/internal/remediation/planner"
 )
 
 const (
@@ -56,24 +57,51 @@ const (
 
 // Proposer generates RemediationAction CRDs from diagnoses.
 type Proposer struct {
-	client client.Client
-	safety SafetyChecker
-	logger logr.Logger
+	client  client.Client
+	safety  SafetyChecker
+	logger  logr.Logger
+	planner planner.Planner
 }
 
-// NewProposer creates a new Proposer.
-func NewProposer(c client.Client, safety SafetyChecker, logger logr.Logger) *Proposer {
-	return &Proposer{
+// ProposerOption configures an optional Proposer dependency.
+type ProposerOption func(*Proposer)
+
+// WithPlanner injects an AI remediation planner. When set, Propose first tries
+// the AI planning path and falls back to the deterministic rules on any failure.
+func WithPlanner(p planner.Planner) ProposerOption {
+	return func(pr *Proposer) { pr.planner = p }
+}
+
+// NewProposer creates a new Proposer. Pass WithPlanner to enable AI planning.
+func NewProposer(c client.Client, safety SafetyChecker, logger logr.Logger, opts ...ProposerOption) *Proposer {
+	p := &Proposer{
 		client: c,
 		safety: safety,
 		logger: logger.WithName("proposer"),
 	}
+	for _, opt := range opts {
+		opt(p)
+	}
+	return p
 }
 
 // Propose generates a RemediationAction from a diagnosis, applying safety checks.
 func (p *Proposer) Propose(ctx context.Context, diag diagnosis.Diagnosis, incident *dorguv1.IncidentMemory) (*ProposalResult, error) {
 	if diag.PersonaRef == nil {
 		return &ProposalResult{SkipReason: "diagnosis has no persona reference"}, nil
+	}
+
+	// AI path: when a planner is configured, try it first across all signal
+	// types. Any failure degrades gracefully to the deterministic rules below
+	// (mirroring diagnosis/ai.go's degrade-to-rules behavior).
+	if p.planner != nil {
+		result, err := p.proposeWithPlanner(ctx, diag, incident)
+		if err != nil {
+			p.logger.V(0).Info("AI remediation planning failed, falling back to rules",
+				"error", err, "category", diag.Category)
+		} else if result != nil {
+			return result, nil
+		}
 	}
 
 	switch diag.SuggestedAction {
