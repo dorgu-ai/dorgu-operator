@@ -70,6 +70,9 @@ type operatorConfig struct {
 	llmAPIKey   string // API key (overrides env vars)
 	llmModel    string // model override
 
+	// AI remediation planning (independent of AI diagnosis).
+	enableAIRemediation bool // default: on when an LLM provider+key is configured
+
 	// Bootstrap
 	autoCreateClusterPersona     bool
 	clusterPersonaEnsureInterval time.Duration
@@ -125,6 +128,9 @@ func parseFlags() operatorConfig {
 		"API key for the LLM provider (overrides ANTHROPIC_API_KEY / GEMINI_API_KEY env vars).")
 	flag.StringVar(&cfg.llmModel, "llm-model", "",
 		"Override the default model for the LLM provider.")
+	flag.BoolVar(&cfg.enableAIRemediation, "enable-ai-remediation", true,
+		"Enable AI-generated ordered remediation plans (requires --llm-provider=claude + key). "+
+			"When disabled, the proposer uses the deterministic rule-based path only.")
 	flag.BoolVar(&cfg.autoCreateClusterPersona, "auto-create-cluster-persona", true,
 		"Auto-create a default ClusterPersona named 'dorgu-cluster' if none exists on startup.")
 	flag.DurationVar(&cfg.clusterPersonaEnsureInterval, "cluster-persona-ensure-interval", 2*time.Minute,
