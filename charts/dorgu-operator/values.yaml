@@ -35,6 +35,11 @@ operator:
   # Auto-create a default ClusterPersona named 'dorgu-cluster' on startup if none exists.
   # Set to false if you manage ClusterPersonas via GitOps and do not want operator interference.
   autoCreateClusterPersona: true
+  # How often the operator re-ensures the auto-created ClusterPersona exists. Acts as a
+  # self-healing safety net so the persona converges even if the startup bootstrap missed
+  # (transient API error / leader-lease flap). Clamped to a 30s minimum by the operator.
+  # Only applied when autoCreateClusterPersona is true. Empty uses the operator default (2m).
+  clusterPersonaEnsureInterval: ""
 
 # Metrics
 metrics:
