@@ -71,7 +71,8 @@ type operatorConfig struct {
 	llmModel    string // model override
 
 	// Bootstrap
-	autoCreateClusterPersona bool
+	autoCreateClusterPersona     bool
+	clusterPersonaEnsureInterval time.Duration
 
 	// Logging
 	zapOpts zap.Options
@@ -126,6 +127,9 @@ func parseFlags() operatorConfig {
 		"Override the default model for the LLM provider.")
 	flag.BoolVar(&cfg.autoCreateClusterPersona, "auto-create-cluster-persona", true,
 		"Auto-create a default ClusterPersona named 'dorgu-cluster' if none exists on startup.")
+	flag.DurationVar(&cfg.clusterPersonaEnsureInterval, "cluster-persona-ensure-interval", 2*time.Minute,
+		"How often the operator re-ensures the auto-created ClusterPersona exists (clamped to a 30s minimum). "+
+			"Acts as a self-healing safety net so the persona converges even if the startup bootstrap missed.")
 
 	cfg.zapOpts = zap.Options{Development: true}
 	cfg.zapOpts.BindFlags(flag.CommandLine)

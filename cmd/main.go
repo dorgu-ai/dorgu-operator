@@ -246,13 +246,18 @@ func main() {
 	// Auto-create ClusterPersona on startup if none exists (ArgoCD-style bootstrap).
 	if cfg.autoCreateClusterPersona {
 		bootstrap := &controller.ClusterPersonaBootstrap{
-			Client: mgr.GetClient(),
-			Log:    setupLog.WithName("bootstrap"),
+			Client:         mgr.GetClient(),
+			Log:            setupLog.WithName("bootstrap"),
+			EnsureInterval: cfg.clusterPersonaEnsureInterval,
 		}
 		if err := mgr.Add(bootstrap); err != nil {
 			setupLog.Error(err, "unable to add ClusterPersona bootstrap runnable")
 			os.Exit(1)
 		}
+		// The runnable is leader-gated (NeedLeaderElection=true), so it will not run
+		// until this manager wins the lease. Make that wait observable in the logs.
+		setupLog.Info("ClusterPersona bootstrap registered; will run after leader election",
+			"ensureInterval", cfg.clusterPersonaEnsureInterval.String())
 	}
 
 	// Phase 2a: Health check reconciler + event pipeline + incident controller.

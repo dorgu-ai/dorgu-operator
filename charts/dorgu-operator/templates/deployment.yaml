@@ -73,6 +73,8 @@ spec:
             {{- end }}
             {{- if not .Values.operator.autoCreateClusterPersona }}
             - --auto-create-cluster-persona=false
+            {{- else if .Values.operator.clusterPersonaEnsureInterval }}
+            - --cluster-persona-ensure-interval={{ .Values.operator.clusterPersonaEnsureInterval }}
             {{- end }}
           ports:
             - name: healthz
