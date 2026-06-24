@@ -65,17 +65,36 @@ spec:
             {{- if .Values.llm.provider }}
             - --llm-provider={{ .Values.llm.provider }}
             {{- end }}
-            {{- if .Values.llm.apiKey }}
-            - --llm-api-key={{ .Values.llm.apiKey }}
-            {{- end }}
             {{- if .Values.llm.model }}
             - --llm-model={{ .Values.llm.model }}
+            {{- end }}
+            {{- /* The API key is never passed as an inline arg (it would leak into the
+                   pod spec and `helm get values`). It is injected as the ANTHROPIC_API_KEY
+                   env var from a Secret instead — see the env: block below. */}}
+            {{- if .Values.llm.provider }}
+            - --enable-ai-remediation={{ .Values.aiRemediation.enabled }}
             {{- end }}
             {{- if not .Values.operator.autoCreateClusterPersona }}
             - --auto-create-cluster-persona=false
             {{- else if .Values.operator.clusterPersonaEnsureInterval }}
             - --cluster-persona-ensure-interval={{ .Values.operator.clusterPersonaEnsureInterval }}
             {{- end }}
+          {{- /* Inject the Anthropic API key as ANTHROPIC_API_KEY from a Secret.
+                 existingSecret (prod, key created out-of-band) takes precedence; otherwise
+                 the chart-managed Secret (llm-secret.yaml, gated on createSecret+apiKey) is
+                 referenced. The operator reads the env var when --llm-api-key is unset. */}}
+          {{- $secretName := .Values.llm.existingSecret }}
+          {{- if and (not $secretName) .Values.llm.createSecret .Values.llm.apiKey }}
+          {{-   $secretName = printf "%s-llm" (include "dorgu-operator.fullname" .) }}
+          {{- end }}
+          {{- if $secretName }}
+          env:
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: {{ .Values.llm.existingSecretKey | default "ANTHROPIC_API_KEY" }}
+          {{- end }}
           ports:
             - name: healthz
               containerPort: 8081

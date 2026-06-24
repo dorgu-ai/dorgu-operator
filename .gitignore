@@ -31,3 +31,7 @@ go.work
 
 # Kubeconfig might contain secrets
 *.kubeconfig
+
+# Local Helm overrides with secrets — never commit (only the *.example.yaml template is committed)
+values-local.yaml
+charts/dorgu-operator/values-local.yaml
