@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-09
+
+### Added
+
+- **AI-generated ordered remediation plans (Anthropic BYOK)** — new `internal/remediation/planner` produces ordered, multi-step remediation plans from diagnosed incidents using Claude. The AI proposer gathers cluster context, prompts the model, and emits a validated ordered plan; falls back to the deterministic proposer when no key is configured. Bring-your-own-key, gated by the LLM provider/API-key configuration.
+- **`RemediationAction.Steps[]` — ordered remediation plans** — the `RemediationAction` CRD now carries an ordered `steps` array, letting a single remediation express a sequenced plan (each step with its own action, target, and parameters) instead of a single flat proposal. Schema regenerated into the `remediationactions` CRD.
+- **Secure Helm AI-key injection + `values-local` workflow** — the Helm chart now injects the Anthropic API key via a managed `llm-secret` referenced through `secretKeyRef` (never rendered into the Deployment spec), plus a `values-local.example.yaml` workflow for supplying the key locally without committing it.
+
+### Fixed
+
+- **Reliable ClusterPersona auto-create** — the startup bootstrap that auto-creates the default `dorgu-cluster` ClusterPersona is now reliable, correctly gating on existing personas and applying the bootstrap/cluster-uid annotations under race conditions.
+
 ## [0.6.1] - 2026-04-17
 
 ### Added
