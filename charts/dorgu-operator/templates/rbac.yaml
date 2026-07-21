@@ -61,10 +61,14 @@ rules:
   - apiGroups: [""]
     resources: ["pods", "namespaces", "nodes"]
     verbs: ["get", "list", "watch"]
-  # Events (for recording controller events)
+  # Events (recording controller events + the event watcher's list/watch)
   - apiGroups: [""]
     resources: ["events"]
-    verbs: ["create", "patch"]
+    verbs: ["get", "list", "watch", "create", "patch"]
+  # Pod metrics (metrics-usage-checker; requires metrics-server)
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["pods"]
+    verbs: ["get", "list"]
   # Leases (leader election when leaderElection.enabled=true)
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]

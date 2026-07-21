@@ -53,7 +53,60 @@ const (
 
 	// Default rollback health check duration.
 	defaultHealthCheckAfter = 10 * time.Minute
+
+	// labelPersonaName is the label every proposal path stamps with the target
+	// persona name; the dedup List is scoped by it.
+	labelPersonaName = "dorgu.io/persona-name"
 )
+
+// activeRemediationPhases are the RemediationAction phases that mean a
+// remediation is already in flight for an incident, so proposing another would
+// duplicate it. Terminal phases (Completed/Failed/RolledBack/Rejected/Expired)
+// do NOT block a fresh proposal — e.g. a recurrence after a prior fix failed.
+// The empty phase covers a just-created action whose status write has not yet
+// landed.
+var activeRemediationPhases = map[string]struct{}{
+	"":             {},
+	phasePending:   {},
+	phaseApproved:  {},
+	phaseApplying:  {},
+	phaseVerifying: {},
+}
+
+// activeRemediationExists reports whether a non-terminal RemediationAction
+// already targets this incident. The List is scoped by the persona-name label
+// and namespace, then matched on IncidentRef, so per-cycle re-proposals collapse
+// to a single active remediation per incident.
+func (p *Proposer) activeRemediationExists(ctx context.Context, diag diagnosis.Diagnosis, incident *dorguv1.IncidentMemory) (bool, error) {
+	namespace := incident.Namespace
+	if namespace == "" && diag.PersonaRef != nil {
+		namespace = diag.PersonaRef.Namespace
+	}
+
+	opts := make([]client.ListOption, 0, 2)
+	if namespace != "" {
+		opts = append(opts, client.InNamespace(namespace))
+	}
+	if diag.PersonaRef != nil && diag.PersonaRef.Name != "" {
+		opts = append(opts, client.MatchingLabels{labelPersonaName: diag.PersonaRef.Name})
+	}
+
+	var list dorguv1.RemediationActionList
+	if err := p.client.List(ctx, &list, opts...); err != nil {
+		return false, fmt.Errorf("listing existing RemediationActions for incident %s: %w", incident.Name, err)
+	}
+
+	for i := range list.Items {
+		ra := &list.Items[i]
+		if ra.Spec.IncidentRef.Name != incident.Name {
+			continue
+		}
+		if _, active := activeRemediationPhases[ra.Status.Phase]; active {
+			return true, nil
+		}
+	}
+	return false, nil
+}
 
 // Proposer generates RemediationAction CRDs from diagnoses.
 type Proposer struct {
@@ -89,6 +142,21 @@ func NewProposer(c client.Client, safety SafetyChecker, logger logr.Logger, opts
 func (p *Proposer) Propose(ctx context.Context, diag diagnosis.Diagnosis, incident *dorguv1.IncidentMemory) (*ProposalResult, error) {
 	if diag.PersonaRef == nil {
 		return &ProposalResult{SkipReason: "diagnosis has no persona reference"}, nil
+	}
+
+	// Dedup: skip if an active RemediationAction already targets this incident.
+	// The health-check reconciler re-proposes every cycle; without this guard a
+	// single incident accumulates one RemediationAction per cycle. This runs
+	// ahead of both the AI and rule-based paths so at most one active
+	// remediation exists per incident.
+	if incident != nil {
+		exists, err := p.activeRemediationExists(ctx, diag, incident)
+		if err != nil {
+			return nil, err
+		}
+		if exists {
+			return &ProposalResult{SkipReason: "active remediation already exists for incident"}, nil
+		}
 	}
 
 	// AI path: when a planner is configured, try it first across all signal

@@ -74,9 +74,10 @@ const (
 // +kubebuilder:rbac:groups=dorgu.io,resources=remediationactions/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=dorgu.io,resources=clusterpersonas,verbs=get;list;watch
 // +kubebuilder:rbac:groups=dorgu.io,resources=dorguevents,verbs=get;list;watch;create
-// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups="",resources=events,verbs=get;list;watch;create;patch
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch
+// +kubebuilder:rbac:groups=metrics.k8s.io,resources=pods,verbs=get;list
 
 // HealthCheckReconciler runs detection and diagnosis on a fixed interval,
 // creating and updating IncidentMemory CRDs. It implements manager.Runnable.
@@ -495,15 +496,18 @@ func (r *HealthCheckReconciler) resolveCleared(ctx context.Context, activeSignal
 			continue
 		}
 
-		// Re-fetch to get updated ResourceVersion, then update status.
-		objKey := client.ObjectKeyFromObject(im)
-		if err := r.Client.Get(ctx, objKey, im); err != nil {
-			r.Logger.Error(err, "failed to re-fetch incident for status update", "name", im.Name)
-			continue
-		}
-		im.Status.Phase = PhaseResolved
-		if err := r.Client.Status().Update(ctx, im); err != nil {
-			r.Logger.Error(err, "failed to update resolved incident status", "name", im.Name)
+		// Update status with retry-on-conflict. Re-fetching inside the loop picks
+		// up any concurrent ResourceVersion bump from another controller racing
+		// on this incident's status (quiets "object has been modified" noise).
+		statusErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			if err := r.Client.Get(ctx, client.ObjectKeyFromObject(im), im); err != nil {
+				return err
+			}
+			im.Status.Phase = PhaseResolved
+			return r.Client.Status().Update(ctx, im)
+		})
+		if statusErr != nil {
+			r.Logger.Error(statusErr, "failed to update resolved incident status", "name", im.Name)
 			continue
 		}
 

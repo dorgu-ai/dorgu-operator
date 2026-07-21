@@ -17,6 +17,7 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"os"
 
@@ -161,6 +162,15 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Register the spec.nodeName Pod field index in the manager cache before it
+	// starts. The resource-saturation checker lists pods-by-node through it; the
+	// cache otherwise rejects the field selector with
+	// "Index with name field:spec.nodeName does not exist".
+	if err := detection.RegisterPodNodeNameIndex(context.Background(), mgr.GetFieldIndexer()); err != nil {
+		setupLog.Error(err, "unable to register spec.nodeName field index")
+		os.Exit(1)
+	}
+
 	// Create discovery client for ClusterPersona controller
 	discoveryClient, err := discovery.NewDiscoveryClientForConfig(restConfig)
 	if err != nil {
@@ -177,10 +187,11 @@ func main() {
 	}
 
 	if err := (&controller.ApplicationPersonaReconciler{
-		Client:        mgr.GetClient(),
-		Scheme:        mgr.GetScheme(),
-		PrometheusURL: cfg.prometheusURL,
-		WebSocket:     wsServer,
+		Client:             mgr.GetClient(),
+		Scheme:             mgr.GetScheme(),
+		PrometheusURL:      cfg.prometheusURL,
+		WebSocket:          wsServer,
+		HealthCheckEnabled: cfg.enableHealthCheck,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ApplicationPersona")
 		os.Exit(1)
