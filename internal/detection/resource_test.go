@@ -26,7 +26,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 )
@@ -199,18 +198,10 @@ func collectResourceSignals(t *testing.T, nodes []*corev1.Node, pods []*corev1.P
 	}
 	builder = builder.WithRuntimeObjects(objs...)
 
-	// Index spec.nodeName for field selector support
+	// Index spec.nodeName for field selector support, using the same index func
+	// the manager registers at startup (detection.RegisterPodNodeNameIndex).
 	fakeClient := builder.
-		WithIndex(&corev1.Pod{}, "spec.nodeName", func(obj client.Object) []string {
-			pod, ok := obj.(*corev1.Pod)
-			if !ok {
-				return nil
-			}
-			if pod.Spec.NodeName == "" {
-				return nil
-			}
-			return []string{pod.Spec.NodeName}
-		}).
+		WithIndex(&corev1.Pod{}, PodNodeNameIndex, PodByNodeName).
 		Build()
 
 	logger := zap.New(zap.UseDevMode(true))

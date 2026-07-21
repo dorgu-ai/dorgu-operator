@@ -23,6 +23,7 @@ import (
 
 	"github.com/go-logr/logr"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -73,7 +74,18 @@ func (r *IncidentController) Reconcile(ctx context.Context, req ctrl.Request) (c
 	r.updateConditions(&im)
 
 	if !reflect.DeepEqual(conditionsBefore, im.Status.Conditions) {
-		if err := r.Client.Status().Update(ctx, &im); err != nil {
+		// Retry-on-conflict with a re-fetch: the health-check reconciler also
+		// writes this incident's status, so a bare update races and logs
+		// "object has been modified". Re-derive conditions from the freshest
+		// object on each attempt.
+		err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			if err := r.Client.Get(ctx, req.NamespacedName, &im); err != nil {
+				return err
+			}
+			r.updateConditions(&im)
+			return r.Client.Status().Update(ctx, &im)
+		})
+		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("updating conditions: %w", err)
 		}
 	}
@@ -164,11 +176,6 @@ func (r *IncidentController) syncPersonaStatus(ctx context.Context, im *dorguv1.
 		Namespace: im.Spec.PersonaRef.Namespace,
 	}
 
-	var persona dorguv1.ApplicationPersona
-	if err := r.Client.Get(ctx, personaKey, &persona); err != nil {
-		return fmt.Errorf("getting ApplicationPersona %s: %w", personaKey, err)
-	}
-
 	// Count active incidents for this specific persona.
 	var incidents dorguv1.IncidentMemoryList
 	if err := r.Client.List(ctx, &incidents,
@@ -195,19 +202,23 @@ func (r *IncidentController) syncPersonaStatus(ctx context.Context, im *dorguv1.
 		}
 	}
 
-	// Only update if values changed.
-	if persona.Status.ActiveIncidents == activeCount && timeEqual(persona.Status.LastIncidentTime, latestTime) {
-		return nil
-	}
-
-	persona.Status.ActiveIncidents = activeCount
-	persona.Status.LastIncidentTime = latestTime
-
-	if err := r.Client.Status().Update(ctx, &persona); err != nil {
-		return fmt.Errorf("updating persona status: %w", err)
-	}
-
-	return nil
+	// Update the persona status with retry-on-conflict. The ApplicationPersona
+	// reconciler also writes this status, so a bare update races and logs
+	// "object has been modified". Re-fetch inside the loop and re-check the
+	// change condition against the freshest object (activeCount/latestTime are
+	// derived from the incident list and are stable across attempts).
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var current dorguv1.ApplicationPersona
+		if err := r.Client.Get(ctx, personaKey, &current); err != nil {
+			return err
+		}
+		if current.Status.ActiveIncidents == activeCount && timeEqual(current.Status.LastIncidentTime, latestTime) {
+			return nil
+		}
+		current.Status.ActiveIncidents = activeCount
+		current.Status.LastIncidentTime = latestTime
+		return r.Client.Status().Update(ctx, &current)
+	})
 }
 
 // SetupWithManager registers the IncidentController with the manager.

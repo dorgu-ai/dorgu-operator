@@ -83,7 +83,7 @@ func (r *ResourceCollector) checkNode(ctx context.Context, node corev1.Node, now
 	// Get all non-terminated pods on this node
 	podList := &corev1.PodList{}
 	if err := r.client.List(ctx, podList, &client.ListOptions{
-		FieldSelector: fields.OneTermEqualSelector("spec.nodeName", node.Name),
+		FieldSelector: fields.OneTermEqualSelector(PodNodeNameIndex, node.Name),
 	}); err != nil {
 		return nil, fmt.Errorf("failed to list pods on node %s: %w", node.Name, err)
 	}
