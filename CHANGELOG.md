@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-07-22
+
+### Fixed
+
+- **Remediation multiplicity — one remediation per incident** — the proposer now dedups: it skips proposing when an active (`Pending`/`Approved`/`Applying`/`Verifying`) `RemediationAction` already targets the incident, so the 60s health-check loop no longer creates a fresh `RemediationAction` every cycle. Additionally, the legacy rule-based OOM path in the ApplicationPersona reconciler stands down when the health-check reconciler is active (which owns unified detection→diagnosis→remediation), so a single OOM no longer yields both a rule-based and an AI action. One incident → at most one remediation.
+- **RBAC gaps broke saturation/metrics/event detection** — added the missing ClusterRole rules so these signals work on managed clusters (e.g. EKS): core `events` (`get`/`list`/`watch`, for the event watcher) and `pods` in the `metrics.k8s.io` API group (`get`/`list`, for the metrics-usage checker). Regenerated `config/rbac/role.yaml` and the bundled chart RBAC.
+- **Missing `spec.nodeName` pod field index** — the manager now registers the `spec.nodeName` field index in its cache at startup, so the resource-saturation checker can list pods-by-node instead of failing with `Index with name field:spec.nodeName does not exist`.
+- **Status-update conflict noise** — wrapped the remaining IncidentMemory/ApplicationPersona status writes (incident conditions, persona-status sync, incident auto-resolution) in `retry.RetryOnConflict` with a re-fetch, quieting the frequent `object has been modified` log noise from racing reconcilers.
+
 ## [0.7.0] - 2026-07-09
 
 ### Added
