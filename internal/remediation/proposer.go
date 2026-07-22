@@ -73,11 +73,27 @@ var activeRemediationPhases = map[string]struct{}{
 	phaseVerifying: {},
 }
 
+// Resource-limit patch paths a remediation may target. Used both to classify an
+// incoming diagnosis's intended fix and to read what an existing RemediationAction
+// changes, so two incidents that resolve to the same fix collapse to one action.
+const (
+	resourcePathMemory = "spec.resources.limits.memory"
+	resourcePathCPU    = "spec.resources.limits.cpu"
+)
+
 // activeRemediationExists reports whether a non-terminal RemediationAction
-// already targets this incident. The List is scoped by the persona-name label
-// and namespace, then matched on IncidentRef, so per-cycle re-proposals collapse
-// to a single active remediation per incident.
-func (p *Proposer) activeRemediationExists(ctx context.Context, diag diagnosis.Diagnosis, incident *dorguv1.IncidentMemory) (bool, error) {
+// already makes this proposal redundant, returning a human-readable reason
+// (empty when none). The List is scoped by the persona-name label and namespace,
+// so every candidate already shares the persona. A candidate blocks the proposal
+// when EITHER:
+//   - it targets the same incident (per-cycle dedup — the health-check reconciler
+//     re-proposes every cycle), OR
+//   - it already remediates the same target (WS9 per-persona+target dedup): a
+//     second incident for the same root cause (e.g. CrashLoopBackOff trailing an
+//     OOMKill, both fixed by raising the memory limit) finds the first incident's
+//     remediation and stands down. Terminal-phase actions never block a fresh
+//     recurrence.
+func (p *Proposer) activeRemediationExists(ctx context.Context, diag diagnosis.Diagnosis, incident *dorguv1.IncidentMemory) (string, error) {
 	namespace := incident.Namespace
 	if namespace == "" && diag.PersonaRef != nil {
 		namespace = diag.PersonaRef.Namespace
@@ -93,19 +109,102 @@ func (p *Proposer) activeRemediationExists(ctx context.Context, diag diagnosis.D
 
 	var list dorguv1.RemediationActionList
 	if err := p.client.List(ctx, &list, opts...); err != nil {
-		return false, fmt.Errorf("listing existing RemediationActions for incident %s: %w", incident.Name, err)
+		return "", fmt.Errorf("listing existing RemediationActions for incident %s: %w", incident.Name, err)
 	}
+
+	targetPath := diagnosisTargetPath(diag)
 
 	for i := range list.Items {
 		ra := &list.Items[i]
-		if ra.Spec.IncidentRef.Name != incident.Name {
+		if _, active := activeRemediationPhases[ra.Status.Phase]; !active {
 			continue
 		}
-		if _, active := activeRemediationPhases[ra.Status.Phase]; active {
-			return true, nil
+		if ra.Spec.IncidentRef.Name == incident.Name {
+			return fmt.Sprintf("active remediation already exists for incident %s", incident.Name), nil
+		}
+		if targetPath != "" && remediationTargetsPath(ra, targetPath) {
+			return fmt.Sprintf("active remediation already exists for persona %s targeting %s (via %s)",
+				diag.PersonaRef.Name, targetPath, ra.Name), nil
 		}
 	}
-	return false, nil
+	return "", nil
+}
+
+// diagnosisTargetPath predicts the persona-spec path an incoming diagnosis's
+// resource remediation will patch, mirroring calculateResourceChange's
+// signal->dimension mapping. It is the incident-independent identity of the fix,
+// so distinct incidents sharing a root cause (OOMKilled, or CrashLoopBackOff with
+// OOM correlation -> memory) map to the same path. Returns "" when no stable
+// resource target can be derived (non-resource categories keep per-incident dedup
+// only).
+func diagnosisTargetPath(diag diagnosis.Diagnosis) string {
+	switch primarySignalType(diag) {
+	case detection.SignalOOMKilled, detection.SignalMemorySaturationCrit, detection.SignalMemorySaturationHigh:
+		return resourcePathMemory
+	case detection.SignalCPUSaturationHigh, detection.SignalCPUSaturationCritical:
+		return resourcePathCPU
+	case detection.SignalCrashLoopBackOff:
+		if hasOOMCorrelation(diag) {
+			return resourcePathMemory
+		}
+	}
+	return ""
+}
+
+// remediationTargetsPath reports whether an existing RemediationAction changes
+// the given persona-spec path, inspecting both the back-compat single Action
+// patch (rule-based path) and every step patch (AI plan path).
+func remediationTargetsPath(ra *dorguv1.RemediationAction, target string) bool {
+	if ra.Spec.Action.Patch != nil && patchTouchesPath(ra.Spec.Action.Patch.Raw, target) {
+		return true
+	}
+	for i := range ra.Spec.Steps {
+		if step := &ra.Spec.Steps[i]; step.Patch != nil && patchTouchesPath(step.Patch.Raw, target) {
+			return true
+		}
+	}
+	return false
+}
+
+// patchTouchesPath reports whether a merge patch sets a value at the given
+// dot-joined leaf path, e.g. {"spec":{"resources":{"limits":{"memory":"384Mi"}}}}
+// touches "spec.resources.limits.memory".
+func patchTouchesPath(raw []byte, target string) bool {
+	for _, p := range patchLeafPaths(raw) {
+		if p == target {
+			return true
+		}
+	}
+	return false
+}
+
+// patchLeafPaths walks a JSON merge patch and returns the dot-joined path of
+// every leaf (non-object) value it sets. Returns nil for empty or invalid JSON.
+func patchLeafPaths(raw []byte) []string {
+	if len(raw) == 0 {
+		return nil
+	}
+	var root map[string]interface{}
+	if err := json.Unmarshal(raw, &root); err != nil {
+		return nil
+	}
+	var paths []string
+	var walk func(prefix string, node map[string]interface{})
+	walk = func(prefix string, node map[string]interface{}) {
+		for key, val := range node {
+			path := key
+			if prefix != "" {
+				path = prefix + "." + key
+			}
+			if child, ok := val.(map[string]interface{}); ok {
+				walk(path, child)
+				continue
+			}
+			paths = append(paths, path)
+		}
+	}
+	walk("", root)
+	return paths
 }
 
 // Proposer generates RemediationAction CRDs from diagnoses.
@@ -144,18 +243,18 @@ func (p *Proposer) Propose(ctx context.Context, diag diagnosis.Diagnosis, incide
 		return &ProposalResult{SkipReason: "diagnosis has no persona reference"}, nil
 	}
 
-	// Dedup: skip if an active RemediationAction already targets this incident.
-	// The health-check reconciler re-proposes every cycle; without this guard a
-	// single incident accumulates one RemediationAction per cycle. This runs
-	// ahead of both the AI and rule-based paths so at most one active
-	// remediation exists per incident.
+	// Dedup: skip if an active RemediationAction already covers this proposal —
+	// either the same incident (per-cycle re-proposal) or the same
+	// persona+target (a second incident for one root cause, e.g. CrashLoop after
+	// OOM, both fixed by the same memory bump). This runs ahead of both the AI
+	// and rule-based paths so one persona + one resource fix yields one action.
 	if incident != nil {
-		exists, err := p.activeRemediationExists(ctx, diag, incident)
+		reason, err := p.activeRemediationExists(ctx, diag, incident)
 		if err != nil {
 			return nil, err
 		}
-		if exists {
-			return &ProposalResult{SkipReason: "active remediation already exists for incident"}, nil
+		if reason != "" {
+			return &ProposalResult{SkipReason: reason}, nil
 		}
 	}
 

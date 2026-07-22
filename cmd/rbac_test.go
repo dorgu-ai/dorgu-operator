@@ -72,3 +72,33 @@ func TestGeneratedRole_CoversEventsAndPodMetrics(t *testing.T) {
 	assert.True(t, hasRule(role, "metrics.k8s.io", "pods", "get", "list"),
 		"pods.metrics.k8s.io need get/list for the metrics-usage checker")
 }
+
+// TestGeneratedRole_CoversReplicaSets locks the WS9 R2 RBAC addition: the
+// generated manager ClusterRole must be able to read ReplicaSets, which the
+// event correlator and pod->ReplicaSet->Deployment ownership walk both list.
+func TestGeneratedRole_CoversReplicaSets(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "config", "rbac", "role.yaml"))
+	require.NoError(t, err, "generated role.yaml must exist (run make manifests)")
+
+	var role rbacv1.ClusterRole
+	require.NoError(t, yaml.Unmarshal(data, &role))
+
+	assert.True(t, hasRule(role, "apps", "replicasets", "get", "list", "watch"),
+		"apps/replicasets need get/list/watch for the ReplicaSet correlator")
+}
+
+// TestChartRBAC_MatchesReplicaSets ensures the hand-maintained Helm ClusterRole
+// mirrors the generated role's WS9 replicasets grant, so an installed release
+// carries the same permission as `make deploy`.
+func TestChartRBAC_MatchesReplicaSets(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "charts", "dorgu-operator", "templates", "rbac.yaml"))
+	require.NoError(t, err, "chart rbac.yaml must exist")
+
+	body := string(data)
+	assert.Contains(t, body, `apiGroups: ["apps"]`,
+		"chart ClusterRole must grant the apps API group")
+	assert.Contains(t, body, `resources: ["deployments", "replicasets"]`,
+		"chart apps rule must include replicasets alongside deployments")
+	assert.Contains(t, body, `verbs: ["get", "list", "watch"]`,
+		"replicasets grant must be read-only get/list/watch")
+}
