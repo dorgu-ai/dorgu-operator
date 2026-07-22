@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-07-23
+
+### Fixed
+
+- **Remediation dedup per persona + target — one OOM → one remediation** — a single OOM spawns two incidents (`…-oomkilled` and `…-crashloopbackoff`), and the WS8 dedup keyed only on the incident, so each incident still produced its own AI `RemediationAction` (two RAs for one root cause). The proposer now also stands down when an active (`Pending`/`Approved`/`Applying`/`Verifying`) `RemediationAction` for the **same persona already remediates the same target** — keyed on the persona-spec patch path (e.g. `spec.resources.limits.memory`), read from both the rule-based `Action.Patch` and every AI `Steps[].Patch`. So the trailing CrashLoopBackOff incident finds the OOM incident's memory fix and skips. Terminal-phase actions (`Completed`/`Rejected`/`RolledBack`/`Failed`/`Expired`) never block a fresh recurrence; a different persona or a different target (e.g. CPU vs memory) still proposes.
+- **RBAC gap — `replicasets.apps is forbidden`** — added the missing ClusterRole rule so the manager can read ReplicaSets (`apps/replicasets`, `get`/`list`/`watch`), used by the event correlator and the pod→ReplicaSet→Deployment ownership walk. Regenerated `config/rbac/role.yaml` and synced the bundled chart RBAC, quieting the recurring `cannot list resource "replicasets" in API group "apps"` error.
+
 ## [0.7.1] - 2026-07-22
 
 ### Fixed
