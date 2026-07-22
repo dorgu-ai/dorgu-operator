@@ -20,14 +20,17 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
+	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
 )
 
 // existingRA builds a RemediationAction that targets the given incident, carries
@@ -174,6 +177,150 @@ func TestProposer_AIXorRule_PlannerError(t *testing.T) {
 	require.Len(t, list.Items, 1, "exactly one rule-based remediation")
 	assert.NotEqual(t, dorguv1.PlanSourceAIAnthropic, list.Items[0].Spec.PlanSource, "no AI plan when planner errors")
 	assert.Empty(t, list.Items[0].Spec.Steps, "rule-based path emits a single Action, not Steps")
+}
+
+// existingResourceRA builds an active/terminal RemediationAction that actually
+// patches a resource limit (so the WS9 persona+target dedup can read what it
+// remediates), carrying the persona-name label the dedup List filters on.
+func existingResourceRA(name, namespace, personaName, incidentName, phase, patchPath, value string) *dorguv1.RemediationAction {
+	ra := existingRA(name, namespace, personaName, incidentName, phase)
+	ra.Spec.Action = dorguv1.RemediationActionDetail{
+		Type:  "persona-update",
+		Patch: &apiextensionsv1.JSON{Raw: []byte(resourcePatchJSON(patchPath, value))},
+	}
+	return ra
+}
+
+// resourcePatchJSON renders a merge patch for a resource-limit path.
+func resourcePatchJSON(patchPath, value string) string {
+	switch patchPath {
+	case resourcePathCPU:
+		return `{"spec":{"resources":{"limits":{"cpu":"` + value + `"}}}}`
+	default:
+		return `{"spec":{"resources":{"limits":{"memory":"` + value + `"}}}}`
+	}
+}
+
+// newCrashLoopOOMDiagnosis is a CrashLoopBackOff diagnosis with an OOM
+// contributing signal — the same root cause as an OOMKill, so its fix targets
+// the same memory limit.
+func newCrashLoopOOMDiagnosis(namespace, personaName string, severity detection.Severity) diagnosis.Diagnosis {
+	return diagnosis.Diagnosis{
+		Summary:    "CrashLoopBackOff detected (OOM-correlated)",
+		Confidence: 0.82,
+		Provider:   "rule-based",
+		Category:   "resource",
+		Severity:   severity,
+		PersonaRef: &dorguv1.PersonaReference{
+			Kind:      "ApplicationPersona",
+			Name:      personaName,
+			Namespace: namespace,
+		},
+		Contributing: []diagnosis.ContributingSignal{
+			{Signal: detection.Signal{Type: detection.SignalCrashLoopBackOff, Severity: severity, DetectedAt: time.Now()}, Detail: "restarting"},
+			{Signal: detection.Signal{Type: detection.SignalOOMKilled, Severity: severity, DetectedAt: time.Now()}, Detail: "prior OOM kill"},
+		},
+		SuggestedAction: "resource-adjustment",
+		DiagnosedAt:     time.Now(),
+	}
+}
+
+// newCPUDiagnosis is a CPU-saturation diagnosis whose fix targets the CPU limit,
+// a DIFFERENT target from a memory remediation.
+func newCPUDiagnosis(namespace, personaName string, severity detection.Severity) diagnosis.Diagnosis {
+	return diagnosis.Diagnosis{
+		Summary:    "CPU saturation detected",
+		Confidence: 0.80,
+		Provider:   "rule-based",
+		Category:   "resource",
+		Severity:   severity,
+		PersonaRef: &dorguv1.PersonaReference{
+			Kind:      "ApplicationPersona",
+			Name:      personaName,
+			Namespace: namespace,
+		},
+		Contributing: []diagnosis.ContributingSignal{
+			{Signal: detection.Signal{Type: detection.SignalCPUSaturationHigh, Severity: severity, DetectedAt: time.Now()}, Detail: "cpu high"},
+		},
+		SuggestedAction: "resource-adjustment",
+		DiagnosedAt:     time.Now(),
+	}
+}
+
+// TestProposer_TargetDedup covers the WS9 per-persona+target dedup: a second
+// incident for the same root cause (targeting the same resource limit) stands
+// down, while a different persona, a different target, or a terminal-phase prior
+// remediation must still propose. One OOM -> one remediation.
+func TestProposer_TargetDedup(t *testing.T) {
+	const ns = "default"
+
+	tests := []struct {
+		name         string
+		existing     *dorguv1.RemediationAction
+		incidentName string
+		diag         diagnosis.Diagnosis
+		wantPropose  bool
+	}{
+		{
+			name:         "different incident, same persona+target is skipped",
+			existing:     existingResourceRA("ra-oom", ns, "memhog", "im-oom", "Pending", resourcePathMemory, "384Mi"),
+			incidentName: "crashloop",
+			diag:         newCrashLoopOOMDiagnosis(ns, "memhog", detection.SeverityCritical),
+			wantPropose:  false,
+		},
+		{
+			name:         "different persona still proposes",
+			existing:     existingResourceRA("ra-oom", ns, "other-app", "im-oom", "Pending", resourcePathMemory, "384Mi"),
+			incidentName: "crashloop",
+			diag:         newCrashLoopOOMDiagnosis(ns, "memhog", detection.SeverityCritical),
+			wantPropose:  true,
+		},
+		{
+			name:         "terminal prior remediation still proposes",
+			existing:     existingResourceRA("ra-oom", ns, "memhog", "im-oom", "Completed", resourcePathMemory, "384Mi"),
+			incidentName: "crashloop",
+			diag:         newCrashLoopOOMDiagnosis(ns, "memhog", detection.SeverityCritical),
+			wantPropose:  true,
+		},
+		{
+			name:         "different target (CPU vs memory) still proposes",
+			existing:     existingResourceRA("ra-oom", ns, "memhog", "im-oom", "Pending", resourcePathMemory, "384Mi"),
+			incidentName: "cpu",
+			diag:         newCPUDiagnosis(ns, "memhog", detection.SeverityWarning),
+			wantPropose:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			scheme := newTestScheme()
+			persona := newTestPersona(ns, "memhog", "256Mi", "500m")
+			incident := newTestIncident(ns, tt.incidentName, "memhog", "CrashLoopBackOff")
+
+			c := fake.NewClientBuilder().WithScheme(scheme).
+				WithRuntimeObjects(persona, tt.existing).
+				WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+
+			safety := NewSafetyChecker(c, testLogger())
+			// A working planner proves target dedup runs BEFORE the AI path.
+			p := NewProposer(c, safety, testLogger(), WithPlanner(&stubPlanner{plan: threeStepPlan()}))
+
+			result, err := p.Propose(context.Background(), tt.diag, incident)
+			require.NoError(t, err)
+
+			var list dorguv1.RemediationActionList
+			require.NoError(t, c.List(context.Background(), &list))
+
+			if tt.wantPropose {
+				assert.True(t, result.Proposed, "expected a new remediation")
+				assert.Len(t, list.Items, 2, "the pre-existing action plus the new one")
+			} else {
+				assert.False(t, result.Proposed, "must not propose a duplicate remediation")
+				assert.Contains(t, result.SkipReason, "active remediation already exists")
+				assert.Len(t, list.Items, 1, "exactly the pre-existing remediation, no duplicate")
+			}
+		})
+	}
 }
 
 func phaseLabel(p string) string {

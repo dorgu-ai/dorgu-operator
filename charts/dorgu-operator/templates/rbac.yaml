@@ -47,9 +47,10 @@ rules:
   - apiGroups: ["dorgu.io"]
     resources: ["dorguevents"]
     verbs: ["create", "get", "list", "watch"]
-  # Deployments (read-only; for ApplicationPersona validation)
+  # Deployments + ReplicaSets (read-only; ApplicationPersona validation and
+  # pod->ReplicaSet->Deployment ownership correlation)
   - apiGroups: ["apps"]
-    resources: ["deployments"]
+    resources: ["deployments", "replicasets"]
     verbs: ["get", "list", "watch"]
   {{- if .Values.argocd.enabled }}
   # ArgoCD Applications (only when argocd.enabled; watcher registered only if CRD exists)
