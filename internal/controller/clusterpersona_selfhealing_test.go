@@ -23,9 +23,10 @@ import (
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 )
 
-// QA checklist defaults for ClusterPersona self-healing (BUG-3-6).
+// QA checklist defaults for ClusterPersona self-healing (BUG-3-6). The mode
+// default tracks the CRD's kubebuilder default, which the proposer now enforces.
 const (
-	wantSelfHealingMode       = "observe"
+	wantSelfHealingMode       = dorguv1.SelfHealingModePropose
 	wantSelfHealingTrustLevel = int32(2)
 )
 

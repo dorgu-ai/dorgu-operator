@@ -145,20 +145,27 @@ type ApprovalSpec struct {
 	Deadline *metav1.Time `json:"deadline,omitempty"`
 
 	// AutoApproveRule configures automatic approval after repeated successes.
-	// This field exists but controllers ignore it until Phase 2c (founder decision #7).
+	// Not yet implemented — no controller reads this field, so setting it grants
+	// nothing. Every remediation requires human approval. Deferred to Phase 2c
+	// (founder decision #7).
 	// +optional
 	AutoApproveRule *AutoApproveRule `json:"autoApproveRule,omitempty"`
 }
 
 // AutoApproveRule configures automatic approval graduation.
-// Deferred to Phase 2c — field exists in CRD but is not executed by controllers.
+//
+// Not yet implemented. The type exists in the CRD schema so the field can be set
+// without a future API break, but no controller reads it: auto-approval never
+// happens, whatever these values say. Deferred to Phase 2c.
 type AutoApproveRule struct {
 	// Enabled activates auto-approve graduation.
+	// Not yet implemented — see AutoApproveRule.
 	// +kubebuilder:default=false
 	Enabled bool `json:"enabled"`
 
 	// AfterSuccessfulOccurrences is the number of successful identical remediations
 	// required before auto-approval is granted.
+	// Not yet implemented — see AutoApproveRule.
 	// +kubebuilder:default=3
 	// +kubebuilder:validation:Minimum=1
 	AfterSuccessfulOccurrences int32 `json:"afterSuccessfulOccurrences"`

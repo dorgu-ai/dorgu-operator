@@ -76,13 +76,41 @@ type ClusterPolicies struct {
 	SelfHealing *SelfHealingPolicy `json:"selfHealing,omitempty"`
 }
 
+// Self-healing modes accepted by SelfHealingPolicy.Mode. The proposer branches
+// on these to decide how far the healing loop runs on its own.
+const (
+	// SelfHealingModeObserve detects, diagnoses, and records IncidentMemory but
+	// creates no RemediationAction.
+	SelfHealingModeObserve = "observe"
+
+	// SelfHealingModePropose is the default: incidents are also turned into
+	// RemediationActions, each awaiting human approval before anything is applied.
+	SelfHealingModePropose = "propose"
+
+	// SelfHealingModeAutoApprove is accepted for forward compatibility but is NOT
+	// implemented — it is treated exactly like SelfHealingModePropose and logged
+	// as a warning on every proposal.
+	SelfHealingModeAutoApprove = "auto-approve"
+)
+
 // SelfHealingPolicy configures the cluster's self-healing behavior.
 type SelfHealingPolicy struct {
 	// enabled activates the healing system.
+	// Not yet implemented — detection, diagnosis, and proposal run regardless of
+	// this flag. Use mode: observe to stop at diagnosis.
 	// +kubebuilder:default=true
 	Enabled bool `json:"enabled"`
 
-	// mode controls the healing behavior.
+	// mode controls how far the healing loop goes on its own:
+	//   observe      detect, diagnose, and record an IncidentMemory only. No
+	//                RemediationAction is created.
+	//   propose      (default) also propose a RemediationAction for every
+	//                actionable incident. A human approves it before anything is
+	//                applied.
+	//   auto-approve NOT YET IMPLEMENTED. Accepted for forward compatibility and
+	//                treated exactly like propose; the operator logs a warning on
+	//                every proposal. Approval is always required today.
+	// An unrecognized value is treated as propose.
 	// +kubebuilder:validation:Enum=observe;propose;auto-approve
 	// +kubebuilder:default=propose
 	Mode string `json:"mode"`

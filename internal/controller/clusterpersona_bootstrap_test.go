@@ -78,8 +78,8 @@ func TestBootstrap_CreatesPersonaWhenNoneExists(t *testing.T) {
 		t.Errorf("expected environment 'development', got %q", persona.Spec.Environment)
 	}
 	sh := persona.Spec.Policies.SelfHealing
-	if sh == nil || sh.Mode != "observe" || sh.TrustLevel != 2 {
-		t.Errorf("expected selfHealing observe/trust 2, got %+v", sh)
+	if sh == nil || sh.Mode != dorguv1.SelfHealingModePropose || sh.TrustLevel != 2 {
+		t.Errorf("expected selfHealing propose/trust 2, got %+v", sh)
 	}
 }
 
