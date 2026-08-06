@@ -1,0 +1,165 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.0
+  name: dorguevents.dorgu.io
+spec:
+  group: dorgu.io
+  names:
+    kind: DorguEvent
+    listKind: DorguEventList
+    plural: dorguevents
+    shortNames:
+    - de
+    singular: dorguevent
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.severity
+      name: Severity
+      type: string
+    - jsonPath: .spec.category
+      name: Category
+      type: string
+    - jsonPath: .spec.message
+      name: Message
+      priority: 1
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          DorguEvent is the Schema for the dorguevents API.
+          It is a write-once classified event record with TTL-based cleanup.
+          DorguEvent has no status subresource — it is an immutable event record.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: Spec defines the event data.
+            properties:
+              category:
+                description: Category classifies the event.
+                enum:
+                - resource
+                - scaling
+                - health
+                - security
+                - deployment
+                - dependency
+                - node
+                - controlplane
+                type: string
+              eventTime:
+                description: EventTime is when the original K8s event occurred.
+                format: date-time
+                type: string
+              incidentRef:
+                description: IncidentRef links this event to an IncidentMemory (if
+                  correlated).
+                properties:
+                  name:
+                    description: Name of the IncidentMemory.
+                    type: string
+                  namespace:
+                    description: Namespace of the IncidentMemory.
+                    type: string
+                required:
+                - name
+                - namespace
+                type: object
+              involvedObject:
+                description: InvolvedObject references the K8s resource this event
+                  relates to.
+                properties:
+                  kind:
+                    description: Kind of the K8s resource (Pod, Node, Deployment,
+                      Service, etc.).
+                    type: string
+                  name:
+                    description: Name of the resource.
+                    type: string
+                  namespace:
+                    description: Namespace of the resource (empty for cluster-scoped).
+                    type: string
+                  role:
+                    description: Role describes this resource's relationship to the
+                      incident (e.g., "affected", "dependency", "upstream", "downstream").
+                    type: string
+                required:
+                - kind
+                - name
+                type: object
+              k8sEventRef:
+                description: K8sEventRef stores the original K8s Event UID for deduplication.
+                type: string
+              message:
+                description: Message is a human-readable description.
+                type: string
+              personaRef:
+                description: PersonaRef links this event to a Persona (if applicable).
+                properties:
+                  kind:
+                    description: Kind is ApplicationPersona or ClusterPersona.
+                    enum:
+                    - ApplicationPersona
+                    - ClusterPersona
+                    type: string
+                  name:
+                    description: Name of the referenced Persona.
+                    type: string
+                  namespace:
+                    description: Namespace of the referenced Persona (empty for ClusterPersona).
+                    type: string
+                required:
+                - kind
+                - name
+                type: object
+              severity:
+                description: Severity of the event.
+                enum:
+                - info
+                - warning
+                - critical
+                type: string
+              source:
+                description: Source identifies the detector that generated this event.
+                type: string
+              ttl:
+                description: 'TTL defines how long this event should be retained (default:
+                  24h).'
+                type: string
+            required:
+            - category
+            - eventTime
+            - involvedObject
+            - message
+            - severity
+            - source
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources: {}

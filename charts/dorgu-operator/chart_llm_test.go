@@ -132,9 +132,12 @@ func TestAIRemediationToggle(t *testing.T) {
 }
 
 // (f) The image tag resolves to the chart appVersion when image.tag is unset.
+// Read from Chart.yaml rather than hardcoded, so a version bump cannot leave this
+// assertion pinned to a stale image — see TestChartVersionMatchesLatestTag.
 func TestImageTagMatchesAppVersion(t *testing.T) {
+	appVersion := readChartMeta(t).AppVersion
 	out := helmTemplate(t)
-	mustContain(t, out, "ghcr.io/dorgu-ai/dorgu-operator:0.6.1", "image tag from appVersion")
+	mustContain(t, out, "ghcr.io/dorgu-ai/dorgu-operator:"+appVersion, "image tag from appVersion")
 }
 
 // (g) With no provider, the default render is clean: no env, no LLM args, no Secret.

@@ -11,6 +11,10 @@ jobs:
     steps:
       - name: Clone the code
         uses: actions/checkout@v4
+        with:
+          # Tags are required by test/chart, which asserts the chart appVersion
+          # has not rotted behind the latest release tag.
+          fetch-depth: 0
 
       - name: Setup Go
         uses: actions/setup-go@v5

@@ -89,14 +89,31 @@ Follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) conventions:
 
 Leave `[Unreleased]` section empty and ready for the next cycle.
 
-## Step 5: Commit the changelog
+## Step 5: Bump the chart version
+
+Release CI restamps `charts/dorgu-operator/Chart.yaml` from the tag when publishing
+the OCI chart, but the committed values are what a contributor gets from
+`helm install ./charts/dorgu-operator` — and `templates/deployment.yaml` defaults
+the image tag to `appVersion`. Leaving them stale means a clone install runs an old
+operator image.
 
 ```bash
-git add CHANGELOG.md
+# <VERSION> without the leading "v", e.g. 0.7.3
+sed -i '' "s/^version:.*/version: <VERSION_NO_V>/" charts/dorgu-operator/Chart.yaml
+sed -i '' "s/^appVersion:.*/appVersion: \"<VERSION_NO_V>\"/" charts/dorgu-operator/Chart.yaml
+
+# Guarded by test/chart — this must pass before tagging
+go test ./test/chart/
+```
+
+## Step 6: Commit the changelog and chart bump
+
+```bash
+git add CHANGELOG.md charts/dorgu-operator/Chart.yaml
 git commit -m "chore: release <VERSION>"
 ```
 
-## Step 6: Tag the release
+## Step 7: Tag the release
 
 ```bash
 git tag -a <VERSION> -m "Release <VERSION>"
@@ -104,7 +121,7 @@ git tag -a <VERSION> -m "Release <VERSION>"
 
 Version must follow semver (`vMAJOR.MINOR.PATCH`). Pre-releases use `-rc.N` suffix (e.g. `v0.3.0-rc.1`).
 
-## Step 7: Verify the build with GoReleaser (dry run)
+## Step 8: Verify the build with GoReleaser (dry run)
 
 ```bash
 goreleaser release --snapshot --clean
@@ -112,7 +129,7 @@ goreleaser release --snapshot --clean
 
 Check that `./dist/` contains binaries for expected platforms (linux/darwin amd64/arm64, windows amd64).
 
-## Step 8: Push tag to trigger release workflow
+## Step 9: Push tag to trigger release workflow
 
 **Ask the user to confirm before pushing:**
 
@@ -126,7 +143,7 @@ git push origin <VERSION>
 
 The release GitHub Actions workflow triggers on tag push and runs GoReleaser to publish binaries and create the GitHub Release.
 
-## Step 9: Verify the release
+## Step 10: Verify the release
 
 After CI completes:
 1. Check GitHub Releases page for `<VERSION>` with attached binaries and checksums

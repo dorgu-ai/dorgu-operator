@@ -243,6 +243,14 @@ func (p *Proposer) Propose(ctx context.Context, diag diagnosis.Diagnosis, incide
 		return &ProposalResult{SkipReason: "diagnosis has no persona reference"}, nil
 	}
 
+	// Honor spec.policies.selfHealing.mode before doing any work: observe means
+	// the incident is recorded (the caller already did that) and nothing is
+	// proposed. This runs ahead of both the AI planner and the rule-based path so
+	// observe never spends an API call.
+	if reason := p.proposalSuppressedByMode(ctx, diag.PersonaRef.Name, incidentName(incident)); reason != "" {
+		return &ProposalResult{SkipReason: reason}, nil
+	}
+
 	// Dedup: skip if an active RemediationAction already covers this proposal —
 	// either the same incident (per-cycle re-proposal) or the same
 	// persona+target (a second incident for one root cause, e.g. CrashLoop after

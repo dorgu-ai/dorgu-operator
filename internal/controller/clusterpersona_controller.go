@@ -184,7 +184,10 @@ func applySelfHealingDefaults(persona *dorguv1.ClusterPersona) bool {
 
 	sh := persona.Spec.Policies.SelfHealing
 	if sh.Mode == "" {
-		sh.Mode = "observe"
+		// Match the CRD's kubebuilder default. Now that the proposer honors the
+		// mode, defaulting to observe here would silently suppress every
+		// remediation for personas created before the field existed.
+		sh.Mode = dorguv1.SelfHealingModePropose
 		changed = true
 	}
 	if sh.TrustLevel == 0 {

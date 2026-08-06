@@ -221,8 +221,11 @@ func (b *ClusterPersonaBootstrap) buildPersona(clusterUID string) *dorguv1.Clust
 			Environment: "development",
 			Policies: &dorguv1.ClusterPolicies{
 				SelfHealing: &dorguv1.SelfHealingPolicy{
-					Enabled:                true,
-					Mode:                   "observe",
+					Enabled: true,
+					// propose matches the CRD default: detect, diagnose, and
+					// propose a fix that a human approves. Switch the persona to
+					// observe to keep the loop diagnosis-only.
+					Mode:                   dorguv1.SelfHealingModePropose,
 					TrustLevel:             trustLevel,
 					MaxRemediationsPerHour: maxRemPerHour,
 				},

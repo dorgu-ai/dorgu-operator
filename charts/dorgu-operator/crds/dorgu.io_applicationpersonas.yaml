@@ -294,6 +294,11 @@ spec:
           status:
             description: status defines the observed state of ApplicationPersona.
             properties:
+              activeIncidents:
+                description: activeIncidents is the count of unresolved incidents
+                  for this persona.
+                format: int32
+                type: integer
               argoCD:
                 description: argoCD contains ArgoCD sync status if ArgoCD is detected.
                 properties:
@@ -425,6 +430,33 @@ spec:
                     type: string
                   message:
                     type: string
+                  podFailures:
+                    description: podFailures captures container failure reasons when
+                      pods are unhealthy.
+                    items:
+                      description: PodFailure captures a single pod/container failure
+                        reason.
+                      properties:
+                        container:
+                          description: container is the name of the failing container.
+                          type: string
+                        message:
+                          description: message provides additional details about the
+                            failure.
+                          type: string
+                        podName:
+                          description: podName is the name of the failing pod.
+                          type: string
+                        reason:
+                          description: reason is the failure reason (e.g., CrashLoopBackOff,
+                            ImagePullBackOff).
+                          type: string
+                      required:
+                      - container
+                      - podName
+                      - reason
+                      type: object
+                    type: array
                   status:
                     enum:
                     - Healthy
@@ -433,6 +465,11 @@ spec:
                     - Unknown
                     type: string
                 type: object
+              lastIncidentTime:
+                description: lastIncidentTime is when the most recent incident was
+                  detected.
+                format: date-time
+                type: string
               lastUpdated:
                 description: lastUpdated records when the operator last reconciled.
                 format: date-time
