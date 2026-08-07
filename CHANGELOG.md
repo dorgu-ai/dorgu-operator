@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-08-07
+
+### Upgrade note
+
+> **Clusters running `selfHealing.mode: observe` will stop receiving remediation proposals after this upgrade.** The mode is now enforced (see below). Before 0.7.3 the field was inert, so an `observe` cluster still got `RemediationAction`s. Bootstrap versions before 0.7.3 hardcoded `mode: observe` on the auto-created `dorgu-cluster` persona, so most existing clusters are in exactly this state. Upgrading is safe but silent: detection and diagnosis keep running and `IncidentMemory` records keep appearing, while zero remediations are proposed.
+>
+> Check the current mode and restore the previous behavior with:
+>
+> ```bash
+> kubectl get clusterpersona dorgu-cluster -o jsonpath='{.spec.policies.selfHealing.mode}'
+> kubectl patch clusterpersona dorgu-cluster --type=merge \
+>   -p '{"spec":{"policies":{"selfHealing":{"mode":"propose"}}}}'
+> ```
+>
+> New installs are unaffected: the bootstrap and the CRD default both use `propose`. If a persona was created by a clone install of the 0.7.2 chart, its `mode` may have been pruned entirely (the bundled `ClusterPersona` CRD was missing `policies.selfHealing`), in which case the CRD default `propose` applies once the 0.7.3 CRDs are installed.
+
 ### Fixed
 
 - **`selfHealing.mode: observe` is now enforced — the safety switch works** — the CRD advertised `observe | propose | auto-approve`, but no code branched on the mode: `observe` still created `RemediationAction`s, so the API made a safety promise it did not keep. The proposer now honors `spec.policies.selfHealing.mode` from the `ClusterPersona` before doing any work: **`observe`** detects, diagnoses, and records an `IncidentMemory` but creates **zero** `RemediationAction`s, logging `selfHealing.mode=observe — proposal suppressed` with a hint for switching to `propose`; **`propose`** (the default) keeps the existing behavior; **`auto-approve`** is **not implemented** and is accepted but degraded to `propose` with a prominent warning rather than silently auto-approving — approval is always required today. An unrecognized mode is treated as `propose` and logged. The gate runs ahead of the AI planner, so `observe` spends no API calls. The auto-created `dorgu-cluster` persona and the controller's default-fill now use `propose`, matching the CRD's kubebuilder default — they previously said `observe`, which would have suppressed every remediation out of the box once the mode was enforced. `approval.autoApproveRule` and `selfHealing.enabled` are marked **not yet implemented** on the Go types and in the CRD schema so they stop reading as promises.
