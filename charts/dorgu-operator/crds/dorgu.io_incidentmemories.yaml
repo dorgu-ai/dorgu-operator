@@ -189,12 +189,16 @@ spec:
                     description: Duration is how long from detection to resolution.
                     type: string
                   outcome:
-                    description: Outcome is the result of the remediation.
+                    description: |-
+                      Outcome is the result of the remediation.
+                      "acknowledged" means a human approved an advisory plan: the decision is
+                      recorded, nothing was applied, and the incident is still open.
                     enum:
                     - resolved
                     - partial
                     - failed
                     - rollback
+                    - acknowledged
                     type: string
                   remediationRef:
                     description: RemediationRef references the RemediationAction that

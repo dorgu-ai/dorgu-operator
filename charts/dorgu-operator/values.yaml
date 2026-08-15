@@ -69,9 +69,16 @@ websocket:
     type: ClusterIP
     port: 9090
 
-# Health check reconciler — enables Phase 2a/2b detection, diagnosis, and remediation
+# Health check reconciler: detection, diagnosis, incident records, and remediation
+# proposals. On by default, because self-healing is the product and an operator
+# that detects nothing is indistinguishable from a broken install.
+# Turn it off with --set healthCheck.enabled=false.
+#
+# This is local and free. AI diagnosis and AI remediation planning stay opt-in
+# (llm.provider + a key + aiRemediation.enabled below): inference costs money and
+# sends cluster data to a third party, so that consent has to be explicit.
 healthCheck:
-  enabled: false
+  enabled: true
   interval: 60s
 
 # Metrics-server integration for container-level CPU/memory detection

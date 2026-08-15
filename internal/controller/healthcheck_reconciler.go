@@ -285,7 +285,11 @@ func (r *HealthCheckReconciler) updateExistingIncident(
 	// Update spec fields.
 	im.Spec.Detection.LastSeen = now
 
-	// Update root cause if confidence improved.
+	// Refresh the root cause when the new diagnosis is at least as confident as
+	// the recorded one. The tie matters: an AI-enhanced diagnosis carries the
+	// same numeric confidence as the rule-based diagnosis it enhances, so
+	// requiring a strict improvement is how an incident first recorded before AI
+	// was configured stayed stamped "rule-based" for its whole life (F-05).
 	if diag.Confidence > 0 {
 		existingConfidence := 0.0
 		if im.Spec.RootCause != nil {
@@ -294,7 +298,7 @@ func (r *HealthCheckReconciler) updateExistingIncident(
 				existingConfidence = parsed
 			}
 		}
-		if diag.Confidence > existingConfidence {
+		if diag.Confidence >= existingConfidence {
 			im.Spec.RootCause = buildRootCause(diag)
 		}
 	}

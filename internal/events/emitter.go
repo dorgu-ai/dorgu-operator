@@ -22,9 +22,9 @@ import (
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/tools/record"
+
+	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 )
 
 // Emitter emits standard K8s Events from the operator so that
@@ -53,6 +53,11 @@ func (e *K8sEventEmitter) Emit(_ context.Context, event *InternalEvent) error {
 		return nil
 	}
 
+	ref, err := involvedObjectRef(event.InvolvedObject)
+	if err != nil {
+		return fmt.Errorf("emitting %q event: %w", event.Source, err)
+	}
+
 	eventType := corev1.EventTypeNormal
 	if event.Severity == SeverityWarning || event.Severity == SeverityCritical {
 		eventType = corev1.EventTypeWarning
@@ -60,35 +65,58 @@ func (e *K8sEventEmitter) Emit(_ context.Context, event *InternalEvent) error {
 
 	message := fmt.Sprintf("[dorgu] %s: %s", event.Severity, event.Message)
 
-	ref := &objectRef{
-		gvk:       schema.GroupVersionKind{Kind: event.InvolvedObject.Kind},
-		name:      event.InvolvedObject.Name,
-		namespace: event.InvolvedObject.Namespace,
-	}
-
 	e.recorder.Event(ref, eventType, "DorguDetected", message)
 
 	e.logger.V(1).Info("emitted K8s event",
-		"kind", event.InvolvedObject.Kind,
-		"name", event.InvolvedObject.Name,
+		"kind", ref.Kind,
+		"name", ref.Name,
+		"namespace", ref.Namespace,
 		"severity", event.Severity,
 	)
 
 	return nil
 }
 
-// objectRef is a minimal runtime.Object used as the "regarding" object
-// for the event recorder. It allows emitting events for any resource kind
-// without needing the actual object instance.
-type objectRef struct {
-	gvk       schema.GroupVersionKind
-	name      string
-	namespace string
+// involvedObjectRef builds the "regarding" object for the event recorder.
+//
+// It must be a corev1.ObjectReference. The recorder resolves whatever it is
+// handed through client-go's reference.GetReference, which requires a real API
+// object (one exposing ObjectMeta) and returns an ObjectReference untouched.
+// A hand-rolled runtime.Object that only carries a GVK, a name and a namespace
+// satisfies neither, so every event was dropped with "object does not implement
+// the common interface for accessing the SelfLink" and nothing ever reached
+// `kubectl get events` (F-08).
+//
+// Kind and Name are required: an event whose involved object cannot be named is
+// not worth emitting, and the API server would reject or misfile it.
+func involvedObjectRef(obj dorguv1.ResourceReference) (*corev1.ObjectReference, error) {
+	if obj.Kind == "" || obj.Name == "" {
+		return nil, fmt.Errorf("involved object needs both a kind and a name, got kind=%q name=%q",
+			obj.Kind, obj.Name)
+	}
+
+	return &corev1.ObjectReference{
+		Kind:       obj.Kind,
+		Name:       obj.Name,
+		Namespace:  obj.Namespace,
+		APIVersion: apiVersionForKind(obj.Kind),
+	}, nil
 }
 
-func (r *objectRef) GetObjectKind() schema.ObjectKind { return r }
-func (r *objectRef) DeepCopyObject() runtime.Object {
-	return &objectRef{gvk: r.gvk, name: r.name, namespace: r.namespace}
+// apiVersionForKind maps the kinds dorgu attaches events to onto their
+// apiVersion. An unknown kind yields an empty apiVersion, which still produces a
+// usable event (kind, namespace and name are what alerting pipelines select on).
+func apiVersionForKind(kind string) string {
+	switch kind {
+	case "Pod", "Node", "Service", "ComponentStatus", "Event", "Namespace", "PersistentVolumeClaim":
+		return "v1"
+	case "Deployment", "ReplicaSet", "StatefulSet", "DaemonSet":
+		return "apps/v1"
+	case "Lease":
+		return "coordination.k8s.io/v1"
+	case "ApplicationPersona", "ClusterPersona", "IncidentMemory", "RemediationAction", "DorguEvent":
+		return dorguv1.GroupVersion.String()
+	default:
+		return ""
+	}
 }
-func (r *objectRef) SetGroupVersionKind(gvk schema.GroupVersionKind) { r.gvk = gvk }
-func (r *objectRef) GroupVersionKind() schema.GroupVersionKind       { return r.gvk }

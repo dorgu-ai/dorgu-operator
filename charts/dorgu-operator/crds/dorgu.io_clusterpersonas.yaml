@@ -543,10 +543,14 @@ spec:
                     description: allocatableMemory is the total allocatable memory.
                     type: string
                   cpuUtilization:
-                    description: cpuUtilization is the CPU utilization percentage.
+                    description: |-
+                      cpuUtilization is usedCPU as a percentage of allocatableCPU. Empty when
+                      allocatable is unknown.
                     type: string
                   memoryUtilization:
-                    description: memoryUtilization is the memory utilization percentage.
+                    description: |-
+                      memoryUtilization is usedMemory as a percentage of allocatableMemory. Empty
+                      when allocatable is unknown.
                     type: string
                   nodeCount:
                     description: nodeCount is the number of nodes in the cluster.
@@ -568,10 +572,15 @@ spec:
                     format: int32
                     type: integer
                   usedCPU:
-                    description: usedCPU is the currently used CPU (from metrics).
+                    description: |-
+                      usedCPU is the CPU claimed by the resource requests of scheduled pods: what
+                      the scheduler treats as consumed. Requests rather than live metrics, so the
+                      figure is available without metrics-server.
                     type: string
                   usedMemory:
-                    description: usedMemory is the currently used memory (from metrics).
+                    description: |-
+                      usedMemory is the memory claimed by the resource requests of scheduled pods.
+                      See usedCPU.
                     type: string
                 type: object
             type: object

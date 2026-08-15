@@ -78,6 +78,14 @@ func (p *Proposer) proposeWithPlanner(
 	// step (the operator must never write workloads).
 	enforceAutoExecutableInvariant(action)
 
+	// The planner is told to keep changes within ~2x an existing limit, so a plan
+	// can arrive already pressed against the cap. Say so rather than presenting a
+	// truncated fix as a confident one.
+	if discloseBlastRadiusClamp(action) {
+		p.logger.Info("plan sits at the blast-radius cap; disclosing the clamp in the plan summary",
+			"action", action.Name, "confidence", action.Spec.Confidence)
+	}
+
 	if err := p.client.Create(ctx, action); err != nil {
 		return nil, fmt.Errorf("creating RemediationAction: %w", err)
 	}

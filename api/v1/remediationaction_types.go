@@ -196,7 +196,11 @@ type RemediationRollbackSpec struct {
 // RemediationActionStatus defines the observed state of RemediationAction.
 type RemediationActionStatus struct {
 	// Phase tracks the remediation lifecycle.
-	// +kubebuilder:validation:Enum=Pending;Approved;Applying;Verifying;Completed;RolledBack;Failed;Rejected;Expired
+	// Acknowledged is the terminal phase for an approved plan with nothing to
+	// apply: its steps are advisory, so approval records the decision and the
+	// operator changes nothing. It is not a failure and does not trip the
+	// failure cooldown.
+	// +kubebuilder:validation:Enum=Pending;Approved;Applying;Verifying;Completed;Acknowledged;RolledBack;Failed;Rejected;Expired
 	// +optional
 	Phase string `json:"phase,omitempty"`
 

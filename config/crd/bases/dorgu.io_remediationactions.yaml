@@ -368,13 +368,19 @@ spec:
                 format: int32
                 type: integer
               phase:
-                description: Phase tracks the remediation lifecycle.
+                description: |-
+                  Phase tracks the remediation lifecycle.
+                  Acknowledged is the terminal phase for an approved plan with nothing to
+                  apply: its steps are advisory, so approval records the decision and the
+                  operator changes nothing. It is not a failure and does not trip the
+                  failure cooldown.
                 enum:
                 - Pending
                 - Approved
                 - Applying
                 - Verifying
                 - Completed
+                - Acknowledged
                 - RolledBack
                 - Failed
                 - Rejected

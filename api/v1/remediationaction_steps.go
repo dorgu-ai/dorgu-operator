@@ -19,6 +19,8 @@ package v1
 import (
 	"errors"
 	"fmt"
+
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 )
 
 // RemediationStep.Type values. Only StepTypePersonaUpdate may be AutoExecutable
@@ -46,6 +48,51 @@ const (
 	PlanSourceRuleBased   = "rule-based"
 	PlanSourceAIAnthropic = "ai-anthropic"
 )
+
+// Condition reasons shared between the controller that writes them and the
+// safety checker that reads them.
+const (
+	// ReasonAdvisoryOnly marks a plan that settled on approval without applying
+	// anything, because it contains no auto-applicable step.
+	ReasonAdvisoryOnly = "AdvisoryOnly"
+
+	// ReasonPreconditionRejected marks a plan the executor refused before
+	// touching the cluster. Nothing was applied, so it is not an apply failure.
+	ReasonPreconditionRejected = "PreconditionRejected"
+)
+
+// HasAutoApplicableChange reports whether anything in this plan can be applied by
+// the operator: an auto-executable persona-update step carrying a patch, or the
+// legacy single Action when it is a persona-update with a patch.
+//
+// A plan without one is advisory. Approving it used to run it into the executor,
+// which rejected the action type, marked the action Failed, and tripped the
+// 30-minute failure cooldown for the app: a blackout earned by following the
+// tool's own printed instruction (F-03).
+func (r *RemediationAction) HasAutoApplicableChange() bool {
+	if r == nil {
+		return false
+	}
+
+	for _, step := range r.Spec.Steps {
+		if step.AutoExecutable && step.Type == StepTypePersonaUpdate && hasPatch(step.Patch) {
+			return true
+		}
+	}
+
+	if len(r.Spec.Steps) > 0 {
+		// The Steps[] plan is the plan of record; the legacy Action is derived
+		// from it, so it cannot contribute a change the steps do not have.
+		return false
+	}
+
+	return r.Spec.Action.Type == ActionTypePersonaUpdate && hasPatch(r.Spec.Action.Patch)
+}
+
+// hasPatch reports whether a patch field carries a payload.
+func hasPatch(patch *apiextensionsv1.JSON) bool {
+	return patch != nil && len(patch.Raw) > 0
+}
 
 // legacyActionStepType maps a legacy RemediationActionDetail.Type to a valid
 // RemediationStep.Type. persona-update maps through unchanged; notification and
