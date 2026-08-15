@@ -25,7 +25,6 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -37,6 +36,7 @@ import (
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/metrics"
 	"github.com/dorgu-ai/dorgu-operator/internal/websocket"
+	"github.com/dorgu-ai/dorgu-operator/internal/workload"
 )
 
 const (
@@ -95,54 +95,36 @@ func (r *ApplicationPersonaReconciler) Reconcile(ctx context.Context, req ctrl.R
 
 	log.Info("Reconciling ApplicationPersona", "name", persona.Spec.Name)
 
-	// 2. Find matching Deployments by label (try app.kubernetes.io/name first, fall back to app)
+	// 2. Resolve the Deployment this persona describes. Every Deployment in the
+	// namespace is a candidate: the fallback chain, not a label selector, decides
+	// which one matches, so workloads labelled only on the pod template (Helm,
+	// kustomize, most hand-written YAML) are still found.
 	deployments := &appsv1.DeploymentList{}
-	selector := labels.SelectorFromSet(labels.Set{
-		"app.kubernetes.io/name": persona.Spec.Name,
-	})
-	if err := r.List(ctx, deployments, &client.ListOptions{
-		Namespace:     req.Namespace,
-		LabelSelector: selector,
-	}); err != nil {
+	if err := r.List(ctx, deployments, client.InNamespace(req.Namespace)); err != nil {
 		log.Error(err, "Failed to list deployments")
 		return ctrl.Result{}, err
 	}
 
-	// Fallback: try common "app" label if no match with recommended label
-	if len(deployments.Items) == 0 {
-		fallbackSelector := labels.SelectorFromSet(labels.Set{
-			"app": persona.Spec.Name,
-		})
-		if err := r.List(ctx, deployments, &client.ListOptions{
-			Namespace:     req.Namespace,
-			LabelSelector: fallbackSelector,
-		}); err != nil {
-			log.Error(err, "Failed to list deployments with fallback label")
-			return ctrl.Result{}, err
-		}
-	}
+	match, rung, matchErr := workload.Resolve(deployments.Items, persona.Spec.Name)
 
 	now := metav1.Now()
 
-	// 3. No matching Deployment found -> Pending
-	if len(deployments.Items) == 0 {
-		persona.Status.Phase = phasePending
-		persona.Status.LastUpdated = &now
-		persona.Status.Health = &dorguv1.HealthStatus{
-			Status:    healthStatusUnknown,
-			LastCheck: &now,
-			Message:   "No matching Deployment found",
+	// 3a. Ambiguous match -> Pending, and say which Deployments collided. Picking
+	// one arbitrarily is how the wrong workload gets patched.
+	if matchErr != nil {
+		log.Info("Ambiguous Deployment match", "persona", persona.Spec.Name, "error", matchErr.Error())
+		r.markUnresolved(persona, &now, "AmbiguousDeployment", matchErr.Error())
+		if err := r.Status().Update(ctx, persona); err != nil {
+			return ctrl.Result{}, err
 		}
-		persona.Status.Validation = &dorguv1.ValidationStatus{
-			Passed:      true,
-			LastChecked: &now,
-		}
+		return ctrl.Result{RequeueAfter: requeueInterval}, nil
+	}
 
-		setCondition(&persona.Status.Conditions, conditionTypeReady, metav1.ConditionFalse,
-			"NoDeployment", "No Deployment with label app.kubernetes.io/name="+persona.Spec.Name)
-		setCondition(&persona.Status.Conditions, conditionTypeValidated, metav1.ConditionTrue,
-			"Skipped", "No Deployment to validate")
-
+	// 3b. No matching Deployment found -> Pending, naming everything we tried.
+	if match == nil {
+		r.markUnresolved(persona, &now, "NoDeployment", fmt.Sprintf(
+			"No Deployment in namespace %s matches persona %q by %s",
+			req.Namespace, persona.Spec.Name, workload.ChainDescription()))
 		if err := r.Status().Update(ctx, persona); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -150,7 +132,8 @@ func (r *ApplicationPersonaReconciler) Reconcile(ctx context.Context, req ctrl.R
 	}
 
 	// 4. Deployment found -> Validate
-	deploy := deployments.Items[0] // Use first match
+	deploy := *match
+	log.V(1).Info("Resolved Deployment", "deployment", deploy.Name, "matchedBy", rung)
 	var issues []dorguv1.ValidationIssue
 
 	issues = append(issues, validateResources(persona, &deploy)...)
@@ -274,6 +257,29 @@ func (r *ApplicationPersonaReconciler) Reconcile(ctx context.Context, req ctrl.R
 	return ctrl.Result{RequeueAfter: requeueInterval}, nil
 }
 
+// markUnresolved records that the persona could not be tied to exactly one
+// Deployment. The persona is Pending with health Unknown, and the condition
+// message carries the reason verbatim so `kubectl describe` explains itself.
+func (r *ApplicationPersonaReconciler) markUnresolved(
+	persona *dorguv1.ApplicationPersona, now *metav1.Time, reason, message string,
+) {
+	persona.Status.Phase = phasePending
+	persona.Status.LastUpdated = now
+	persona.Status.Health = &dorguv1.HealthStatus{
+		Status:    healthStatusUnknown,
+		LastCheck: now,
+		Message:   message,
+	}
+	persona.Status.Validation = &dorguv1.ValidationStatus{
+		Passed:      true,
+		LastChecked: now,
+	}
+
+	setCondition(&persona.Status.Conditions, conditionTypeReady, metav1.ConditionFalse, reason, message)
+	setCondition(&persona.Status.Conditions, conditionTypeValidated, metav1.ConditionTrue,
+		"Skipped", "No Deployment to validate")
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *ApplicationPersonaReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
@@ -292,16 +298,10 @@ func (r *ApplicationPersonaReconciler) deploymentToPersona(ctx context.Context, 
 		return nil
 	}
 
-	// Check both label keys (recommended + common)
-	appName := deploy.Labels["app.kubernetes.io/name"]
-	if appName == "" {
-		appName = deploy.Labels["app"]
-	}
-	if appName == "" {
-		return nil
-	}
-
-	// Find personas in the same namespace with matching spec.name
+	// Personas in the same namespace, matched by the same fallback chain the
+	// reconciler uses. Keying off the Deployment's own labels would drop every
+	// workload labelled on the pod template only, and those personas would then
+	// never see their Deployment change.
 	personas := &dorguv1.ApplicationPersonaList{}
 	if err := r.List(ctx, personas, &client.ListOptions{Namespace: deploy.Namespace}); err != nil {
 		return nil
@@ -309,14 +309,15 @@ func (r *ApplicationPersonaReconciler) deploymentToPersona(ctx context.Context, 
 
 	var requests []reconcile.Request
 	for _, p := range personas.Items {
-		if p.Spec.Name == appName {
-			requests = append(requests, reconcile.Request{
-				NamespacedName: types.NamespacedName{
-					Name:      p.Name,
-					Namespace: p.Namespace,
-				},
-			})
+		if !workload.Matches(deploy, p.Spec.Name) {
+			continue
 		}
+		requests = append(requests, reconcile.Request{
+			NamespacedName: types.NamespacedName{
+				Name:      p.Name,
+				Namespace: p.Namespace,
+			},
+		})
 	}
 	return requests
 }
