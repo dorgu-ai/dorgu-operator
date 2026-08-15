@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Resolve an `ApplicationPersona` to its `Deployment` without requiring a label on the Deployment object. Helm, kustomize and most hand-written YAML label the pod template only, so personas for pre-existing apps sat `Pending` forever with `No Deployment with label app.kubernetes.io/name=<app>`. Resolution now walks an ordered chain: `app.kubernetes.io/name` label, `app` label, `metadata.name`, then `spec.selector.matchLabels`. When several Deployments match the same rung the persona reports `AmbiguousDeployment` and names the candidates instead of patching one at random; when none match, the message lists every rung that was tried.
+- Validating webhook checks Deployments labelled on the pod template only, instead of exempting them with "no app.kubernetes.io/name label; skipping persona validation".
+
 ## [0.7.3] - 2026-08-07
 
 ### Upgrade note

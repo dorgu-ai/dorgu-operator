@@ -31,6 +31,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
+	"github.com/dorgu-ai/dorgu-operator/internal/workload"
 )
 
 // ValidationMode determines whether the webhook only warns or can reject.
@@ -63,13 +64,9 @@ func (v *DeploymentValidator) Handle(ctx context.Context, req admission.Request)
 		return admission.Errored(http.StatusBadRequest, err)
 	}
 
-	// Look up the app name from labels
-	appName := deploy.Labels["app.kubernetes.io/name"]
-	if appName == "" {
-		return admission.Allowed("no app.kubernetes.io/name label; skipping persona validation")
-	}
-
-	// Find matching ApplicationPersona(s) in the same namespace
+	// Find matching ApplicationPersona(s) in the same namespace. Matching uses
+	// the same fallback chain as the controller, so a Deployment carrying labels
+	// on the pod template only is still validated instead of silently skipped.
 	personas := &dorguv1.ApplicationPersonaList{}
 	if err := v.Client.List(ctx, personas, &client.ListOptions{Namespace: deploy.Namespace}); err != nil {
 		log.Error(err, "Failed to list personas")
@@ -79,7 +76,7 @@ func (v *DeploymentValidator) Handle(ctx context.Context, req admission.Request)
 
 	var matchingPersona *dorguv1.ApplicationPersona
 	for i := range personas.Items {
-		if personas.Items[i].Spec.Name == appName {
+		if workload.Matches(deploy, personas.Items[i].Spec.Name) {
 			matchingPersona = &personas.Items[i]
 			break
 		}
@@ -88,6 +85,7 @@ func (v *DeploymentValidator) Handle(ctx context.Context, req admission.Request)
 	if matchingPersona == nil {
 		return admission.Allowed("no matching ApplicationPersona found")
 	}
+	appName := matchingPersona.Spec.Name
 
 	// Run validations
 	var warnings []string
