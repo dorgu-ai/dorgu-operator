@@ -101,6 +101,12 @@ type PlannedStep struct {
 	// Patch is the JSON merge patch to apply to the persona spec, present only
 	// for persona-update steps (e.g. {"spec":{"resources":{"limits":{"memory":"512Mi"}}}}).
 	Patch json.RawMessage `json:"patch,omitempty"`
+
+	// Command is a ready-to-run kubectl command that carries out an advisory
+	// step, when a single command can (e.g. correcting a mistyped image tag).
+	// It is only ever printed for a human to run; the proposer filters it
+	// through dorguv1.SanitizeStepCommand before persisting it.
+	Command string `json:"command,omitempty"`
 }
 
 // Planner generates an ordered remediation plan from a RemediationContext.

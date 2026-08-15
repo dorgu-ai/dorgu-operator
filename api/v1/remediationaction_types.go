@@ -97,6 +97,7 @@ type RemediationActionDetail struct {
 // which preserves the operator's non-negotiable guarantee that it never writes
 // workloads. See ValidateAutoExecutable.
 // +kubebuilder:validation:XValidation:rule="!self.autoExecutable || self.type == 'persona-update'",message="only persona-update steps may be autoExecutable"
+// +kubebuilder:validation:XValidation:rule="!has(self.command) || self.command.startsWith('kubectl ')",message="step command must be a kubectl invocation"
 type RemediationStep struct {
 	// Order is the 1-based execution order of this step within the plan.
 	// +kubebuilder:validation:Minimum=1
@@ -124,6 +125,19 @@ type RemediationStep struct {
 	// AutoExecutable indicates the operator may apply this step without external
 	// action. v1 invariant: this is true ONLY for persona-update steps.
 	AutoExecutable bool `json:"autoExecutable"`
+
+	// Command is a ready-to-run kubectl command that carries out this advisory
+	// step, when a single command can. It exists so a correct diagnosis turns
+	// into an actual fix instead of prose the reader has to translate.
+	//
+	// It is never executed: not by the operator (which never writes workloads)
+	// and not by the CLI. It is printed for a human to read, check, and run.
+	// Because it can originate from a model, it is filtered through
+	// SanitizeStepCommand before being persisted: anything that is not a
+	// single-line kubectl invocation free of shell metacharacters is dropped.
+	// +optional
+	// +kubebuilder:validation:MaxLength=1024
+	Command string `json:"command,omitempty"`
 
 	// Patch is the JSON merge patch to apply to the Persona spec (persona-update steps).
 	// +optional

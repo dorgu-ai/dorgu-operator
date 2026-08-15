@@ -90,3 +90,54 @@ func TestPlanToolSchema_IsValidJSON(t *testing.T) {
 	assert.Contains(t, props, "confidence")
 	assert.Contains(t, props, "steps")
 }
+
+// TestPlanToolSchema_OffersAnAdvisoryCommand covers F-10 at the wire contract:
+// the model cannot return a copy-paste command unless the tool schema has a
+// field for it, and cannot stay within the sanitizer unless the schema says so.
+func TestPlanToolSchema_OffersAnAdvisoryCommand(t *testing.T) {
+	props := planToolSchema()["properties"].(map[string]interface{})
+	item := props["steps"].(map[string]interface{})["items"].(map[string]interface{})
+	stepProps := item["properties"].(map[string]interface{})
+
+	command, ok := stepProps["command"].(map[string]interface{})
+	require.True(t, ok, "steps[].command missing from the tool schema")
+	assert.Equal(t, "string", command["type"])
+	assert.Contains(t, command["description"], "kubectl ")
+
+	required, _ := item["required"].([]string)
+	assert.NotContains(t, required, "command", "command must stay optional")
+}
+
+// TestPlanSystemPrompt_AsksForAResolvedCommand guards the instruction itself:
+// an unresolved placeholder command is worse than none, so the prompt has to
+// demand real names and forbid guessing.
+func TestPlanSystemPrompt_AsksForAResolvedCommand(t *testing.T) {
+	assert.Contains(t, planSystemPrompt, `"command"`)
+	assert.Contains(t, planSystemPrompt, "kubectl set image")
+	assert.Contains(t, planSystemPrompt, "Never guess.")
+}
+
+// TestExtractPlan_CarriesTheCommandThrough asserts the decode path keeps the
+// command; without this the schema field would be silently dropped.
+func TestExtractPlan_CarriesTheCommandThrough(t *testing.T) {
+	input := `{
+		"rootCause": "image tag typo",
+		"confidence": 0.91,
+		"steps": [
+			{"order": 1, "type": "config-change", "description": "fix the tag",
+			 "rationale": "tag does not exist", "risk": "low",
+			 "command": "kubectl set image deployment/web web=nginx:1.27-alpine -n demo"},
+			{"order": 2, "type": "manual", "description": "watch the rollout",
+			 "rationale": "confirm recovery", "risk": "low"}
+		]
+	}`
+
+	plan, err := extractPlan(claudeResponse{Content: []claudeContent{
+		{Type: "tool_use", Name: planToolName, Input: json.RawMessage(input)},
+	}})
+	require.NoError(t, err)
+	require.Len(t, plan.Steps, 2)
+
+	assert.Equal(t, "kubectl set image deployment/web web=nginx:1.27-alpine -n demo", plan.Steps[0].Command)
+	assert.Empty(t, plan.Steps[1].Command, "an omitted command stays empty")
+}

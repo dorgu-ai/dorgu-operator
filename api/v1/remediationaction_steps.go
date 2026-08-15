@@ -19,6 +19,7 @@ package v1
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 )
@@ -147,6 +148,48 @@ func (r *RemediationAction) EffectiveSteps() []RemediationStep {
 			PrePatchState:  legacy.PrePatchState.DeepCopy(),
 		},
 	}
+}
+
+// MaxStepCommandLength bounds RemediationStep.Command, matching the CRD's
+// MaxLength so a command rejected by the API server never reaches it.
+const MaxStepCommandLength = 1024
+
+// stepCommandPrefix is the only command form a step may suggest. Restricting to
+// kubectl keeps the suggestion inspectable: the reader already knows what
+// kubectl does, and no other binary can be smuggled in.
+const stepCommandPrefix = "kubectl "
+
+// stepCommandForbidden are the characters that let a pasted one-liner do more
+// than the command it appears to be: chaining, piping, redirecting, command
+// substitution, and variable expansion.
+const stepCommandForbidden = ";&|<>`$\n\r"
+
+// SanitizeStepCommand returns cmd if it is safe to print as a copy-paste
+// suggestion, and "" otherwise.
+//
+// A step command may be authored by a language model, so it is untrusted input
+// on its way to a human's shell. The bar it has to clear is deliberately blunt:
+// one line, a kubectl invocation, no shell metacharacters, within the CRD's
+// length bound. A command that fails any of these is dropped rather than
+// rewritten, because a half-corrected command is worse than none.
+//
+// This is a display guard, not an execution sandbox. Nothing in Dorgu runs the
+// result; the human running it is the one deciding.
+func SanitizeStepCommand(cmd string) string {
+	trimmed := strings.TrimSpace(cmd)
+	if trimmed == "" {
+		return ""
+	}
+	if len(trimmed) > MaxStepCommandLength {
+		return ""
+	}
+	if !strings.HasPrefix(trimmed, stepCommandPrefix) {
+		return ""
+	}
+	if strings.ContainsAny(trimmed, stepCommandForbidden) {
+		return ""
+	}
+	return trimmed
 }
 
 // ValidateAutoExecutable enforces the v1 step-safety invariant: a step may be

@@ -78,6 +78,13 @@ func (p *Proposer) proposeWithPlanner(
 	// step (the operator must never write workloads).
 	enforceAutoExecutableInvariant(action)
 
+	// Safety and the invariant guard can both demote a step to advisory, so the
+	// explanation's auto/advisory split is only true once every gate has run.
+	//
+	// This must stay ABOVE discloseBlastRadiusClamp: that appends the cap caveat
+	// to Explanation, and recomputing afterwards would erase it.
+	action.Spec.Explanation = planExplanation(action.Spec.Steps)
+
 	// The planner is told to keep changes within ~2x an existing limit, so a plan
 	// can arrive already pressed against the cap. Say so rather than presenting a
 	// truncated fix as a confident one.
@@ -101,6 +108,10 @@ func (p *Proposer) proposeWithPlanner(
 // mapPlannedSteps converts the planner's ordered steps into RemediationStep[].
 // Only persona-update steps are auto-executable and carry a patch (plus a
 // pre-patch snapshot of the current persona spec for rollback / blast-radius).
+//
+// Advisory steps may additionally carry a suggested kubectl command, which is
+// sanitized here: the planner's output is model-authored, and this is the last
+// point before it is persisted for the CLI to print to a human.
 func mapPlannedSteps(plan *planner.RemediationPlan, persona *dorguv1.ApplicationPersona) []dorguv1.RemediationStep {
 	steps := make([]dorguv1.RemediationStep, 0, len(plan.Steps))
 	for _, ps := range plan.Steps {
@@ -112,6 +123,7 @@ func mapPlannedSteps(plan *planner.RemediationPlan, persona *dorguv1.Application
 			Rationale:      ps.Rationale,
 			Risk:           ps.Risk,
 			AutoExecutable: ps.Type == dorguv1.StepTypePersonaUpdate,
+			Command:        advisoryCommand(ps),
 		}
 
 		if ps.Type == dorguv1.StepTypePersonaUpdate && len(ps.Patch) > 0 && json.Valid(ps.Patch) {
@@ -127,6 +139,19 @@ func mapPlannedSteps(plan *planner.RemediationPlan, persona *dorguv1.Application
 		steps = append(steps, step)
 	}
 	return steps
+}
+
+// advisoryCommand returns the sanitized copy-paste command for an advisory step.
+//
+// persona-update steps get none: the operator applies those itself, so printing
+// a command beside them would invite a human to make the same change twice. A
+// command that fails sanitization is dropped, so a step either shows a command
+// that is safe to paste or shows none at all.
+func advisoryCommand(ps planner.PlannedStep) string {
+	if ps.Type == dorguv1.StepTypePersonaUpdate {
+		return ""
+	}
+	return dorguv1.SanitizeStepCommand(ps.Command)
 }
 
 // buildPlanAction assembles the RemediationAction CRD for an AI plan. The
@@ -166,7 +191,7 @@ func (p *Proposer) buildPlanAction(
 			Steps:       steps,
 			PlanSource:  dorguv1.PlanSourceAIAnthropic,
 			PlanSummary: plan.RootCause,
-			Explanation: planExplanation(plan),
+			Explanation: planExplanation(steps),
 			Confidence:  formatConfidence(plan.Confidence),
 			Approval: &dorguv1.ApprovalSpec{
 				Required: true,
@@ -305,12 +330,42 @@ func enforceAutoExecutableInvariant(action *dorguv1.RemediationAction) {
 	}
 }
 
-// planExplanation produces a short human-readable explanation from the plan.
-func planExplanation(plan *planner.RemediationPlan) string {
-	if plan.RootCause != "" {
-		return fmt.Sprintf("AI remediation plan (%d steps): %s", len(plan.Steps), plan.RootCause)
+// planExplanation produces the one-line description of WHAT the plan does.
+//
+// It deliberately does not restate PlanSummary. PlanSummary is the root cause
+// (why the incident happened); Explanation is the shape of the response (how
+// many steps, how many Dorgu applies for you). They used to be the same
+// sentence with a prefix, which meant `dorgu remediation diff` printed the same
+// paragraph twice under two different headings (F-15).
+func planExplanation(steps []dorguv1.RemediationStep) string {
+	auto := 0
+	for _, s := range steps {
+		if s.AutoExecutable {
+			auto++
+		}
 	}
-	return fmt.Sprintf("AI remediation plan (%d steps)", len(plan.Steps))
+	advisory := len(steps) - auto
+
+	switch {
+	case len(steps) == 0:
+		return "AI remediation plan with no steps"
+	case auto == 0:
+		return fmt.Sprintf("AI remediation plan: %s, all advisory (nothing is applied for you)",
+			pluralSteps(len(steps)))
+	case advisory == 0:
+		return fmt.Sprintf("AI remediation plan: %s, applied on approval", pluralSteps(len(steps)))
+	default:
+		return fmt.Sprintf("AI remediation plan: %s, %d applied on approval and %d advisory",
+			pluralSteps(len(steps)), auto, advisory)
+	}
+}
+
+// pluralSteps renders a step count with the right noun.
+func pluralSteps(n int) string {
+	if n == 1 {
+		return "1 step"
+	}
+	return fmt.Sprintf("%d steps", n)
 }
 
 // formatConfidence renders a confidence score as the CRD's decimal-string
