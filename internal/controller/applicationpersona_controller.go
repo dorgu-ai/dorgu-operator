@@ -307,7 +307,7 @@ func (r *ApplicationPersonaReconciler) deploymentToPersona(ctx context.Context, 
 		return nil
 	}
 
-	var requests []reconcile.Request
+	requests := make([]reconcile.Request, 0, len(personas.Items))
 	for _, p := range personas.Items {
 		if !workload.Matches(deploy, p.Spec.Name) {
 			continue

@@ -23,6 +23,12 @@ import (
 	"time"
 )
 
+// Supported provider names, as accepted by NewClient and returned by Provider().
+const (
+	providerClaude = "claude"
+	providerGemini = "gemini"
+)
+
 // Client provides LLM capabilities for diagnosis enhancement.
 type Client interface {
 	// EnhanceDiagnosis takes rule-based diagnosis context and returns enriched explanation.
@@ -77,13 +83,13 @@ func NewClient(provider, apiKey string) (Client, error) {
 	httpClient := &http.Client{Timeout: defaultTimeout}
 
 	switch provider {
-	case "claude":
+	case providerClaude:
 		return &ClaudeClient{
 			apiKey: apiKey,
 			model:  defaultClaudeModel,
 			client: httpClient,
 		}, nil
-	case "gemini":
+	case providerGemini:
 		return &GeminiClient{
 			apiKey: apiKey,
 			model:  defaultGeminiModel,

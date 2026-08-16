@@ -166,7 +166,7 @@ func (p *Proposer) buildPlanAction(
 ) *dorguv1.RemediationAction {
 	namespace := diag.PersonaRef.Namespace
 	if namespace == "" {
-		namespace = "default"
+		namespace = defaultNamespace
 	}
 
 	healthCheckDuration := metav1.Duration{Duration: defaultHealthCheckAfter}
@@ -389,7 +389,7 @@ func snapshotPrePatch(persona *dorguv1.ApplicationPersona, patch json.RawMessage
 		return nil
 	}
 
-	var patchMap map[string]interface{}
+	var patchMap map[string]any
 	if err := json.Unmarshal(patch, &patchMap); err != nil {
 		return nil
 	}
@@ -398,12 +398,12 @@ func snapshotPrePatch(persona *dorguv1.ApplicationPersona, patch json.RawMessage
 	if err != nil {
 		return nil
 	}
-	var specMap map[string]interface{}
+	var specMap map[string]any
 	if err := json.Unmarshal(specBytes, &specMap); err != nil {
 		return nil
 	}
 	// The patch is wrapped in {"spec": ...}; align the current object the same way.
-	currentMap := map[string]interface{}{"spec": specMap}
+	currentMap := map[string]any{"spec": specMap}
 
 	snap := mirrorExistingPaths(patchMap, currentMap)
 	if len(snap) == 0 {
@@ -419,15 +419,15 @@ func snapshotPrePatch(persona *dorguv1.ApplicationPersona, patch json.RawMessage
 // mirrorExistingPaths walks the patch structure and returns a map containing the
 // current values at each leaf path of the patch that also exists in current.
 // Paths absent from current are skipped (no prior value to record).
-func mirrorExistingPaths(patch, current map[string]interface{}) map[string]interface{} {
-	out := make(map[string]interface{})
+func mirrorExistingPaths(patch, current map[string]any) map[string]any {
+	out := make(map[string]any)
 	for key, patchVal := range patch {
 		curVal, ok := current[key]
 		if !ok {
 			continue
 		}
-		patchChild, patchIsMap := patchVal.(map[string]interface{})
-		curChild, curIsMap := curVal.(map[string]interface{})
+		patchChild, patchIsMap := patchVal.(map[string]any)
+		curChild, curIsMap := curVal.(map[string]any)
 		if patchIsMap && curIsMap {
 			child := mirrorExistingPaths(patchChild, curChild)
 			if len(child) > 0 {

@@ -74,7 +74,7 @@ func (r *Rollback) Execute(ctx context.Context, action *dorguv1.RemediationActio
 
 // getTargetPersona fetches the ApplicationPersona referenced by the action.
 func (r *Rollback) getTargetPersona(ctx context.Context, action *dorguv1.RemediationAction) (*dorguv1.ApplicationPersona, error) {
-	if action.Spec.PersonaRef.Kind != "ApplicationPersona" {
+	if action.Spec.PersonaRef.Kind != kindApplicationPersona {
 		return nil, fmt.Errorf("unsupported persona kind %q", action.Spec.PersonaRef.Kind)
 	}
 

@@ -30,6 +30,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 )
 
+// Fixture values every test in this file shares.
+const (
+	testNodeName  = "node-1"
+	testNamespace = "default"
+)
+
 func TestResourceCollector_Name(t *testing.T) {
 	logger := zap.New(zap.UseDevMode(true))
 	c := NewResourceCollector(fake.NewClientBuilder().Build(), logger)
@@ -42,17 +48,17 @@ func TestResourceCollector_EmptyCluster(t *testing.T) {
 }
 
 func TestResourceCollector_NoSaturation(t *testing.T) {
-	node := makeNode("node-1", "4000m", "8Gi")
-	pod := makePodOnNode("pod-1", "default", "node-1", "500m", "1Gi")
+	node := makeNode("4000m", "8Gi")
+	pod := makePodOnNode("pod-1", "500m", "1Gi")
 
 	signals := collectResourceSignals(t, []*corev1.Node{node}, []*corev1.Pod{pod})
 	assert.Empty(t, signals, "50% saturation should not trigger any signals")
 }
 
 func TestResourceCollector_CPUWarning(t *testing.T) {
-	node := makeNode("node-1", "1000m", "8Gi")
+	node := makeNode("1000m", "8Gi")
 	// 900m / 1000m = 90% > 85% warning threshold
-	pod := makePodOnNode("pod-1", "default", "node-1", "900m", "1Gi")
+	pod := makePodOnNode("pod-1", "900m", "1Gi")
 
 	signals := collectResourceSignals(t, []*corev1.Node{node}, []*corev1.Pod{pod})
 	require.Len(t, signals, 1)
@@ -63,9 +69,9 @@ func TestResourceCollector_CPUWarning(t *testing.T) {
 }
 
 func TestResourceCollector_CPUCritical(t *testing.T) {
-	node := makeNode("node-1", "1000m", "8Gi")
+	node := makeNode("1000m", "8Gi")
 	// 960m / 1000m = 96% > 95% critical threshold
-	pod := makePodOnNode("pod-1", "default", "node-1", "960m", "1Gi")
+	pod := makePodOnNode("pod-1", "960m", "1Gi")
 
 	signals := collectResourceSignals(t, []*corev1.Node{node}, []*corev1.Pod{pod})
 	require.Len(t, signals, 1)
@@ -74,9 +80,9 @@ func TestResourceCollector_CPUCritical(t *testing.T) {
 }
 
 func TestResourceCollector_MemoryWarning(t *testing.T) {
-	node := makeNode("node-1", "4000m", "1Gi")
+	node := makeNode("4000m", "1Gi")
 	// 900Mi / 1Gi ≈ 87.9% > 85% warning
-	pod := makePodOnNode("pod-1", "default", "node-1", "100m", "900Mi")
+	pod := makePodOnNode("pod-1", "100m", "900Mi")
 
 	signals := collectResourceSignals(t, []*corev1.Node{node}, []*corev1.Pod{pod})
 	require.Len(t, signals, 1)
@@ -85,9 +91,9 @@ func TestResourceCollector_MemoryWarning(t *testing.T) {
 }
 
 func TestResourceCollector_MemoryCritical(t *testing.T) {
-	node := makeNode("node-1", "4000m", "1Gi")
+	node := makeNode("4000m", "1Gi")
 	// 980Mi / 1Gi ≈ 95.7% > 95% critical
-	pod := makePodOnNode("pod-1", "default", "node-1", "100m", "980Mi")
+	pod := makePodOnNode("pod-1", "100m", "980Mi")
 
 	signals := collectResourceSignals(t, []*corev1.Node{node}, []*corev1.Pod{pod})
 	require.Len(t, signals, 1)
@@ -96,14 +102,14 @@ func TestResourceCollector_MemoryCritical(t *testing.T) {
 }
 
 func TestResourceCollector_BothCPUAndMemory(t *testing.T) {
-	node := makeNode("node-1", "1000m", "1Gi")
+	node := makeNode("1000m", "1Gi")
 	// CPU: 900m/1000m = 90%, Memory: 900Mi/1Gi ≈ 87.9%
-	pod := makePodOnNode("pod-1", "default", "node-1", "900m", "900Mi")
+	pod := makePodOnNode("pod-1", "900m", "900Mi")
 
 	signals := collectResourceSignals(t, []*corev1.Node{node}, []*corev1.Pod{pod})
 	assert.Len(t, signals, 2)
 
-	var types []SignalType
+	types := make([]SignalType, 0, len(signals))
 	for _, s := range signals {
 		types = append(types, s.Type)
 	}
@@ -112,8 +118,8 @@ func TestResourceCollector_BothCPUAndMemory(t *testing.T) {
 }
 
 func TestResourceCollector_TerminatedPodsExcluded(t *testing.T) {
-	node := makeNode("node-1", "1000m", "1Gi")
-	pod := makePodOnNode("pod-1", "default", "node-1", "960m", "980Mi")
+	node := makeNode("1000m", "1Gi")
+	pod := makePodOnNode("pod-1", "960m", "980Mi")
 	pod.Status.Phase = corev1.PodSucceeded // terminated pod
 
 	signals := collectResourceSignals(t, []*corev1.Node{node}, []*corev1.Pod{pod})
@@ -121,11 +127,11 @@ func TestResourceCollector_TerminatedPodsExcluded(t *testing.T) {
 }
 
 func TestResourceCollector_MultiplePodsSummed(t *testing.T) {
-	node := makeNode("node-1", "1000m", "8Gi")
+	node := makeNode("1000m", "8Gi")
 	// 3 pods x 300m = 900m / 1000m = 90%
-	pod1 := makePodOnNode("pod-1", "default", "node-1", "300m", "100Mi")
-	pod2 := makePodOnNode("pod-2", "default", "node-1", "300m", "100Mi")
-	pod3 := makePodOnNode("pod-3", "default", "node-1", "300m", "100Mi")
+	pod1 := makePodOnNode("pod-1", "300m", "100Mi")
+	pod2 := makePodOnNode("pod-2", "300m", "100Mi")
+	pod3 := makePodOnNode("pod-3", "300m", "100Mi")
 
 	signals := collectResourceSignals(t, []*corev1.Node{node}, []*corev1.Pod{pod1, pod2, pod3})
 	require.Len(t, signals, 1)
@@ -133,8 +139,8 @@ func TestResourceCollector_MultiplePodsSummed(t *testing.T) {
 }
 
 func TestResourceCollector_SignalHasValueAndThreshold(t *testing.T) {
-	node := makeNode("node-1", "1000m", "8Gi")
-	pod := makePodOnNode("pod-1", "default", "node-1", "900m", "1Gi")
+	node := makeNode("1000m", "8Gi")
+	pod := makePodOnNode("pod-1", "900m", "1Gi")
 
 	signals := collectResourceSignals(t, []*corev1.Node{node}, []*corev1.Pod{pod})
 	require.Len(t, signals, 1)
@@ -146,7 +152,8 @@ func TestResourceCollector_SignalHasValueAndThreshold(t *testing.T) {
 
 // --- helpers ---
 
-func makeNode(name, cpu, memory string) *corev1.Node {
+func makeNode(cpu, memory string) *corev1.Node {
+	const name = testNodeName
 	return &corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
 		Status: corev1.NodeStatus{
@@ -158,7 +165,11 @@ func makeNode(name, cpu, memory string) *corev1.Node {
 	}
 }
 
-func makePodOnNode(name, namespace, nodeName, cpu, memory string) *corev1.Pod {
+func makePodOnNode(name, cpu, memory string) *corev1.Pod {
+	const (
+		namespace = testNamespace
+		nodeName  = testNodeName
+	)
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
 		Spec: corev1.PodSpec{
@@ -189,7 +200,7 @@ func collectResourceSignals(t *testing.T, nodes []*corev1.Node, pods []*corev1.P
 
 	builder := fake.NewClientBuilder().WithScheme(scheme)
 
-	var objs []runtime.Object
+	objs := make([]runtime.Object, 0, len(nodes)+len(pods))
 	for _, n := range nodes {
 		objs = append(objs, n)
 	}

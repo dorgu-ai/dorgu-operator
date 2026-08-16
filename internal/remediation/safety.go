@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -105,9 +106,7 @@ func (s *SafetyCheckerImpl) Check(ctx context.Context, action *dorguv1.Remediati
 	}
 
 	// S4: Namespace deny list.
-	if v, err := s.checkDenyList(ctx, action); err != nil {
-		return nil, fmt.Errorf("checking deny list: %w", err)
-	} else if v != nil {
+	if v := s.checkDenyList(ctx, action); v != nil {
 		violations = append(violations, *v)
 	}
 
@@ -119,7 +118,7 @@ func (s *SafetyCheckerImpl) Check(ctx context.Context, action *dorguv1.Remediati
 
 // checkRateLimit enforces max remediations per persona per hour (S1).
 func (s *SafetyCheckerImpl) checkRateLimit(ctx context.Context, action *dorguv1.RemediationAction) (*SafetyViolation, error) {
-	maxPerHour := s.getMaxRemediationsPerHour(ctx, action)
+	maxPerHour := s.getMaxRemediationsPerHour(ctx)
 
 	existing, err := s.listRecentActions(ctx, action, 1*time.Hour)
 	if err != nil {
@@ -273,7 +272,7 @@ func (s *SafetyCheckerImpl) checkBlastRadius(action *dorguv1.RemediationAction) 
 }
 
 // checkDenyList checks if the target namespace is in the deny list (S4).
-func (s *SafetyCheckerImpl) checkDenyList(ctx context.Context, action *dorguv1.RemediationAction) (*SafetyViolation, error) {
+func (s *SafetyCheckerImpl) checkDenyList(ctx context.Context, action *dorguv1.RemediationAction) *SafetyViolation {
 	targetNamespace := action.Spec.PersonaRef.Namespace
 	if targetNamespace == "" {
 		targetNamespace = action.Namespace
@@ -284,7 +283,7 @@ func (s *SafetyCheckerImpl) checkDenyList(ctx context.Context, action *dorguv1.R
 		return &SafetyViolation{
 			Rule:    "deny-list",
 			Message: fmt.Sprintf("namespace %s is in the default deny list", targetNamespace),
-		}, nil
+		}
 	}
 
 	// Check ClusterPersona excludeNamespaces.
@@ -292,23 +291,21 @@ func (s *SafetyCheckerImpl) checkDenyList(ctx context.Context, action *dorguv1.R
 	if err != nil {
 		s.logger.V(1).Info("failed to read ClusterPersona excluded namespaces", "error", err)
 		// Don't fail the check — default deny list is already enforced.
-		return nil, nil
+		return nil
 	}
 
-	for _, ns := range excludedNamespaces {
-		if targetNamespace == ns {
-			return &SafetyViolation{
-				Rule:    "deny-list",
-				Message: fmt.Sprintf("namespace %s is excluded by ClusterPersona policy", targetNamespace),
-			}, nil
+	if slices.Contains(excludedNamespaces, targetNamespace) {
+		return &SafetyViolation{
+			Rule:    "deny-list",
+			Message: fmt.Sprintf("namespace %s is excluded by ClusterPersona policy", targetNamespace),
 		}
 	}
 
-	return nil, nil
+	return nil
 }
 
 // getMaxRemediationsPerHour reads the rate limit from ClusterPersona, defaulting to 5.
-func (s *SafetyCheckerImpl) getMaxRemediationsPerHour(ctx context.Context, action *dorguv1.RemediationAction) int32 {
+func (s *SafetyCheckerImpl) getMaxRemediationsPerHour(ctx context.Context) int32 {
 	var clusterPersonas dorguv1.ClusterPersonaList
 	if err := s.client.List(ctx, &clusterPersonas); err != nil {
 		s.logger.V(1).Info("failed to list ClusterPersonas for rate limit", "error", err)
@@ -353,7 +350,7 @@ func (s *SafetyCheckerImpl) listRecentActions(ctx context.Context, action *dorgu
 	cutoff := time.Now().Add(-window)
 	var recent []dorguv1.RemediationAction
 	for i := range allActions {
-		if allActions[i].CreationTimestamp.Time.After(cutoff) {
+		if allActions[i].CreationTimestamp.After(cutoff) {
 			recent = append(recent, allActions[i])
 		}
 	}
@@ -386,7 +383,7 @@ func (s *SafetyCheckerImpl) listPersonaActions(ctx context.Context, action *dorg
 // parseResourcePatch extracts resource field→quantity mappings from a JSON patch.
 // Expected format: {"spec":{"resources":{"limits":{"memory":"512Mi","cpu":"500m"}}}}
 func parseResourcePatch(raw []byte) (map[string]resource.Quantity, error) {
-	var patch map[string]interface{}
+	var patch map[string]any
 	if err := json.Unmarshal(raw, &patch); err != nil {
 		return nil, fmt.Errorf("unmarshalling patch: %w", err)
 	}
@@ -397,7 +394,7 @@ func parseResourcePatch(raw []byte) (map[string]resource.Quantity, error) {
 }
 
 // extractResources recursively walks the patch structure to find resource values.
-func extractResources(obj map[string]interface{}, prefix string, result map[string]resource.Quantity) {
+func extractResources(obj map[string]any, prefix string, result map[string]resource.Quantity) {
 	for key, val := range obj {
 		fullKey := key
 		if prefix != "" {
@@ -405,7 +402,7 @@ func extractResources(obj map[string]interface{}, prefix string, result map[stri
 		}
 
 		switch v := val.(type) {
-		case map[string]interface{}:
+		case map[string]any:
 			extractResources(v, fullKey, result)
 		case string:
 			qty, err := resource.ParseQuantity(v)

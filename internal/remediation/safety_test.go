@@ -44,20 +44,21 @@ func testLogger() logr.Logger {
 	return zap.New(zap.UseDevMode(true))
 }
 
-func newTestAction(namespace, personaName string) *dorguv1.RemediationAction {
+func newTestAction(namespace string) *dorguv1.RemediationAction {
+	const personaName = "my-app"
 	return &dorguv1.RemediationAction{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "ra-test-action",
 			Namespace: namespace,
 			Labels: map[string]string{
-				"dorgu.io/persona-kind":      "ApplicationPersona",
+				"dorgu.io/persona-kind":      kindApplicationPersona,
 				"dorgu.io/persona-name":      personaName,
 				"dorgu.io/persona-namespace": namespace,
 			},
 		},
 		Spec: dorguv1.RemediationActionSpec{
 			PersonaRef: dorguv1.PersonaReference{
-				Kind:      "ApplicationPersona",
+				Kind:      kindApplicationPersona,
 				Name:      personaName,
 				Namespace: namespace,
 			},
@@ -74,7 +75,7 @@ func TestSafetyChecker_RateLimit_ZeroExisting_Allowed(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(scheme).Build()
 	checker := NewSafetyChecker(c, testLogger())
 
-	action := newTestAction("default", "my-app")
+	action := newTestAction(defaultNamespace)
 	result, err := checker.Check(context.Background(), action)
 
 	require.NoError(t, err)
@@ -86,23 +87,23 @@ func TestSafetyChecker_RateLimit_FiveExisting_Blocked(t *testing.T) {
 	scheme := newTestScheme()
 
 	// Create 5 existing RemediationActions for the same persona.
-	var existingActions []runtime.Object
+	existingActions := make([]runtime.Object, 0, 5)
 	for i := range 5 {
 		ra := &dorguv1.RemediationAction{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:              fmt.Sprintf("ra-existing-%d", i),
-				Namespace:         "default",
+				Namespace:         defaultNamespace,
 				CreationTimestamp: metav1.Now(),
 				Labels: map[string]string{
-					"dorgu.io/persona-kind": "ApplicationPersona",
+					"dorgu.io/persona-kind": kindApplicationPersona,
 					"dorgu.io/persona-name": "my-app",
 				},
 			},
 			Spec: dorguv1.RemediationActionSpec{
 				PersonaRef: dorguv1.PersonaReference{
-					Kind:      "ApplicationPersona",
+					Kind:      kindApplicationPersona,
 					Name:      "my-app",
-					Namespace: "default",
+					Namespace: defaultNamespace,
 				},
 				Action:     dorguv1.RemediationActionDetail{Type: "persona-update"},
 				Confidence: "0.85",
@@ -118,7 +119,7 @@ func TestSafetyChecker_RateLimit_FiveExisting_Blocked(t *testing.T) {
 		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
 	checker := NewSafetyChecker(c, testLogger())
 
-	action := newTestAction("default", "my-app")
+	action := newTestAction(defaultNamespace)
 	result, err := checker.Check(context.Background(), action)
 
 	require.NoError(t, err)
@@ -133,17 +134,17 @@ func TestSafetyChecker_Concurrent_Blocked(t *testing.T) {
 	existing := &dorguv1.RemediationAction{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "ra-concurrent",
-			Namespace: "default",
+			Namespace: defaultNamespace,
 			Labels: map[string]string{
-				"dorgu.io/persona-kind": "ApplicationPersona",
+				"dorgu.io/persona-kind": kindApplicationPersona,
 				"dorgu.io/persona-name": "my-app",
 			},
 		},
 		Spec: dorguv1.RemediationActionSpec{
 			PersonaRef: dorguv1.PersonaReference{
-				Kind:      "ApplicationPersona",
+				Kind:      kindApplicationPersona,
 				Name:      "my-app",
-				Namespace: "default",
+				Namespace: defaultNamespace,
 			},
 			Action:     dorguv1.RemediationActionDetail{Type: "persona-update"},
 			Confidence: "0.85",
@@ -157,7 +158,7 @@ func TestSafetyChecker_Concurrent_Blocked(t *testing.T) {
 		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
 	checker := NewSafetyChecker(c, testLogger())
 
-	action := newTestAction("default", "my-app")
+	action := newTestAction(defaultNamespace)
 	result, err := checker.Check(context.Background(), action)
 
 	require.NoError(t, err)
@@ -178,18 +179,18 @@ func TestSafetyChecker_FailedCooldown_Blocked(t *testing.T) {
 	existing := &dorguv1.RemediationAction{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:              "ra-failed",
-			Namespace:         "default",
+			Namespace:         defaultNamespace,
 			CreationTimestamp: metav1.NewTime(time.Now().Add(-10 * time.Minute)),
 			Labels: map[string]string{
-				"dorgu.io/persona-kind": "ApplicationPersona",
+				"dorgu.io/persona-kind": kindApplicationPersona,
 				"dorgu.io/persona-name": "my-app",
 			},
 		},
 		Spec: dorguv1.RemediationActionSpec{
 			PersonaRef: dorguv1.PersonaReference{
-				Kind:      "ApplicationPersona",
+				Kind:      kindApplicationPersona,
 				Name:      "my-app",
-				Namespace: "default",
+				Namespace: defaultNamespace,
 			},
 			Action:     dorguv1.RemediationActionDetail{Type: "persona-update"},
 			Confidence: "0.85",
@@ -204,7 +205,7 @@ func TestSafetyChecker_FailedCooldown_Blocked(t *testing.T) {
 		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
 	checker := NewSafetyChecker(c, testLogger())
 
-	action := newTestAction("default", "my-app")
+	action := newTestAction(defaultNamespace)
 	result, err := checker.Check(context.Background(), action)
 
 	require.NoError(t, err)
@@ -223,7 +224,7 @@ func TestSafetyChecker_BlastRadius_1_5x_Allowed(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(scheme).Build()
 	checker := NewSafetyChecker(c, testLogger())
 
-	action := newTestAction("default", "my-app")
+	action := newTestAction(defaultNamespace)
 	action.Spec.Action.Patch = &apiextensionsv1.JSON{
 		Raw: []byte(`{"spec":{"resources":{"limits":{"memory":"384Mi"}}}}`),
 	}
@@ -242,7 +243,7 @@ func TestSafetyChecker_BlastRadius_3x_Blocked(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(scheme).Build()
 	checker := NewSafetyChecker(c, testLogger())
 
-	action := newTestAction("default", "my-app")
+	action := newTestAction(defaultNamespace)
 	action.Spec.Action.Patch = &apiextensionsv1.JSON{
 		Raw: []byte(`{"spec":{"resources":{"limits":{"memory":"768Mi"}}}}`),
 	}
@@ -263,7 +264,7 @@ func TestSafetyChecker_BlastRadius_60Percent_Decrease_Blocked(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(scheme).Build()
 	checker := NewSafetyChecker(c, testLogger())
 
-	action := newTestAction("default", "my-app")
+	action := newTestAction(defaultNamespace)
 	action.Spec.Action.Patch = &apiextensionsv1.JSON{
 		Raw: []byte(`{"spec":{"resources":{"limits":{"memory":"100Mi"}}}}`),
 	}
@@ -284,7 +285,7 @@ func TestSafetyChecker_DenyList_DefaultNamespace_Allowed(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(scheme).Build()
 	checker := NewSafetyChecker(c, testLogger())
 
-	action := newTestAction("default", "my-app")
+	action := newTestAction(defaultNamespace)
 	result, err := checker.Check(context.Background(), action)
 
 	require.NoError(t, err)
@@ -296,7 +297,7 @@ func TestSafetyChecker_DenyList_KubeSystem_Blocked(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(scheme).Build()
 	checker := NewSafetyChecker(c, testLogger())
 
-	action := newTestAction("kube-system", "my-app")
+	action := newTestAction("kube-system")
 	result, err := checker.Check(context.Background(), action)
 
 	require.NoError(t, err)
@@ -333,7 +334,7 @@ func TestSafetyChecker_DenyList_ClusterPersonaExcluded_Blocked(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(cp).Build()
 	checker := NewSafetyChecker(c, testLogger())
 
-	action := newTestAction("staging", "my-app")
+	action := newTestAction("staging")
 	result, err := checker.Check(context.Background(), action)
 
 	require.NoError(t, err)
@@ -351,7 +352,7 @@ func TestSafetyChecker_MultipleViolations(t *testing.T) {
 	scheme := newTestScheme()
 
 	// Create 5 existing actions (rate limit) + 1 concurrent.
-	var objects []runtime.Object
+	objects := make([]runtime.Object, 0, 6)
 	for i := range 5 {
 		ra := &dorguv1.RemediationAction{
 			ObjectMeta: metav1.ObjectMeta{
@@ -359,13 +360,13 @@ func TestSafetyChecker_MultipleViolations(t *testing.T) {
 				Namespace:         "kube-system",
 				CreationTimestamp: metav1.Now(),
 				Labels: map[string]string{
-					"dorgu.io/persona-kind": "ApplicationPersona",
+					"dorgu.io/persona-kind": kindApplicationPersona,
 					"dorgu.io/persona-name": "my-app",
 				},
 			},
 			Spec: dorguv1.RemediationActionSpec{
 				PersonaRef: dorguv1.PersonaReference{
-					Kind:      "ApplicationPersona",
+					Kind:      kindApplicationPersona,
 					Name:      "my-app",
 					Namespace: "kube-system",
 				},
@@ -384,7 +385,7 @@ func TestSafetyChecker_MultipleViolations(t *testing.T) {
 	checker := NewSafetyChecker(c, testLogger())
 
 	// kube-system namespace (deny-list) + 5 existing (rate-limit).
-	action := newTestAction("kube-system", "my-app")
+	action := newTestAction("kube-system")
 	result, err := checker.Check(context.Background(), action)
 
 	require.NoError(t, err)

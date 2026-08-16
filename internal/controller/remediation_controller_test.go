@@ -178,7 +178,7 @@ var _ = Describe("RemediationController", func() {
 	Context("Pending phase", func() {
 		It("should take no action on Pending RemediationAction", func() {
 			persona := createTestPersona("rc-pending-persona", "default")
-			incident := createTestIncident("rc-pending-incident", "default", persona.Name, "OOMKilled")
+			incident := createTestIncident("rc-pending-incident", "default", persona.Name, reasonOOMKilled)
 			action := createTestAction("rc-pending-action", "default", persona.Name, incident.Name)
 
 			// Set status to Pending.
@@ -203,7 +203,7 @@ var _ = Describe("RemediationController", func() {
 	Context("Approved → Applying → Verifying → Completed lifecycle", func() {
 		It("should complete the full lifecycle when verification is healthy", func() {
 			persona := createTestPersona("rc-complete-persona", "default")
-			incident := createTestIncident("rc-complete-incident", "default", persona.Name, "OOMKilled")
+			incident := createTestIncident("rc-complete-incident", "default", persona.Name, reasonOOMKilled)
 			action := createTestAction("rc-complete-action", "default", persona.Name, incident.Name)
 
 			// Set status to Approved.
@@ -237,7 +237,11 @@ var _ = Describe("RemediationController", func() {
 				NamespacedName: client.ObjectKeyFromObject(action),
 			})
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result.Requeue).To(BeTrue())
+			// The controller returns {Requeue: true} on this transition, so this
+			// asserts the field the code under test actually sets. Moving the
+			// controller to RequeueAfter would change its backoff, which is a
+			// behaviour change and does not belong in a lint pass.
+			Expect(result.Requeue).To(BeTrue()) //nolint:staticcheck // SA1019: mirrors the controller
 
 			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(action), &updatedAction)).To(Succeed())
 			Expect(updatedAction.Status.Phase).To(Equal(RemediationPhaseVerifying))
@@ -265,7 +269,7 @@ var _ = Describe("RemediationController", func() {
 	Context("Approved → Applying → Verifying → RolledBack lifecycle", func() {
 		It("should rollback when verification shows degraded health", func() {
 			persona := createTestPersona("rc-rollback-persona", "default")
-			incident := createTestIncident("rc-rollback-incident", "default", persona.Name, "OOMKilled")
+			incident := createTestIncident("rc-rollback-incident", "default", persona.Name, reasonOOMKilled)
 			action := createTestAction("rc-rollback-action", "default", persona.Name, incident.Name)
 
 			// Set status to Approved.
@@ -338,7 +342,7 @@ var _ = Describe("RemediationController", func() {
 	Context("Terminal states", func() {
 		It("should be no-op for Completed state", func() {
 			persona := createTestPersona("rc-terminal-persona", "default")
-			incident := createTestIncident("rc-terminal-incident", "default", persona.Name, "OOMKilled")
+			incident := createTestIncident("rc-terminal-incident", "default", persona.Name, reasonOOMKilled)
 			action := createTestAction("rc-terminal-action", "default", persona.Name, incident.Name)
 
 			action.Status = dorguv1.RemediationActionStatus{Phase: RemediationPhaseCompleted}
@@ -355,7 +359,7 @@ var _ = Describe("RemediationController", func() {
 
 		It("should be no-op for Failed state", func() {
 			persona := createTestPersona("rc-failed-persona", "default")
-			incident := createTestIncident("rc-failed-incident", "default", persona.Name, "OOMKilled")
+			incident := createTestIncident("rc-failed-incident", "default", persona.Name, reasonOOMKilled)
 			action := createTestAction("rc-failed-action", "default", persona.Name, incident.Name)
 
 			action.Status = dorguv1.RemediationActionStatus{Phase: RemediationPhaseFailed}
@@ -372,7 +376,7 @@ var _ = Describe("RemediationController", func() {
 
 		It("should be no-op for RolledBack state", func() {
 			persona := createTestPersona("rc-rb-persona", "default")
-			incident := createTestIncident("rc-rb-incident", "default", persona.Name, "OOMKilled")
+			incident := createTestIncident("rc-rb-incident", "default", persona.Name, reasonOOMKilled)
 			action := createTestAction("rc-rb-action", "default", persona.Name, incident.Name)
 
 			action.Status = dorguv1.RemediationActionStatus{Phase: RemediationPhaseRolledBack}
@@ -391,7 +395,7 @@ var _ = Describe("RemediationController", func() {
 	Context("IncidentMemory resolution", func() {
 		It("should update IncidentMemory on successful completion", func() {
 			persona := createTestPersona("rc-im-persona", "default")
-			incident := createTestIncident("rc-im-incident", "default", persona.Name, "OOMKilled")
+			incident := createTestIncident("rc-im-incident", "default", persona.Name, reasonOOMKilled)
 			action := createTestAction("rc-im-action", "default", persona.Name, incident.Name)
 
 			action.Status = dorguv1.RemediationActionStatus{Phase: RemediationPhaseApproved}

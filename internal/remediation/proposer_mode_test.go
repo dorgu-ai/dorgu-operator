@@ -127,8 +127,8 @@ func TestProposer_SelfHealingModeGate(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			scheme := newTestScheme()
-			persona := newTestPersona("default", "my-app", "256Mi", "500m")
-			incident := newTestIncident("default", "mode-test", "my-app", "OOMKilled")
+			persona := newTestPersona(defaultNamespace, "my-app")
+			incident := newTestIncident(defaultNamespace, "mode-test", "my-app", "OOMKilled")
 
 			objects := []runtime.Object{persona}
 			if tt.clusterMode != "" {
@@ -143,7 +143,7 @@ func TestProposer_SelfHealingModeGate(t *testing.T) {
 			logger := capturingLogger(&logs)
 			proposer := NewProposer(c, NewSafetyChecker(c, logger), logger)
 
-			diag := newOOMDiagnosis("default", "my-app", detection.SeverityCritical)
+			diag := newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical)
 			result, err := proposer.Propose(context.Background(), diag, incident)
 			require.NoError(t, err)
 
@@ -178,8 +178,8 @@ func TestProposer_SelfHealingModeGate(t *testing.T) {
 // point is to do nothing.
 func TestProposer_ObserveModeSkipsBeforePlanner(t *testing.T) {
 	scheme := newTestScheme()
-	persona := newTestPersona("default", "my-app", "256Mi", "500m")
-	incident := newTestIncident("default", "observe-planner", "my-app", "OOMKilled")
+	persona := newTestPersona(defaultNamespace, "my-app")
+	incident := newTestIncident(defaultNamespace, "observe-planner", "my-app", "OOMKilled")
 
 	c := fake.NewClientBuilder().WithScheme(scheme).
 		WithRuntimeObjects(persona, newTestClusterPersona("dorgu-cluster", dorguv1.SelfHealingModeObserve)).
@@ -188,7 +188,7 @@ func TestProposer_ObserveModeSkipsBeforePlanner(t *testing.T) {
 	aiPlanner := &countingPlanner{}
 	proposer := NewProposer(c, NewSafetyChecker(c, testLogger()), testLogger(), WithPlanner(aiPlanner))
 
-	diag := newOOMDiagnosis("default", "my-app", detection.SeverityCritical)
+	diag := newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical)
 	result, err := proposer.Propose(context.Background(), diag, incident)
 
 	require.NoError(t, err)

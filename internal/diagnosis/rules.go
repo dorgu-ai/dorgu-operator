@@ -31,6 +31,14 @@ import (
 
 const providerNameRuleBased = "rule-based"
 
+// SuggestedAction values a rule can recommend. They are compared by the engine
+// and asserted on by callers, so they live here rather than as loose literals.
+const (
+	actionResourceAdjustment = "resource-adjustment"
+	actionDeploymentFix      = "deployment-fix"
+	actionInvestigate        = "investigate"
+)
+
 // Rule examines signals and optionally produces a diagnosis.
 type Rule struct {
 	// Name identifies the rule.
@@ -76,7 +84,7 @@ func (p *RuleBasedProvider) Diagnose(_ context.Context, signals []detection.Sign
 		return nil, nil
 	}
 
-	var diagnoses []Diagnosis
+	diagnoses := make([]Diagnosis, 0, len(p.rules))
 	seen := make(map[string]bool)
 
 	for _, rule := range p.rules {
@@ -108,7 +116,7 @@ func (p *RuleBasedProvider) Diagnose(_ context.Context, signals []detection.Sign
 
 // deduplicationKey creates a key from diagnosis category, suggested action, and affected resources.
 func deduplicationKey(d *Diagnosis) string {
-	var resources []string
+	resources := make([]string, 0, len(d.AffectedResources))
 	for _, r := range d.AffectedResources {
 		resources = append(resources, fmt.Sprintf("%s/%s/%s", r.Kind, r.Namespace, r.Name))
 	}
@@ -280,7 +288,7 @@ func diagnoseOOM(signals []detection.Signal) *Diagnosis {
 		PersonaRef:        firstPersonaRef(allRelated),
 		AffectedResources: collectAffectedResources(allRelated),
 		Contributing:      contributing,
-		SuggestedAction:   "resource-adjustment",
+		SuggestedAction:   actionResourceAdjustment,
 	}
 }
 
@@ -312,7 +320,7 @@ func diagnoseCrashLoop(signals []detection.Signal) *Diagnosis {
 	switch {
 	case len(oomRelated) > 0:
 		summary = "CrashLoopBackOff caused by OOM kills. Increase memory limits."
-		action = "resource-adjustment"
+		action = actionResourceAdjustment
 		base = 0.90
 		contributing = append(
 			buildContributing(crashSignals, "Container is crash-looping"),
@@ -320,7 +328,7 @@ func diagnoseCrashLoop(signals []detection.Signal) *Diagnosis {
 		)
 	case len(imgRelated) > 0:
 		summary = "CrashLoopBackOff caused by image pull failures."
-		action = "deployment-fix"
+		action = actionDeploymentFix
 		base = 0.90
 		contributing = append(
 			buildContributing(crashSignals, "Container is crash-looping"),
@@ -328,7 +336,7 @@ func diagnoseCrashLoop(signals []detection.Signal) *Diagnosis {
 		)
 	case len(probeRelated) > 0:
 		summary = "CrashLoopBackOff likely caused by failing health probes."
-		action = "deployment-fix"
+		action = actionDeploymentFix
 		base = 0.90
 		contributing = append(
 			buildContributing(crashSignals, "Container is crash-looping"),
@@ -336,7 +344,7 @@ func diagnoseCrashLoop(signals []detection.Signal) *Diagnosis {
 		)
 	default:
 		summary = "CrashLoopBackOff — check container logs for application errors."
-		action = "investigate"
+		action = actionInvestigate
 		base = 0.50
 		contributing = buildContributing(crashSignals, "Container is crash-looping with no correlated signals")
 	}
@@ -439,7 +447,7 @@ func diagnoseNodePressure(signals []detection.Signal) *Diagnosis {
 		PersonaRef:        firstPersonaRef(allSignals),
 		AffectedResources: collectAffectedResources(allSignals),
 		Contributing:      contributing,
-		SuggestedAction:   "resource-adjustment",
+		SuggestedAction:   actionResourceAdjustment,
 	}
 }
 
@@ -466,7 +474,7 @@ func diagnoseNodeDown(signals []detection.Signal) *Diagnosis {
 
 	if len(networkDown) > 0 {
 		summary = fmt.Sprintf("Node %s unreachable — network connectivity lost.", primary.Resource.Name)
-		action = "investigate"
+		action = actionInvestigate
 		contributing = append(
 			buildContributing(notReadySignals, "Node is not ready"),
 			buildContributing(networkDown, "Node network is unavailable")...,
@@ -521,7 +529,7 @@ func diagnoseResourceSaturation(signals []detection.Signal) *Diagnosis {
 	pendingPods := signalsOfType(signals, detection.SignalPodPendingLong)
 
 	// Build summary with node names and values.
-	var nodeDetails []string
+	nodeDetails := make([]string, 0, len(saturationSignals))
 	for _, s := range saturationSignals {
 		detail := s.Resource.Name
 		if s.Value != nil {
@@ -611,7 +619,7 @@ func diagnoseControlPlane(signals []detection.Signal) *Diagnosis {
 		PersonaRef:        firstPersonaRef(cpSignals),
 		AffectedResources: collectAffectedResources(cpSignals),
 		Contributing:      buildContributing(cpSignals, "Control plane component is unhealthy"),
-		SuggestedAction:   "investigate",
+		SuggestedAction:   actionInvestigate,
 	}
 }
 
@@ -656,7 +664,7 @@ func diagnoseImagePull(signals []detection.Signal) *Diagnosis {
 		PersonaRef:        firstPersonaRef(imgSignals),
 		AffectedResources: collectAffectedResources(imgSignals),
 		Contributing:      buildContributing(imgSignals, "Image pull is failing"),
-		SuggestedAction:   "deployment-fix",
+		SuggestedAction:   actionDeploymentFix,
 	}
 }
 
@@ -705,6 +713,6 @@ func diagnosePendingPod(signals []detection.Signal) *Diagnosis {
 		PersonaRef:        firstPersonaRef(pendingSignals),
 		AffectedResources: collectAffectedResources(pendingSignals),
 		Contributing:      contributing,
-		SuggestedAction:   "resource-adjustment",
+		SuggestedAction:   actionResourceAdjustment,
 	}
 }

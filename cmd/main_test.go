@@ -17,8 +17,8 @@ func TestSetupSignalHandler_CalledOnce(t *testing.T) {
 
 	// Match actual calls like ctrl.SetupSignalHandler() but not comments.
 	// Remove all comment lines first.
-	var codeLines []string
-	for _, line := range strings.Split(source, "\n") {
+	codeLines := make([]string, 0, strings.Count(source, "\n")+1)
+	for line := range strings.SplitSeq(source, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "//") {
 			continue

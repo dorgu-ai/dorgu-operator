@@ -414,9 +414,10 @@ func (r *RemediationController) getVerificationDelay(action *dorguv1.Remediation
 func (r *RemediationController) getRetryCount(action *dorguv1.RemediationAction) int {
 	for _, c := range action.Status.Conditions {
 		if c.Type == ConditionVerified && c.Reason == "VerificationUnknown" {
-			var retry, max int
-			if _, err := fmt.Sscanf(c.Message, "Verification returned Unknown, retry %d/%d", &retry, &max); err == nil {
-				return retry
+			var attempt, maxAttempts int
+			if _, err := fmt.Sscanf(c.Message, "Verification returned Unknown, retry %d/%d",
+				&attempt, &maxAttempts); err == nil {
+				return attempt
 			}
 		}
 	}

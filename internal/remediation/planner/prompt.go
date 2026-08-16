@@ -72,53 +72,53 @@ const planToolDescription = "Submit the ordered remediation plan as structured d
 // planToolSchema is the JSON Schema for the remediation plan tool input. It is
 // declared with strict validation so the model's tool input is guaranteed to
 // match (see claude.go). The schema mirrors RemediationPlan / PlannedStep.
-func planToolSchema() map[string]interface{} {
-	return map[string]interface{}{
+func planToolSchema() map[string]any {
+	return map[string]any{
 		"type":                 "object",
 		"additionalProperties": false,
-		"properties": map[string]interface{}{
-			"rootCause": map[string]interface{}{
+		"properties": map[string]any{
+			"rootCause": map[string]any{
 				"type":        "string",
 				"description": "Concise root-cause explanation for the incident.",
 			},
-			"confidence": map[string]interface{}{
+			"confidence": map[string]any{
 				"type":        "number",
 				"description": "Confidence in the plan, between 0 and 1.",
 			},
-			"steps": map[string]interface{}{
+			"steps": map[string]any{
 				"type":        "array",
 				"description": "Ordered remediation steps.",
-				"items": map[string]interface{}{
+				"items": map[string]any{
 					"type":                 "object",
 					"additionalProperties": false,
-					"properties": map[string]interface{}{
-						"order": map[string]interface{}{
+					"properties": map[string]any{
+						"order": map[string]any{
 							"type":        "integer",
 							"description": "1-based execution order.",
 						},
-						"type": map[string]interface{}{
+						"type": map[string]any{
 							"type":        "string",
 							"enum":        []string{"persona-update", "workload-apply", "restart", "scale", "config-change", "manual"},
 							"description": "Step type. Only persona-update is auto-applied.",
 						},
-						"description": map[string]interface{}{
+						"description": map[string]any{
 							"type":        "string",
 							"description": "Human-readable summary of the action.",
 						},
-						"rationale": map[string]interface{}{
+						"rationale": map[string]any{
 							"type":        "string",
 							"description": "Why this step is proposed.",
 						},
-						"risk": map[string]interface{}{
+						"risk": map[string]any{
 							"type":        "string",
 							"enum":        []string{"low", "medium", "high"},
 							"description": "Assessed risk of applying this step.",
 						},
-						"patch": map[string]interface{}{
+						"patch": map[string]any{
 							"type":        "string",
 							"description": "For persona-update steps only: a JSON merge patch (as a JSON-encoded string) against the ApplicationPersona spec, e.g. {\"spec\":{\"resources\":{\"limits\":{\"memory\":\"512Mi\"}}}}. Omit for advisory steps.",
 						},
-						"command": map[string]interface{}{
+						"command": map[string]any{
 							"type":        "string",
 							"description": "For advisory steps only: one ready-to-run kubectl command that carries out this step, fully resolved with real names, e.g. \"kubectl set image deployment/web web=nginx:1.27-alpine -n demo\". Single line, must start with \"kubectl \", must not contain ; & | < > $ or backticks. Omit when no single command does the job or a name would have to be guessed.",
 						},

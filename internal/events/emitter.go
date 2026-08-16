@@ -110,7 +110,7 @@ func apiVersionForKind(kind string) string {
 	switch kind {
 	case "Pod", "Node", "Service", "ComponentStatus", "Event", "Namespace", "PersistentVolumeClaim":
 		return "v1"
-	case "Deployment", "ReplicaSet", "StatefulSet", "DaemonSet":
+	case kindDeployment, "ReplicaSet", "StatefulSet", "DaemonSet":
 		return "apps/v1"
 	case "Lease":
 		return "coordination.k8s.io/v1"

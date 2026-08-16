@@ -37,8 +37,8 @@ func newTestProvider() *RuleBasedProvider {
 
 func TestRuleBasedProvider_Name(t *testing.T) {
 	p := newTestProvider()
-	if got := p.Name(); got != "rule-based" {
-		t.Errorf("Name() = %q, want %q", got, "rule-based")
+	if got := p.Name(); got != providerNameRuleBased {
+		t.Errorf("Name() = %q, want %q", got, providerNameRuleBased)
 	}
 }
 
@@ -82,11 +82,11 @@ func TestRuleBasedProvider_OOMKilledStandalone(t *testing.T) {
 	if d.Confidence < 0.60 || d.Confidence > 0.75 {
 		t.Errorf("standalone OOM confidence = %v, expected ~0.70", d.Confidence)
 	}
-	if d.SuggestedAction != "resource-adjustment" {
-		t.Errorf("SuggestedAction = %q, want %q", d.SuggestedAction, "resource-adjustment")
+	if d.SuggestedAction != actionResourceAdjustment {
+		t.Errorf("SuggestedAction = %q, want %q", d.SuggestedAction, actionResourceAdjustment)
 	}
-	if d.Provider != "rule-based" {
-		t.Errorf("Provider = %q, want %q", d.Provider, "rule-based")
+	if d.Provider != providerNameRuleBased {
+		t.Errorf("Provider = %q, want %q", d.Provider, providerNameRuleBased)
 	}
 }
 
@@ -169,8 +169,8 @@ func TestRuleBasedProvider_CrashLoopWithOOM(t *testing.T) {
 	if !strings.Contains(crashDiag.Summary, "OOM") {
 		t.Errorf("CrashLoop+OOM diagnosis should mention OOM, got: %s", crashDiag.Summary)
 	}
-	if crashDiag.SuggestedAction != "resource-adjustment" {
-		t.Errorf("SuggestedAction = %q, want %q", crashDiag.SuggestedAction, "resource-adjustment")
+	if crashDiag.SuggestedAction != actionResourceAdjustment {
+		t.Errorf("SuggestedAction = %q, want %q", crashDiag.SuggestedAction, actionResourceAdjustment)
 	}
 	if crashDiag.Confidence < 0.80 {
 		t.Errorf("CrashLoop+OOM confidence = %v, expected >= 0.80", crashDiag.Confidence)
@@ -206,8 +206,8 @@ func TestRuleBasedProvider_CrashLoopStandalone(t *testing.T) {
 	if crashDiag.Confidence > 0.55 {
 		t.Errorf("standalone CrashLoop confidence = %v, expected <= 0.55", crashDiag.Confidence)
 	}
-	if crashDiag.SuggestedAction != "investigate" {
-		t.Errorf("SuggestedAction = %q, want %q", crashDiag.SuggestedAction, "investigate")
+	if crashDiag.SuggestedAction != actionInvestigate {
+		t.Errorf("SuggestedAction = %q, want %q", crashDiag.SuggestedAction, actionInvestigate)
 	}
 }
 
@@ -247,8 +247,8 @@ func TestRuleBasedProvider_CrashLoopWithProbeFailure(t *testing.T) {
 	if !strings.Contains(crashDiag.Summary, "health probes") {
 		t.Errorf("summary should mention health probes, got: %s", crashDiag.Summary)
 	}
-	if crashDiag.SuggestedAction != "deployment-fix" {
-		t.Errorf("SuggestedAction = %q, want %q", crashDiag.SuggestedAction, "deployment-fix")
+	if crashDiag.SuggestedAction != actionDeploymentFix {
+		t.Errorf("SuggestedAction = %q, want %q", crashDiag.SuggestedAction, actionDeploymentFix)
 	}
 }
 
@@ -320,8 +320,8 @@ func TestRuleBasedProvider_NodePressureStandalone(t *testing.T) {
 	if pressureDiag == nil {
 		t.Fatal("expected node pressure diagnosis")
 	}
-	if pressureDiag.SuggestedAction != "resource-adjustment" {
-		t.Errorf("SuggestedAction = %q, want %q", pressureDiag.SuggestedAction, "resource-adjustment")
+	if pressureDiag.SuggestedAction != actionResourceAdjustment {
+		t.Errorf("SuggestedAction = %q, want %q", pressureDiag.SuggestedAction, actionResourceAdjustment)
 	}
 }
 
@@ -392,8 +392,8 @@ func TestRuleBasedProvider_NodeDownWithNetworkUnavailable(t *testing.T) {
 	if nodeDiag == nil {
 		t.Fatal("expected network-related node down diagnosis")
 	}
-	if nodeDiag.SuggestedAction != "investigate" {
-		t.Errorf("SuggestedAction = %q, want %q", nodeDiag.SuggestedAction, "investigate")
+	if nodeDiag.SuggestedAction != actionInvestigate {
+		t.Errorf("SuggestedAction = %q, want %q", nodeDiag.SuggestedAction, actionInvestigate)
 	}
 }
 
@@ -518,8 +518,8 @@ func TestRuleBasedProvider_ControlPlane(t *testing.T) {
 	if cpDiag.Confidence < 0.85 {
 		t.Errorf("control plane confidence = %v, expected >= 0.85", cpDiag.Confidence)
 	}
-	if cpDiag.SuggestedAction != "investigate" {
-		t.Errorf("SuggestedAction = %q, want %q", cpDiag.SuggestedAction, "investigate")
+	if cpDiag.SuggestedAction != actionInvestigate {
+		t.Errorf("SuggestedAction = %q, want %q", cpDiag.SuggestedAction, actionInvestigate)
 	}
 }
 
@@ -549,8 +549,8 @@ func TestRuleBasedProvider_ImagePullStandalone(t *testing.T) {
 	if imgDiag == nil {
 		t.Fatal("expected image pull diagnosis")
 	}
-	if imgDiag.SuggestedAction != "deployment-fix" {
-		t.Errorf("SuggestedAction = %q, want %q", imgDiag.SuggestedAction, "deployment-fix")
+	if imgDiag.SuggestedAction != actionDeploymentFix {
+		t.Errorf("SuggestedAction = %q, want %q", imgDiag.SuggestedAction, actionDeploymentFix)
 	}
 }
 
@@ -662,8 +662,8 @@ func TestRuleBasedProvider_PendingPodStandalone(t *testing.T) {
 	if pendingDiag.Confidence > 0.55 {
 		t.Errorf("standalone pending confidence = %v, expected <= 0.55", pendingDiag.Confidence)
 	}
-	if pendingDiag.SuggestedAction != "resource-adjustment" {
-		t.Errorf("SuggestedAction = %q, want %q", pendingDiag.SuggestedAction, "resource-adjustment")
+	if pendingDiag.SuggestedAction != actionResourceAdjustment {
+		t.Errorf("SuggestedAction = %q, want %q", pendingDiag.SuggestedAction, actionResourceAdjustment)
 	}
 }
 

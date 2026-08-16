@@ -147,7 +147,7 @@ func (c *ClaudePlanner) callOnce(ctx context.Context, jsonBody []byte) (*Remedia
 	if err != nil {
 		return nil, nil, fmt.Errorf("planner: API call failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -240,10 +240,10 @@ type claudeRequest struct {
 }
 
 type claudeTool struct {
-	Name        string                 `json:"name"`
-	Description string                 `json:"description"`
-	InputSchema map[string]interface{} `json:"input_schema"`
-	Strict      bool                   `json:"strict,omitempty"`
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	InputSchema map[string]any `json:"input_schema"`
+	Strict      bool           `json:"strict,omitempty"`
 }
 
 type claudeToolChoice struct {

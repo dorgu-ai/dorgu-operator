@@ -21,6 +21,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -34,6 +35,13 @@ import (
 	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation/planner"
 )
+
+// kindApplicationPersona is the only persona kind the remediation path writes to.
+const kindApplicationPersona = "ApplicationPersona"
+
+// defaultNamespace is the namespace a remediation lands in when the diagnosis
+// carries no namespace of its own.
+const defaultNamespace = "default"
 
 const (
 	// Resource increase multipliers by severity.
@@ -170,12 +178,7 @@ func remediationTargetsPath(ra *dorguv1.RemediationAction, target string) bool {
 // dot-joined leaf path, e.g. {"spec":{"resources":{"limits":{"memory":"384Mi"}}}}
 // touches "spec.resources.limits.memory".
 func patchTouchesPath(raw []byte, target string) bool {
-	for _, p := range patchLeafPaths(raw) {
-		if p == target {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(patchLeafPaths(raw), target)
 }
 
 // patchLeafPaths walks a JSON merge patch and returns the dot-joined path of
@@ -184,19 +187,19 @@ func patchLeafPaths(raw []byte) []string {
 	if len(raw) == 0 {
 		return nil
 	}
-	var root map[string]interface{}
+	var root map[string]any
 	if err := json.Unmarshal(raw, &root); err != nil {
 		return nil
 	}
 	var paths []string
-	var walk func(prefix string, node map[string]interface{})
-	walk = func(prefix string, node map[string]interface{}) {
+	var walk func(prefix string, node map[string]any)
+	walk = func(prefix string, node map[string]any) {
 		for key, val := range node {
 			path := key
 			if prefix != "" {
 				path = prefix + "." + key
 			}
-			if child, ok := val.(map[string]interface{}); ok {
+			if child, ok := val.(map[string]any); ok {
 				walk(path, child)
 				continue
 			}
@@ -322,7 +325,7 @@ func (p *Proposer) proposeResourceAdjustment(ctx context.Context, diag diagnosis
 
 	namespace := diag.PersonaRef.Namespace
 	if namespace == "" {
-		namespace = "default"
+		namespace = defaultNamespace
 	}
 
 	healthCheckDuration := metav1.Duration{Duration: defaultHealthCheckAfter}
@@ -408,7 +411,7 @@ func (p *Proposer) proposeResourceAdjustment(ctx context.Context, diag diagnosis
 func (p *Proposer) calculateResourceChange(
 	diag diagnosis.Diagnosis,
 	persona *dorguv1.ApplicationPersona,
-) (patchMap, prePatchMap map[string]interface{}, explanation string, err error) {
+) (patchMap, prePatchMap map[string]any, explanation string, err error) {
 	primarySignal := primarySignalType(diag)
 
 	switch primarySignal {
@@ -435,7 +438,7 @@ func (p *Proposer) calculateResourceChange(
 func (p *Proposer) calculateMemoryIncrease(
 	diag diagnosis.Diagnosis,
 	persona *dorguv1.ApplicationPersona,
-) (map[string]interface{}, map[string]interface{}, string, error) {
+) (map[string]any, map[string]any, string, error) {
 	currentMemory := persona.Spec.Resources.Limits.Memory
 	if currentMemory == "" {
 		return nil, nil, "", nil
@@ -472,7 +475,7 @@ func (p *Proposer) calculateMemoryIncrease(
 func (p *Proposer) calculateCPUIncrease(
 	diag diagnosis.Diagnosis,
 	persona *dorguv1.ApplicationPersona,
-) (map[string]interface{}, map[string]interface{}, string, error) {
+) (map[string]any, map[string]any, string, error) {
 	currentCPU := persona.Spec.Resources.Limits.CPU
 	if currentCPU == "" {
 		return nil, nil, "", nil
@@ -506,13 +509,13 @@ func (p *Proposer) calculateCPUIncrease(
 
 // getApplicationPersona fetches the ApplicationPersona by reference.
 func (p *Proposer) getApplicationPersona(ctx context.Context, ref *dorguv1.PersonaReference) (*dorguv1.ApplicationPersona, error) {
-	if ref.Kind != "ApplicationPersona" {
+	if ref.Kind != kindApplicationPersona {
 		return nil, fmt.Errorf("unsupported persona kind for resource adjustment: %s", ref.Kind)
 	}
 
 	namespace := ref.Namespace
 	if namespace == "" {
-		namespace = "default"
+		namespace = defaultNamespace
 	}
 
 	var persona dorguv1.ApplicationPersona
@@ -564,7 +567,7 @@ func hasOOMCorrelation(diag diagnosis.Diagnosis) bool {
 // buildNestedMap creates a nested map structure from a list of keys ending with a value.
 // e.g., buildNestedMap("spec", "resources", "limits", "memory", "512Mi") →
 // {"spec": {"resources": {"limits": {"memory": "512Mi"}}}}
-func buildNestedMap(keys ...string) map[string]interface{} {
+func buildNestedMap(keys ...string) map[string]any {
 	if len(keys) < 2 {
 		return nil
 	}
@@ -572,9 +575,9 @@ func buildNestedMap(keys ...string) map[string]interface{} {
 	value := keys[len(keys)-1]
 	pathKeys := keys[:len(keys)-1]
 
-	result := map[string]interface{}{pathKeys[len(pathKeys)-1]: value}
+	result := map[string]any{pathKeys[len(pathKeys)-1]: value}
 	for i := len(pathKeys) - 2; i >= 0; i-- {
-		result = map[string]interface{}{pathKeys[i]: result}
+		result = map[string]any{pathKeys[i]: result}
 	}
 	return result
 }

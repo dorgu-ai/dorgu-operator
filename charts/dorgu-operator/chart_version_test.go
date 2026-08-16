@@ -136,11 +136,13 @@ func TestBundledCRDsMatchGeneratedCRDs(t *testing.T) {
 			bundled := filepath.Join("crds", name)
 			got, err := os.ReadFile(bundled)
 			if err != nil {
-				t.Fatalf("%s is missing from the chart (%v) — run 'cp config/crd/bases/*.yaml charts/dorgu-operator/crds/'", bundled, err)
+				t.Fatalf("%s is missing from the chart (%v) — run "+
+					"'cp config/crd/bases/*.yaml charts/dorgu-operator/crds/'", bundled, err)
 			}
 
 			if !bytes.Equal(want, got) {
-				t.Errorf("%s is out of date — run 'make manifests && cp config/crd/bases/*.yaml charts/dorgu-operator/crds/'", bundled)
+				t.Errorf("%s is out of date — run "+
+					"'make manifests && cp config/crd/bases/*.yaml charts/dorgu-operator/crds/'", bundled)
 			}
 		})
 	}

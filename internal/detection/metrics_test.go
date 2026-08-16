@@ -307,7 +307,7 @@ func TestMetricsCollector_BothCPUAndMemoryHigh(t *testing.T) {
 	signals := mc.checkPodMetrics(podMetrics, podSpecs, metav1.Now().Time)
 	assert.Len(t, signals, 2)
 
-	var types []SignalType
+	types := make([]SignalType, 0, len(signals))
 	for _, s := range signals {
 		types = append(types, s.Type)
 	}

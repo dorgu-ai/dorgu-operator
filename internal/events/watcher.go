@@ -93,14 +93,14 @@ func (w *Watcher) Start(ctx context.Context) error {
 	informer := factory.Core().V1().Events().Informer()
 
 	_, err := informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc: func(obj interface{}) {
+		AddFunc: func(obj any) {
 			event, ok := obj.(*corev1.Event)
 			if !ok {
 				return
 			}
 			w.processEvent(ctx, event)
 		},
-		UpdateFunc: func(_, newObj interface{}) {
+		UpdateFunc: func(_, newObj any) {
 			event, ok := newObj.(*corev1.Event)
 			if !ok {
 				return

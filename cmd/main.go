@@ -92,7 +92,8 @@ func main() {
 
 	if len(cfg.webhookCertPath) > 0 {
 		setupLog.Info("Initializing webhook certificate watcher using provided certificates",
-			"webhook-cert-path", cfg.webhookCertPath, "webhook-cert-name", cfg.webhookCertName, "webhook-cert-key", cfg.webhookCertKey)
+			"webhook-cert-path", cfg.webhookCertPath, "webhook-cert-name", cfg.webhookCertName,
+			"webhook-cert-key", cfg.webhookCertKey)
 
 		webhookServerOptions.CertDir = cfg.webhookCertPath
 		webhookServerOptions.CertName = cfg.webhookCertName
@@ -129,7 +130,8 @@ func main() {
 	// - [PROMETHEUS-WITH-CERTS] at config/prometheus/kustomization.yaml for TLS certification.
 	if len(cfg.metricsCertPath) > 0 {
 		setupLog.Info("Initializing metrics certificate watcher using provided certificates",
-			"metrics-cert-path", cfg.metricsCertPath, "metrics-cert-name", cfg.metricsCertName, "metrics-cert-key", cfg.metricsCertKey)
+			"metrics-cert-path", cfg.metricsCertPath, "metrics-cert-name", cfg.metricsCertName,
+			"metrics-cert-key", cfg.metricsCertKey)
 
 		metricsServerOptions.CertDir = cfg.metricsCertPath
 		metricsServerOptions.CertName = cfg.metricsCertName

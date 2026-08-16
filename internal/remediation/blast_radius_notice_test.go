@@ -34,7 +34,8 @@ func rawJSON(s string) *apiextensionsv1.JSON {
 }
 
 // memoryAction builds a persona-update action changing the memory limit.
-func memoryAction(from, to string) *dorguv1.RemediationAction {
+func memoryAction(to string) *dorguv1.RemediationAction {
+	const from = "48Mi"
 	return &dorguv1.RemediationAction{
 		Spec: dorguv1.RemediationActionSpec{
 			Explanation: "Increase memory limit to stop the OOM kills.",
@@ -49,7 +50,7 @@ func memoryAction(from, to string) *dorguv1.RemediationAction {
 }
 
 func TestDiscloseBlastRadiusClamp_AtTheCap(t *testing.T) {
-	action := memoryAction("48Mi", "96Mi")
+	action := memoryAction("96Mi")
 
 	require.True(t, discloseBlastRadiusClamp(action))
 
@@ -61,7 +62,7 @@ func TestDiscloseBlastRadiusClamp_AtTheCap(t *testing.T) {
 
 func TestDiscloseBlastRadiusClamp_BelowTheCap(t *testing.T) {
 	// 48Mi to 72Mi is 1.5x: the diagnosis chose this, not the guardrail.
-	action := memoryAction("48Mi", "72Mi")
+	action := memoryAction("72Mi")
 
 	require.False(t, discloseBlastRadiusClamp(action))
 
@@ -112,7 +113,7 @@ func TestDiscloseBlastRadiusClamp_AnnotatesPlanSummaryAndStep(t *testing.T) {
 }
 
 func TestDiscloseBlastRadiusClamp_IsIdempotent(t *testing.T) {
-	action := memoryAction("48Mi", "96Mi")
+	action := memoryAction("96Mi")
 	require.True(t, discloseBlastRadiusClamp(action))
 	first := action.Spec.Explanation
 
@@ -125,7 +126,7 @@ func TestDiscloseBlastRadiusClamp_IsIdempotent(t *testing.T) {
 func TestDiscloseBlastRadiusClamp_NoSnapshot(t *testing.T) {
 	// Without a pre-patch snapshot there is no ratio to judge, so say nothing
 	// rather than guess.
-	action := memoryAction("48Mi", "96Mi")
+	action := memoryAction("96Mi")
 	action.Spec.Action.PrePatchState = nil
 
 	assert.False(t, discloseBlastRadiusClamp(action))

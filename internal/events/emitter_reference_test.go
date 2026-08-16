@@ -52,11 +52,11 @@ func (c *capturingRecorder) Event(object runtime.Object, _, _, _ string) {
 	c.objects = append(c.objects, object)
 }
 
-func (c *capturingRecorder) Eventf(object runtime.Object, _, _, _ string, _ ...interface{}) {
+func (c *capturingRecorder) Eventf(object runtime.Object, _, _, _ string, _ ...any) {
 	c.objects = append(c.objects, object)
 }
 
-func (c *capturingRecorder) AnnotatedEventf(object runtime.Object, _ map[string]string, _, _, _ string, _ ...interface{}) {
+func (c *capturingRecorder) AnnotatedEventf(object runtime.Object, _ map[string]string, _, _, _ string, _ ...any) {
 	c.objects = append(c.objects, object)
 }
 
@@ -89,8 +89,8 @@ func TestEmitter_ReferenceResolves(t *testing.T) {
 		},
 		{
 			name:          "deployment",
-			involved:      dorguv1.ResourceReference{Kind: "Deployment", Name: "web", Namespace: "apps"},
-			wantKind:      "Deployment",
+			involved:      dorguv1.ResourceReference{Kind: kindDeployment, Name: "web", Namespace: "apps"},
+			wantKind:      kindDeployment,
 			wantNamespace: "apps",
 			wantAPIGroup:  "apps/v1",
 		},
@@ -143,7 +143,7 @@ func TestEmitter_RejectsUnidentifiedObject(t *testing.T) {
 // be created, which is what `kubectl get events --field-selector
 // reason=DorguDetected` reads.
 func TestEmitter_EventReachesTheAPI(t *testing.T) {
-	clientset := fake.NewSimpleClientset()
+	clientset := fake.NewClientset()
 
 	broadcaster := record.NewBroadcaster()
 	broadcaster.StartRecordingToSink(&typedcorev1.EventSinkImpl{

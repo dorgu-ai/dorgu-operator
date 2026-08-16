@@ -221,9 +221,9 @@ func (p *PodCollector) checkWaiting(pod corev1.Pod, cs corev1.ContainerStatus, n
 func (p *PodCollector) checkOOMKilled(pod corev1.Pod, cs corev1.ContainerStatus, now time.Time) (Signal, bool) {
 	var terminated *corev1.ContainerStateTerminated
 
-	if cs.State.Terminated != nil && cs.State.Terminated.Reason == "OOMKilled" {
+	if cs.State.Terminated != nil && cs.State.Terminated.Reason == string(SignalOOMKilled) {
 		terminated = cs.State.Terminated
-	} else if cs.LastTerminationState.Terminated != nil && cs.LastTerminationState.Terminated.Reason == "OOMKilled" {
+	} else if cs.LastTerminationState.Terminated != nil && cs.LastTerminationState.Terminated.Reason == string(SignalOOMKilled) {
 		terminated = cs.LastTerminationState.Terminated
 	}
 
@@ -237,7 +237,7 @@ func (p *PodCollector) checkOOMKilled(pod corev1.Pod, cs corev1.ContainerStatus,
 	}
 
 	meta := containerMetadata(pod, cs)
-	meta["lastTerminationReason"] = "OOMKilled"
+	meta["lastTerminationReason"] = string(SignalOOMKilled)
 
 	// Extract memory limit from pod spec
 	for _, c := range pod.Spec.Containers {
@@ -270,7 +270,7 @@ func (p *PodCollector) checkProbeFailure(pod corev1.Pod, cs corev1.ContainerStat
 	}
 
 	// Check if last termination was not OOM (OOM is already handled separately)
-	if cs.LastTerminationState.Terminated != nil && cs.LastTerminationState.Terminated.Reason == "OOMKilled" {
+	if cs.LastTerminationState.Terminated != nil && cs.LastTerminationState.Terminated.Reason == string(SignalOOMKilled) {
 		return Signal{}, false
 	}
 

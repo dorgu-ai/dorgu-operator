@@ -54,7 +54,7 @@ func TestGeminiClient_EnhanceDiagnosis_Success(t *testing.T) {
 			},
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
 
@@ -89,7 +89,7 @@ func TestGeminiClient_EnhanceDiagnosis_Success(t *testing.T) {
 func TestGeminiClient_EnhanceDiagnosis_HTTPError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
-		w.Write([]byte(`{"error": "forbidden"}`))
+		_, _ = w.Write([]byte(`{"error": "forbidden"}`))
 	}))
 	defer server.Close()
 
@@ -113,7 +113,7 @@ func TestGeminiClient_EnhanceDiagnosis_EmptyResponse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		resp := geminiResponse{Candidates: []geminiCandidate{}}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
 
@@ -160,7 +160,7 @@ func TestGeminiClient_EnhanceDiagnosis_Timeout(t *testing.T) {
 
 func TestGeminiClient_Provider(t *testing.T) {
 	client := &GeminiClient{}
-	if client.Provider() != "gemini" {
-		t.Errorf("provider = %q, want %q", client.Provider(), "gemini")
+	if client.Provider() != providerGemini {
+		t.Errorf("provider = %q, want %q", client.Provider(), providerGemini)
 	}
 }

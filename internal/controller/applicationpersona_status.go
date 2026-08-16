@@ -154,7 +154,7 @@ func isFailureReason(reason string) bool {
 		"InvalidImageName":           true,
 		"RunContainerError":          true,
 		"ContainerCannotRun":         true,
-		"OOMKilled":                  true,
+		reasonOOMKilled:              true,
 	}
 	return failureReasons[reason]
 }
