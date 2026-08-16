@@ -26,9 +26,20 @@ import (
 	"testing"
 )
 
-// helmNotes renders the chart's NOTES.txt with the given --set overrides.
-// `helm template` omits notes, so this goes through a client-side dry-run
-// install and returns everything from the NOTES: marker onward.
+// helmNotes renders the chart's NOTES.txt with the given --set overrides and
+// returns everything from the NOTES: marker onward.
+//
+// This does not use helmTemplate, unlike every other test in this package,
+// because `helm template` cannot render notes at all: Helm removes NOTES.txt
+// from the template set before rendering output, so it never appears, and
+// `--show-only templates/NOTES.txt` fails with "could not find template".
+// Rendering notes means going through the install path.
+//
+// That path needs Helm 4. In Helm 3 `helm install --dry-run=client` still calls
+// IsReachable() and dies with "Kubernetes cluster unreachable" on a runner with
+// no cluster, and the escape hatch (--api-versions, which suppresses the check)
+// exists only on `helm template`. Helm 4 makes --dry-run=client genuinely
+// client-only. CI pins Helm 4 for this reason; see .github/workflows/test.yml.
 func helmNotes(t *testing.T, sets ...string) string {
 	t.Helper()
 	if _, err := exec.LookPath("helm"); err != nil {
@@ -40,7 +51,11 @@ func helmNotes(t *testing.T, sets ...string) string {
 	}
 	out, err := exec.Command("helm", args...).CombinedOutput()
 	if err != nil {
-		t.Fatalf("helm install --dry-run %v failed: %v\n%s", sets, err, out)
+		if strings.Contains(string(out), "cluster unreachable") {
+			t.Fatalf("helm install --dry-run=client %v tried to reach a cluster, which means "+
+				"helm is older than v4. Rendering NOTES.txt offline needs Helm 4+.\n%s", sets, out)
+		}
+		t.Fatalf("helm install --dry-run=client %v failed: %v\n%s", sets, err, out)
 	}
 	rendered := string(out)
 	idx := strings.Index(rendered, "NOTES:")

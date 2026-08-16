@@ -447,3 +447,63 @@ func TestPlanExplanation(t *testing.T) {
 		})
 	}
 }
+
+// clampedPlan proposes exactly 2x the current memory limit, which lands on the
+// blast-radius cap: the guardrail, not the diagnosis, chose the number.
+func clampedPlan() *planner.RemediationPlan {
+	return &planner.RemediationPlan{
+		RootCause:  "memory limit too low; container OOMKilled at peak load",
+		Confidence: 0.88,
+		Steps: []planner.PlannedStep{
+			{
+				Order:       1,
+				Type:        "persona-update",
+				Description: "Raise memory limit from 256Mi to 512Mi",
+				Rationale:   "peak usage exceeds the current limit",
+				Risk:        "low",
+				Patch:       json.RawMessage(`{"spec":{"resources":{"limits":{"memory":"512Mi"}}}}`),
+			},
+			{
+				Order:       2,
+				Type:        "manual",
+				Description: "Watch for further OOMKills",
+				Rationale:   "confirm the fix held",
+				Risk:        "low",
+			},
+		},
+	}
+}
+
+// TestProposer_AIPath_ClampNoticeSurvivesExplanationRecompute pins the ordering
+// inside proposeWithPlanner. The F-15 fix rewrites Spec.Explanation after every
+// safety gate has run, and discloseBlastRadiusClamp (F-11) appends the cap
+// caveat to that same field. Recomputing after the disclosure would silently
+// erase it, turning a clamped fix back into a confident-looking one, and both
+// features' own unit tests would still pass.
+func TestProposer_AIPath_ClampNoticeSurvivesExplanationRecompute(t *testing.T) {
+	scheme := newTestScheme()
+	persona := newTestPersona("default", "my-app", "256Mi", "500m")
+	incident := newTestIncident("default", "oom", "my-app", "OOMKilled")
+
+	c := fake.NewClientBuilder().WithScheme(scheme).
+		WithRuntimeObjects(persona).
+		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+
+	p := NewProposer(c, NewSafetyChecker(c, testLogger()), testLogger(),
+		WithPlanner(&stubPlanner{plan: clampedPlan()}))
+
+	diag := newOOMDiagnosis("default", "my-app", detection.SeverityCritical)
+	result, err := p.Propose(context.Background(), diag, incident)
+	require.NoError(t, err)
+	require.True(t, result.Proposed)
+
+	spec := result.Action.Spec
+
+	assert.Contains(t, spec.Explanation, "Clamped by the 2x blast-radius guardrail",
+		"the clamp caveat must not be erased by the explanation recompute")
+	assert.Contains(t, spec.Explanation, "AI remediation plan:",
+		"the recomputed explanation must still be there too")
+	assert.Contains(t, spec.PlanSummary, "Clamped by the 2x blast-radius guardrail")
+	assert.Contains(t, spec.PlanSummary, "memory limit too low",
+		"PlanSummary stays the root cause")
+}
