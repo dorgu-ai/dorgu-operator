@@ -369,6 +369,14 @@ func main() {
 		classifier := events.NewClassifier()
 		correlator := events.NewCorrelator(mgr.GetClient())
 		eventStore := events.NewEventStore(mgr.GetClient(), setupLog)
+		// GetEventRecorderFor is deprecated in favour of GetEventRecorder, but the
+		// two return different types: the new events API hands back an
+		// events.EventRecorder whose Eventf takes regarding and related objects,
+		// where events.NewEmitter and the whole emitter path take a
+		// record.EventRecorder. Switching is a real migration of the event
+		// pipeline, not a rename, and that pipeline was only just made to emit
+		// anything at all. Left for its own change.
+		//nolint:staticcheck // SA1019: migrating to the new events API is a separate change
 		emitter := events.NewEmitter(mgr.GetEventRecorderFor("dorgu-operator"), setupLog)
 
 		// 5. Start event watcher.
