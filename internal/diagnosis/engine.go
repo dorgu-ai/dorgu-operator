@@ -45,16 +45,16 @@ func NewEngine(logger logr.Logger, providers ...DiagnosisProvider) *Engine {
 
 // Analyze runs all providers against the given signals and returns aggregated diagnoses.
 // Diagnoses are deduplicated by (category + suggestedAction + affectedResources),
-// keeping the highest-confidence variant. This naturally prefers AI-enhanced results
-// when available. Diagnoses are sorted by confidence descending.
+// keeping the highest-confidence variant, and on an exact confidence tie the one
+// from the later provider. Diagnoses are sorted by confidence descending.
 func (e *Engine) Analyze(ctx context.Context, signals []detection.Signal) ([]Diagnosis, error) {
 	if len(signals) == 0 {
 		return nil, nil
 	}
 
-	var allDiagnoses []Diagnosis
+	var produced []rankedDiagnosis
 
-	for _, provider := range e.providers {
+	for stage, provider := range e.providers {
 		diagnoses, err := provider.Diagnose(ctx, signals)
 		if err != nil {
 			e.logger.Error(err, "diagnosis provider failed", "provider", provider.Name())
@@ -64,12 +64,14 @@ func (e *Engine) Analyze(ctx context.Context, signals []detection.Signal) ([]Dia
 			"provider", provider.Name(),
 			"count", len(diagnoses),
 		)
-		allDiagnoses = append(allDiagnoses, diagnoses...)
+		for _, d := range diagnoses {
+			produced = append(produced, rankedDiagnosis{diagnosis: d, stage: stage})
+		}
 	}
 
 	// Deduplicate: when two diagnoses match on (category + suggestedAction + resources),
-	// keep the one with higher confidence.
-	deduped := deduplicateDiagnoses(allDiagnoses)
+	// keep the better one and say which one lost.
+	deduped := e.deduplicateDiagnoses(produced)
 
 	sort.Slice(deduped, func(i, j int) bool {
 		return deduped[i].Confidence > deduped[j].Confidence
@@ -78,27 +80,85 @@ func (e *Engine) Analyze(ctx context.Context, signals []detection.Signal) ([]Dia
 	return deduped, nil
 }
 
-// deduplicateDiagnoses keeps the highest-confidence diagnosis per deduplication key.
-func deduplicateDiagnoses(diagnoses []Diagnosis) []Diagnosis {
-	best := make(map[string]Diagnosis)
+// rankedDiagnosis pairs a diagnosis with the position of the provider that
+// produced it. The stage is read from the provider list rather than from
+// Diagnosis.Provider, so a provider that mislabels its output cannot change how
+// its results are ranked.
+type rankedDiagnosis struct {
+	diagnosis Diagnosis
+	stage     int
+}
+
+// deduplicateDiagnoses keeps one diagnosis per deduplication key: the most
+// confident, and on an exact tie the one from the later provider.
+//
+// The tie is the common case, not a corner case. AIProvider re-runs the
+// rule-based logic and then applies the LLM's ConfidenceAdjustment, which no
+// response parser populates, so an AI-enhanced diagnosis carries the rule-based
+// confidence to the digit. Under a strict "higher confidence wins" comparison
+// the rule-based result, produced first, therefore won every time: the
+// ai-enhanced diagnosis the user was billed for was dropped here and never
+// reached the IncidentMemory (F-05). Providers run in order and each one
+// enhances what came before, so the later provider is the informative one when
+// confidence cannot separate them.
+func (e *Engine) deduplicateDiagnoses(produced []rankedDiagnosis) []Diagnosis {
+	best := make(map[string]rankedDiagnosis)
 	var order []string
 
-	for _, d := range diagnoses {
-		key := deduplicationKey(&d)
-		existing, exists := best[key]
+	for _, candidate := range produced {
+		key := deduplicationKey(&candidate.diagnosis)
+		current, exists := best[key]
 		if !exists {
 			order = append(order, key)
-			best[key] = d
-		} else if d.Confidence > existing.Confidence {
-			best[key] = d
+			best[key] = candidate
+			continue
 		}
+		if supersedes(candidate, current) {
+			e.logDiscarded(candidate, current)
+			best[key] = candidate
+			continue
+		}
+		e.logDiscarded(current, candidate)
 	}
 
 	result := make([]Diagnosis, 0, len(order))
 	for _, key := range order {
-		result = append(result, best[key])
+		result = append(result, best[key].diagnosis)
 	}
 	return result
+}
+
+// supersedes reports whether candidate should replace current as the diagnosis
+// of record for their shared deduplication key.
+func supersedes(candidate, current rankedDiagnosis) bool {
+	if candidate.diagnosis.Confidence != current.diagnosis.Confidence {
+		return candidate.diagnosis.Confidence > current.diagnosis.Confidence
+	}
+	return candidate.stage > current.stage
+}
+
+// logDiscarded records, at INFO, that one provider's diagnosis of a finding was
+// dropped in favour of another's. Discarding a billed AI call without a word is
+// what made F-05 invisible: the operator log showed the AI producing diagnoses
+// while every persisted incident read "rule-based".
+func (e *Engine) logDiscarded(kept, dropped rankedDiagnosis) {
+	if kept.diagnosis.Provider == dropped.diagnosis.Provider {
+		return
+	}
+
+	reason := "same confidence, the enhancing provider wins"
+	if kept.diagnosis.Confidence != dropped.diagnosis.Confidence {
+		reason = "higher confidence"
+	}
+
+	e.logger.Info("discarded a duplicate diagnosis",
+		"kept", kept.diagnosis.Provider,
+		"keptConfidence", kept.diagnosis.Confidence,
+		"discarded", dropped.diagnosis.Provider,
+		"discardedConfidence", dropped.diagnosis.Confidence,
+		"category", dropped.diagnosis.Category,
+		"reason", reason,
+	)
 }
 
 // Providers returns the list of registered providers.

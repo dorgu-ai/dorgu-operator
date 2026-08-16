@@ -53,6 +53,10 @@ const (
 	phaseVerifying = "Verifying"
 	phaseFailed    = "Failed"
 	phasePending   = "Pending"
+
+	// conditionApplied mirrors the controller's Applied condition type, whose
+	// reason distinguishes a rejected-before-apply action from a real failure.
+	conditionApplied = "Applied"
 )
 
 // SafetyCheckerImpl implements the SafetyChecker interface with S1-S4 guardrails.
@@ -153,6 +157,10 @@ func (s *SafetyCheckerImpl) checkConcurrent(ctx context.Context, action *dorguv1
 }
 
 // checkFailedCooldown enforces cooldown after failed remediation (S1).
+//
+// Only remediations that actually went wrong count. A plan the executor refused
+// before touching the cluster changed nothing, so counting it blacked out the app
+// for 30 minutes over a self-inflicted non-failure (F-03).
 func (s *SafetyCheckerImpl) checkFailedCooldown(ctx context.Context, action *dorguv1.RemediationAction) (*SafetyViolation, error) {
 	actionList, err := s.listPersonaActions(ctx, action)
 	if err != nil {
@@ -161,6 +169,11 @@ func (s *SafetyCheckerImpl) checkFailedCooldown(ctx context.Context, action *dor
 
 	for i := range actionList {
 		if actionList[i].Status.Phase != phaseFailed {
+			continue
+		}
+		if rejectedBeforeApply(&actionList[i]) {
+			s.logger.V(1).Info("ignoring a rejected-before-apply remediation for the failure cooldown",
+				"action", actionList[i].Name)
 			continue
 		}
 		// Check if the failed action is within cooldown period.
@@ -177,6 +190,21 @@ func (s *SafetyCheckerImpl) checkFailedCooldown(ctx context.Context, action *dor
 	}
 
 	return nil, nil
+}
+
+// rejectedBeforeApply reports whether a Failed action was refused by the executor
+// without anything being written to the cluster, as recorded on its Applied
+// condition by the remediation controller.
+func rejectedBeforeApply(action *dorguv1.RemediationAction) bool {
+	if action.Status.AppliedAt != nil {
+		return false
+	}
+	for _, c := range action.Status.Conditions {
+		if c.Type == conditionApplied && c.Reason == dorguv1.ReasonPreconditionRejected {
+			return true
+		}
+	}
+	return false
 }
 
 // checkBlastRadius validates resource change magnitude (S2).

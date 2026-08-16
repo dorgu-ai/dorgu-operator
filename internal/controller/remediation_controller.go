@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -34,15 +35,18 @@ import (
 
 // RemediationAction phase constants.
 const (
-	RemediationPhasePending    = "Pending"
-	RemediationPhaseApproved   = "Approved"
-	RemediationPhaseApplying   = "Applying"
-	RemediationPhaseVerifying  = "Verifying"
-	RemediationPhaseCompleted  = "Completed"
-	RemediationPhaseRolledBack = "RolledBack"
-	RemediationPhaseFailed     = "Failed"
-	RemediationPhaseRejected   = "Rejected"
-	RemediationPhaseExpired    = "Expired"
+	RemediationPhasePending   = "Pending"
+	RemediationPhaseApproved  = "Approved"
+	RemediationPhaseApplying  = "Applying"
+	RemediationPhaseVerifying = "Verifying"
+	RemediationPhaseCompleted = "Completed"
+	// RemediationPhaseAcknowledged is where an approved advisory plan settles:
+	// approval is recorded, nothing is applied, and no cooldown is triggered.
+	RemediationPhaseAcknowledged = "Acknowledged"
+	RemediationPhaseRolledBack   = "RolledBack"
+	RemediationPhaseFailed       = "Failed"
+	RemediationPhaseRejected     = "Rejected"
+	RemediationPhaseExpired      = "Expired"
 )
 
 // RemediationAction condition types.
@@ -97,7 +101,7 @@ func (r *RemediationController) Reconcile(ctx context.Context, req ctrl.Request)
 	case RemediationPhaseVerifying:
 		return r.handleVerifying(ctx, logger, &action)
 
-	case RemediationPhaseCompleted, RemediationPhaseRolledBack,
+	case RemediationPhaseCompleted, RemediationPhaseAcknowledged, RemediationPhaseRolledBack,
 		RemediationPhaseFailed, RemediationPhaseRejected, RemediationPhaseExpired:
 		// Terminal states — no-op.
 		return ctrl.Result{}, nil
@@ -109,10 +113,30 @@ func (r *RemediationController) Reconcile(ctx context.Context, req ctrl.Request)
 }
 
 // handleApproved applies the remediation patch and transitions to Applying.
+//
+// An approved plan with nothing to apply settles as Acknowledged instead: its
+// steps are advisory, so there is no patch to run and nothing has gone wrong.
+// Sending it to the executor is what used to mark it Failed and put the app into
+// a 30-minute remediation blackout (F-03).
 func (r *RemediationController) handleApproved(ctx context.Context, logger logr.Logger, action *dorguv1.RemediationAction) (ctrl.Result, error) {
+	if !action.HasAutoApplicableChange() {
+		logger.Info("approved plan is advisory; recording the approval without applying anything",
+			"actionType", action.Spec.Action.Type, "steps", len(action.Spec.Steps))
+		return ctrl.Result{}, r.transitionToAcknowledged(ctx, action)
+	}
+
 	logger.Info("executing approved remediation")
 
 	if err := r.Executor.Apply(ctx, action); err != nil {
+		var precondition *remediation.PreconditionError
+		if errors.As(err, &precondition) {
+			// Nothing was written to the cluster, so this must not count as a
+			// failed remediation for the cooldown.
+			logger.Error(err, "remediation refused before apply")
+			return ctrl.Result{}, r.transitionToFailedWithReason(ctx, action,
+				dorguv1.ReasonPreconditionRejected,
+				fmt.Sprintf("%v; nothing was applied", err))
+		}
 		logger.Error(err, "failed to apply remediation")
 		return ctrl.Result{}, r.transitionToFailed(ctx, action, fmt.Sprintf("apply failed: %v", err))
 	}
@@ -256,10 +280,45 @@ func (r *RemediationController) handleVerificationUnknown(ctx context.Context, l
 	return ctrl.Result{RequeueAfter: 1 * time.Minute}, nil
 }
 
+// transitionToAcknowledged settles an approved advisory plan. The approval is
+// recorded, the manual steps stand as the plan of record, and the incident is
+// marked acknowledged rather than resolved: nothing was actually changed.
+func (r *RemediationController) transitionToAcknowledged(ctx context.Context, action *dorguv1.RemediationAction) error {
+	action.Status.Phase = RemediationPhaseAcknowledged
+	setCondition(&action.Status.Conditions, ConditionApplied, metav1.ConditionFalse,
+		dorguv1.ReasonAdvisoryOnly,
+		"Approval recorded. This plan has no auto-applicable step, so the operator changed nothing; the steps are for a human to apply.")
+
+	if err := r.Status().Update(ctx, action); err != nil {
+		return fmt.Errorf("updating status to Acknowledged: %w", err)
+	}
+
+	r.broadcastRemediation(action, "acknowledged")
+
+	if err := r.updateIncidentResolution(ctx, action, "acknowledged"); err != nil {
+		r.Logger.Error(err, "failed to record incident acknowledgement")
+	}
+
+	return nil
+}
+
 // transitionToFailed sets the action to Failed phase with a reason.
 func (r *RemediationController) transitionToFailed(ctx context.Context, action *dorguv1.RemediationAction, reason string) error {
+	return r.transitionToFailedWithReason(ctx, action, "Failed", reason)
+}
+
+// transitionToFailedWithReason sets the action to Failed with an explicit
+// condition reason. The reason is load-bearing: the safety checker reads it to
+// tell a rejected-before-apply action (no cluster change, no cooldown) from a
+// remediation that actually went wrong.
+func (r *RemediationController) transitionToFailedWithReason(
+	ctx context.Context,
+	action *dorguv1.RemediationAction,
+	conditionReason string,
+	reason string,
+) error {
 	action.Status.Phase = RemediationPhaseFailed
-	setCondition(&action.Status.Conditions, ConditionApplied, metav1.ConditionFalse, "Failed", reason)
+	setCondition(&action.Status.Conditions, ConditionApplied, metav1.ConditionFalse, conditionReason, reason)
 
 	if err := r.Status().Update(ctx, action); err != nil {
 		return fmt.Errorf("updating status to Failed: %w", err)

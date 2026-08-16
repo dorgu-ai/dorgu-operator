@@ -55,8 +55,10 @@ spec:
             - --enable-websocket=true
             - --websocket-addr=:{{ .Values.websocket.port }}
             {{- end }}
+            {{- /* Rendered unconditionally so healthCheck.enabled=false is explicit in
+                   the pod spec rather than relying on the binary's own default. */}}
+            - --enable-health-check={{ .Values.healthCheck.enabled }}
             {{- if .Values.healthCheck.enabled }}
-            - --enable-health-check=true
             - --health-check-interval={{ .Values.healthCheck.interval }}
             {{- end }}
             {{- if not .Values.metricsServer.enabled }}

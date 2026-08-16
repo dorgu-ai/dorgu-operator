@@ -378,19 +378,24 @@ type ClusterResourceSummary struct {
 	// +optional
 	AllocatableMemory string `json:"allocatableMemory,omitempty"`
 
-	// usedCPU is the currently used CPU (from metrics).
+	// usedCPU is the CPU claimed by the resource requests of scheduled pods: what
+	// the scheduler treats as consumed. Requests rather than live metrics, so the
+	// figure is available without metrics-server.
 	// +optional
 	UsedCPU string `json:"usedCPU,omitempty"`
 
-	// usedMemory is the currently used memory (from metrics).
+	// usedMemory is the memory claimed by the resource requests of scheduled pods.
+	// See usedCPU.
 	// +optional
 	UsedMemory string `json:"usedMemory,omitempty"`
 
-	// cpuUtilization is the CPU utilization percentage.
+	// cpuUtilization is usedCPU as a percentage of allocatableCPU. Empty when
+	// allocatable is unknown.
 	// +optional
 	CPUUtilization string `json:"cpuUtilization,omitempty"`
 
-	// memoryUtilization is the memory utilization percentage.
+	// memoryUtilization is usedMemory as a percentage of allocatableMemory. Empty
+	// when allocatable is unknown.
 	// +optional
 	MemoryUtilization string `json:"memoryUtilization,omitempty"`
 

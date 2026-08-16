@@ -19,10 +19,12 @@ package controller
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 )
@@ -103,7 +105,7 @@ func (r *ClusterPersonaReconciler) calculateResourceSummary(ctx context.Context,
 	summary.AllocatableMemory = allocatableMemory.String()
 	summary.TotalPods = int32(totalPods)
 
-	// Count running pods
+	// Count running pods and total the resources they have claimed.
 	podList := &corev1.PodList{}
 	if err := r.List(ctx, podList); err == nil {
 		runningCount := int32(0)
@@ -113,12 +115,78 @@ func (r *ClusterPersonaReconciler) calculateResourceSummary(ctx context.Context,
 			}
 		}
 		summary.RunningPods = runningCount
+		r.setClaimedResources(summary, podList.Items, allocatableCPU, allocatableMemory)
+	} else {
+		log.FromContext(ctx).Error(err,
+			"could not list pods; cluster resource usage will be reported as unavailable")
 	}
 
 	// Set node count
 	summary.NodeCount = int32(len(nodes))
 
 	return summary
+}
+
+// setClaimedResources fills in the used/utilization half of the summary from the
+// resource requests of scheduled pods, which is what the scheduler treats as
+// consumed and what `dorgu health` renders as "requests / allocatable".
+//
+// These four fields were declared on the CRD and never written by anything, so
+// every reader saw empty strings. `dorgu health` then printed
+// "CPU: n/a requests / allocatable ( / 3860m)" on every cluster (F-09). Requests
+// are used rather than live metrics deliberately: they need no metrics-server, so
+// the number is there on a default install instead of being permanently blank.
+func (r *ClusterPersonaReconciler) setClaimedResources(
+	summary *dorguv1.ClusterResourceSummary,
+	pods []corev1.Pod,
+	allocatableCPU, allocatableMemory resource.Quantity,
+) {
+	var requestedCPU, requestedMemory resource.Quantity
+
+	for i := range pods {
+		pod := &pods[i]
+		// Terminal pods hold no allocation.
+		if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
+			continue
+		}
+		cpu, memory := podRequests(pod)
+		requestedCPU.Add(cpu)
+		requestedMemory.Add(memory)
+	}
+
+	summary.UsedCPU = requestedCPU.String()
+	summary.UsedMemory = requestedMemory.String()
+	summary.CPUUtilization = utilizationPercent(requestedCPU.MilliValue(), allocatableCPU.MilliValue())
+	summary.MemoryUtilization = utilizationPercent(requestedMemory.Value(), allocatableMemory.Value())
+}
+
+// podRequests returns what a single pod claims from its node: the sum of its app
+// containers, floored by the largest single init container, which is how the
+// scheduler accounts for a pod (init containers run before the app containers,
+// not alongside them).
+func podRequests(pod *corev1.Pod) (cpu, memory resource.Quantity) {
+	for _, c := range pod.Spec.Containers {
+		cpu.Add(*c.Resources.Requests.Cpu())
+		memory.Add(*c.Resources.Requests.Memory())
+	}
+	for _, c := range pod.Spec.InitContainers {
+		if c.Resources.Requests.Cpu().Cmp(cpu) > 0 {
+			cpu = c.Resources.Requests.Cpu().DeepCopy()
+		}
+		if c.Resources.Requests.Memory().Cmp(memory) > 0 {
+			memory = c.Resources.Requests.Memory().DeepCopy()
+		}
+	}
+	return cpu, memory
+}
+
+// utilizationPercent renders used/total as a whole-number percentage. An unknown
+// or zero denominator yields an empty string rather than a fabricated 0%.
+func utilizationPercent(used, total int64) string {
+	if total <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("%d%%", int64(math.Round(float64(used)/float64(total)*100)))
 }
 
 // discoverNamespaces retrieves namespace information.

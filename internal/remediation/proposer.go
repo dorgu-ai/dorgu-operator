@@ -362,6 +362,12 @@ func (p *Proposer) proposeResourceAdjustment(ctx context.Context, diag diagnosis
 		},
 	}
 
+	// Say so when the guardrail, not the diagnosis, picked the number.
+	if discloseBlastRadiusClamp(action) {
+		p.logger.Info("proposed change sits at the blast-radius cap; disclosing the clamp in the plan",
+			"action", action.Name, "confidence", action.Spec.Confidence)
+	}
+
 	// Run safety checks.
 	safetyResult, err := p.safety.Check(ctx, action)
 	if err != nil {

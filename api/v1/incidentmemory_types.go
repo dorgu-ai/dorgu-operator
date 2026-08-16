@@ -157,7 +157,9 @@ type ResolutionInfo struct {
 	AppliedAt *metav1.Time `json:"appliedAt,omitempty"`
 
 	// Outcome is the result of the remediation.
-	// +kubebuilder:validation:Enum=resolved;partial;failed;rollback
+	// "acknowledged" means a human approved an advisory plan: the decision is
+	// recorded, nothing was applied, and the incident is still open.
+	// +kubebuilder:validation:Enum=resolved;partial;failed;rollback;acknowledged
 	// +optional
 	Outcome string `json:"outcome,omitempty"`
 

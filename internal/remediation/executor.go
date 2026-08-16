@@ -27,6 +27,18 @@ import (
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 )
 
+// PreconditionError reports that a RemediationAction was refused before the
+// executor touched the cluster: the action was not fit to apply. It is distinct
+// from a failure to apply, which leaves the cluster half-changed and is what the
+// failure cooldown exists to protect against (F-03).
+type PreconditionError struct {
+	Reason string
+}
+
+func (e *PreconditionError) Error() string {
+	return fmt.Sprintf("precondition failed: %s", e.Reason)
+}
+
 // Executor applies approved RemediationAction patches to ApplicationPersona CRDs.
 type Executor struct {
 	client client.Client
@@ -42,9 +54,11 @@ func NewExecutor(c client.Client, logger logr.Logger) *Executor {
 }
 
 // Apply validates preconditions and applies the JSON merge patch to the target ApplicationPersona.
+// A precondition rejection is returned as a *PreconditionError: nothing was
+// written, so callers can distinguish it from a real apply failure.
 func (e *Executor) Apply(ctx context.Context, action *dorguv1.RemediationAction) error {
 	if err := e.validatePreconditions(action); err != nil {
-		return fmt.Errorf("precondition failed: %w", err)
+		return &PreconditionError{Reason: err.Error()}
 	}
 
 	// Fetch target Persona.
