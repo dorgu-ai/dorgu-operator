@@ -6,9 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
-### Upgrade note
+## [0.8.0] - 2026-08-16
 
-> **The chart now enables detection by default (`healthCheck.enabled: true`).** Before this release the flag defaulted to `false`, so following the chart's own installation instructions produced an operator that detected nothing, diagnosed nothing, and proposed nothing, with no hint as to why. Self-healing is the product, so the loop is on out of the box.
+### Upgrade notes
+
+> **1. The chart now enables detection by default (`healthCheck.enabled: true`).** Before this release the flag defaulted to `false`, so following the chart's own installation instructions produced an operator that detected nothing, diagnosed nothing, and proposed nothing, with no hint as to why. Self-healing is the product, so the loop is on out of the box.
 >
 > On upgrade, a cluster that never set `healthCheck.enabled` will **start detecting**: expect `IncidentMemory` records to appear, and `RemediationAction` proposals wherever the `ClusterPersona` self-healing mode is `propose` (the default). Nothing is applied without human approval. To keep the previous behaviour:
 >
@@ -20,10 +22,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 >
 > The deployment template now renders `--enable-health-check=<value>` unconditionally rather than omitting the flag, so the setting is visible in the pod spec either way.
 
+> **2. The validating webhook no longer exempts unlabelled Deployments.** A Deployment without an `app.kubernetes.io/name` label on the object itself was skipped with "no app.kubernetes.io/name label; skipping persona validation". Helm, kustomize and most hand-written YAML label the pod template only, so in practice a large share of real workloads were never validated at all. The webhook now resolves the persona through the same fallback chain as the controller (`app.kubernetes.io/name` label, `app` label, `metadata.name`, then `spec.selector.matchLabels`), so those Deployments are matched and checked.
+>
+> **If you run `webhook.mode: enforcing`, workloads that previously passed unchecked may now be rejected.** They were never being validated, so nothing about them changed; what changed is that Dorgu can finally see them. Before upgrading an enforcing cluster, review the personas those workloads will now be validated against, or run one cycle in `webhook.mode: advisory` and read the warnings first:
+>
+> ```bash
+> helm upgrade dorgu-operator ... --set webhook.mode=advisory
+> ```
+>
+> Clusters with the webhook disabled (the default, `webhook.enabled: false`) are unaffected.
+
+### Added
+
+- **`RemediationStep.command`**, an optional ready-to-run kubectl command for an advisory step. A correct diagnosis used to end in prose: the planner would identify a mistyped image tag, name the correct one, and leave the reader to write the `kubectl set image` themselves. The AI planner is now asked for a fully resolved command where a single one does the job, and `dorgu remediation diff` prints it. The field is **never executed**, by the operator or the CLI: it is printed for a human to read and run. Because it can be model-authored it is filtered through `SanitizeStepCommand` before being persisted (single line, must start with `kubectl `, no shell metacharacters, bounded length), and a CEL rule plus `maxLength` on the CRD enforce the same thing at the API server for clients that write a `RemediationAction` directly.
+- **The Helm chart ships a `NOTES.txt`.** Installing used to succeed in silence, including silence about detection being off. The notes now report the state the install actually landed in: whether detection is on (with the interval) or off (with the exact `helm upgrade` to turn it on), whether AI is on or off (with the secret and upgrade commands, and the reminder that rule-based detection and diagnosis need no key), the five CRDs to expect, `dorgu health`, `dorgu persona import` for a cluster that already has apps, and the incident and remediation commands.
+
 ### Changed
 
 - **Detection is on by default.** See the upgrade note above. `charts/dorgu-operator/values.yaml` sets `healthCheck.enabled: true`, and four chart render tests guard the default, the opt out, the interval override, and the invariant that a default install enables no AI flags.
 - **`IncidentMemory` resolution outcomes gained `acknowledged`** and `RemediationAction` phases gained `Acknowledged`, for an approved plan that had nothing to apply (see below).
+- **`RemediationAction.spec.explanation` no longer restates `planSummary`.** The proposer wrote the root cause into `planSummary` and the same sentence with a prefix into `explanation`, so `dorgu remediation diff` printed one paragraph twice under two headings. `planSummary` stays the root cause (why it broke); `explanation` now describes the shape of the response, for example `AI remediation plan: 3 steps, 1 applied on approval and 2 advisory`, and says outright when a plan is all advisory and nothing will be applied for you.
+- **The whole repo passes `golangci-lint`,** and the Lint workflow is green for the first time. 171 findings across ten linters were cleared: unchecked errors, repeated literals promoted to constants, preallocation, modernisation, unused parameters, a dead assignment, and two deprecated API uses. No behaviour changes. `main()` in `cmd/main.go` is excluded from `gocyclo` with the reasoning recorded in `.golangci.yml`, rather than restructuring the operator's startup path for a linter.
+- **Removed `.github/workflows/ci.yaml`,** which triggered on `main` while the default branch is `master`, so it had never run once. Its `lint` and `test` jobs duplicate `lint.yml` and `test.yml`, which do run.
 
 ### Fixed
 
