@@ -46,6 +46,14 @@ Rules you MUST follow:
    (Deployment/Pod) patch here — the operator never writes workloads directly.
 4. All other step types are ADVISORY: they describe an action for a human, CLI,
    or platform to apply. Do not include a patch on them.
+4a. When an advisory step can be carried out by ONE kubectl command, include it
+   as "command", fully resolved with the real namespace, workload, container and
+   value from the context above (e.g. "kubectl set image deployment/web
+   web=nginx:1.27-alpine -n demo"). A reader should be able to paste it and be
+   done. Constraints: a single line, starting with "kubectl ", and containing
+   none of ; & | < > $ or backticks. If no single command does the job, or you
+   would have to guess at a name, omit "command" and say what to do in the
+   description instead. Never guess.
 5. Respect the cluster's self-healing policy and trust level. Keep resource
    changes conservative (no more than ~2x an existing limit).
 6. PREFER approaches that succeeded in past remediations for this app; AVOID
@@ -109,6 +117,10 @@ func planToolSchema() map[string]interface{} {
 						"patch": map[string]interface{}{
 							"type":        "string",
 							"description": "For persona-update steps only: a JSON merge patch (as a JSON-encoded string) against the ApplicationPersona spec, e.g. {\"spec\":{\"resources\":{\"limits\":{\"memory\":\"512Mi\"}}}}. Omit for advisory steps.",
+						},
+						"command": map[string]interface{}{
+							"type":        "string",
+							"description": "For advisory steps only: one ready-to-run kubectl command that carries out this step, fully resolved with real names, e.g. \"kubectl set image deployment/web web=nginx:1.27-alpine -n demo\". Single line, must start with \"kubectl \", must not contain ; & | < > $ or backticks. Omit when no single command does the job or a name would have to be guessed.",
 						},
 					},
 					"required": []string{"order", "type", "description", "rationale", "risk"},

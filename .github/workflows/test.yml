@@ -21,6 +21,17 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # The chart tests render the chart, and chart_notes_test.go renders
+      # NOTES.txt, which only the install path produces. Helm 3 contacts the API
+      # server on that path even with --dry-run=client, so it fails on a runner
+      # with no cluster; Helm 4 is genuinely client-only. Pinned rather than
+      # taking whatever the runner image ships, so the chart tests do not start
+      # failing when that image changes.
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v4.1.4
+
       - name: Running Tests
         run: |
           go mod tidy

@@ -202,6 +202,7 @@ type rawStep struct {
 	Rationale   string `json:"rationale"`
 	Risk        string `json:"risk"`
 	Patch       string `json:"patch"`
+	Command     string `json:"command"`
 }
 
 func (r rawPlan) toPlan() *RemediationPlan {
@@ -217,6 +218,7 @@ func (r rawPlan) toPlan() *RemediationPlan {
 			Description: s.Description,
 			Rationale:   s.Rationale,
 			Risk:        s.Risk,
+			Command:     s.Command,
 		}
 		if s.Patch != "" && json.Valid([]byte(s.Patch)) {
 			step.Patch = json.RawMessage(s.Patch)

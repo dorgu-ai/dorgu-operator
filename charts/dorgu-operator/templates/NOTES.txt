@@ -1,0 +1,68 @@
+dorgu-operator {{ .Chart.AppVersion }} is installed in namespace {{ .Release.Namespace }}.
+
+1. Wait for the operator to come up:
+
+     kubectl rollout status deployment/{{ include "dorgu-operator.fullname" . }} -n {{ .Release.Namespace }}
+     kubectl get crd | grep dorgu.io
+
+   You should see five CRDs: applicationpersonas, clusterpersonas,
+   incidentmemories, remediationactions, dorguevents.
+
+2. Failure detection is {{ if .Values.healthCheck.enabled }}ON{{ else }}OFF{{ end }}.
+{{ if .Values.healthCheck.enabled }}
+   The operator checks for OOMKills, CrashLoopBackOff, ImagePullBackOff, node
+   conditions and control-plane problems every {{ .Values.healthCheck.interval }}.
+{{- else }}
+   Nothing will be detected until you turn it on. The operator is running, but
+   it is not watching for failures:
+
+     helm upgrade {{ .Release.Name }} oci://ghcr.io/dorgu-ai/dorgu-operator-charts/dorgu-operator -n {{ .Release.Namespace }} --reuse-values \
+       --set healthCheck.enabled=true
+{{- end }}
+
+3. AI diagnosis and planning is {{ if and .Values.llm.provider .Values.aiRemediation.enabled }}ON{{ else }}OFF{{ end }}.
+{{ if and .Values.llm.provider .Values.aiRemediation.enabled }}
+   Provider: {{ .Values.llm.provider }}{{ if .Values.llm.model }} ({{ .Values.llm.model }}){{ end }}.
+   Detection and diagnosis also run without AI; AI adds root-cause reasoning and
+   ordered remediation plans.
+{{- else }}
+   Rule-based detection and diagnosis work with no API key. AI is opt-in because
+   it costs money and sends incident context to Anthropic. To enable it:
+
+     kubectl create secret generic dorgu-llm -n {{ .Release.Namespace }} \
+       --from-literal=ANTHROPIC_API_KEY=sk-ant-...
+
+     helm upgrade {{ .Release.Name }} oci://ghcr.io/dorgu-ai/dorgu-operator-charts/dorgu-operator -n {{ .Release.Namespace }} --reuse-values \
+       --set llm.provider=claude \
+       --set llm.existingSecret=dorgu-llm \
+       --set aiRemediation.enabled=true
+{{- end }}
+
+4. Install the CLI and look at the cluster:
+
+     go install github.com/dorgu-ai/dorgu/cmd/dorgu@latest
+     dorgu health
+
+   No Go toolchain? Grab a release archive:
+   https://github.com/dorgu-ai/dorgu/releases
+
+5. Dorgu only watches workloads that have an ApplicationPersona. For a cluster
+   that already has apps running, create them from the live Deployments
+   (requires CLI v0.8.2 or newer):
+
+     dorgu persona import -n <your-namespace> --all
+     dorgu persona import -n <your-namespace> --all --apply
+
+   It prints the personas first so you can read them before anything is applied.
+
+6. When something breaks:
+
+     dorgu incidents list
+     dorgu remediation list
+     dorgu remediation diff <name> -n <namespace>
+     dorgu remediation approve <name> -n <namespace>
+
+   Nothing is applied without your approval. The operator only ever writes
+   Persona CRDs; the workload change is made by the CLI, with your credentials.
+
+Docs: https://github.com/dorgu-ai/dorgu-operator

