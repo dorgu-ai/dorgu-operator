@@ -35,7 +35,8 @@ import (
 
 // existingRA builds a RemediationAction that targets the given incident, carries
 // the persona-name label the dedup List filters on, and sits in the given phase.
-func existingRA(name, namespace, personaName, incidentName, phase string) *dorguv1.RemediationAction {
+func existingRA(name, personaName, incidentName, phase string) *dorguv1.RemediationAction {
+	const namespace = defaultNamespace
 	return &dorguv1.RemediationAction{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
@@ -45,7 +46,7 @@ func existingRA(name, namespace, personaName, incidentName, phase string) *dorgu
 		Spec: dorguv1.RemediationActionSpec{
 			IncidentRef: dorguv1.IncidentReference{Name: incidentName, Namespace: namespace},
 			PersonaRef: dorguv1.PersonaReference{
-				Kind:      "ApplicationPersona",
+				Kind:      kindApplicationPersona,
 				Name:      personaName,
 				Namespace: namespace,
 			},
@@ -63,9 +64,9 @@ func TestProposer_Dedup_SkipsWhenActiveExists(t *testing.T) {
 	for _, phase := range activePhases {
 		t.Run("phase="+phaseLabel(phase), func(t *testing.T) {
 			scheme := newTestScheme()
-			persona := newTestPersona("default", "my-app", "256Mi", "500m")
-			incident := newTestIncident("default", "oom", "my-app", "OOMKilled")
-			ra := existingRA("ra-existing", "default", "my-app", incident.Name, phase)
+			persona := newTestPersona(defaultNamespace, "my-app")
+			incident := newTestIncident(defaultNamespace, "oom", "my-app", "OOMKilled")
+			ra := existingRA("ra-existing", "my-app", incident.Name, phase)
 
 			c := fake.NewClientBuilder().WithScheme(scheme).
 				WithRuntimeObjects(persona, ra).
@@ -75,7 +76,7 @@ func TestProposer_Dedup_SkipsWhenActiveExists(t *testing.T) {
 			// A working planner is wired to prove dedup runs BEFORE the AI path.
 			p := NewProposer(c, safety, testLogger(), WithPlanner(&stubPlanner{plan: threeStepPlan()}))
 
-			result, err := p.Propose(context.Background(), newOOMDiagnosis("default", "my-app", detection.SeverityCritical), incident)
+			result, err := p.Propose(context.Background(), newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical), incident)
 			require.NoError(t, err)
 			assert.False(t, result.Proposed, "must not propose a second remediation")
 			assert.Contains(t, result.SkipReason, "active remediation already exists")
@@ -92,9 +93,9 @@ func TestProposer_Dedup_SkipsWhenActiveExists(t *testing.T) {
 // an earlier fix must still be actionable.
 func TestProposer_Dedup_ProposesWhenPriorTerminal(t *testing.T) {
 	scheme := newTestScheme()
-	persona := newTestPersona("default", "my-app", "256Mi", "500m")
-	incident := newTestIncident("default", "oom", "my-app", "OOMKilled")
-	ra := existingRA("ra-old", "default", "my-app", incident.Name, "Completed")
+	persona := newTestPersona(defaultNamespace, "my-app")
+	incident := newTestIncident(defaultNamespace, "oom", "my-app", "OOMKilled")
+	ra := existingRA("ra-old", "my-app", incident.Name, "Completed")
 
 	c := fake.NewClientBuilder().WithScheme(scheme).
 		WithRuntimeObjects(persona, ra).
@@ -103,7 +104,7 @@ func TestProposer_Dedup_ProposesWhenPriorTerminal(t *testing.T) {
 	safety := NewSafetyChecker(c, testLogger())
 	p := NewProposer(c, safety, testLogger())
 
-	result, err := p.Propose(context.Background(), newOOMDiagnosis("default", "my-app", detection.SeverityWarning), incident)
+	result, err := p.Propose(context.Background(), newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityWarning), incident)
 	require.NoError(t, err)
 	assert.True(t, result.Proposed, "terminal prior remediation must not block a new one")
 }
@@ -112,9 +113,9 @@ func TestProposer_Dedup_ProposesWhenPriorTerminal(t *testing.T) {
 // an active remediation for a DIFFERENT incident does not suppress this one.
 func TestProposer_Dedup_IgnoresOtherIncident(t *testing.T) {
 	scheme := newTestScheme()
-	persona := newTestPersona("default", "my-app", "256Mi", "500m")
-	incident := newTestIncident("default", "oom", "my-app", "OOMKilled")
-	other := existingRA("ra-other", "default", "my-app", "im-different", "Pending")
+	persona := newTestPersona(defaultNamespace, "my-app")
+	incident := newTestIncident(defaultNamespace, "oom", "my-app", "OOMKilled")
+	other := existingRA("ra-other", "my-app", "im-different", "Pending")
 
 	c := fake.NewClientBuilder().WithScheme(scheme).
 		WithRuntimeObjects(persona, other).
@@ -123,7 +124,7 @@ func TestProposer_Dedup_IgnoresOtherIncident(t *testing.T) {
 	safety := NewSafetyChecker(c, testLogger())
 	p := NewProposer(c, safety, testLogger())
 
-	result, err := p.Propose(context.Background(), newOOMDiagnosis("default", "my-app", detection.SeverityWarning), incident)
+	result, err := p.Propose(context.Background(), newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityWarning), incident)
 	require.NoError(t, err)
 	assert.True(t, result.Proposed, "an unrelated incident's remediation must not suppress this one")
 }
@@ -133,8 +134,8 @@ func TestProposer_Dedup_IgnoresOtherIncident(t *testing.T) {
 // one is also emitted (WS8 F2 AI-xor-rule).
 func TestProposer_AIXorRule_ValidPlan(t *testing.T) {
 	scheme := newTestScheme()
-	persona := newTestPersona("default", "my-app", "256Mi", "500m")
-	incident := newTestIncident("default", "oom", "my-app", "OOMKilled")
+	persona := newTestPersona(defaultNamespace, "my-app")
+	incident := newTestIncident(defaultNamespace, "oom", "my-app", "OOMKilled")
 
 	c := fake.NewClientBuilder().WithScheme(scheme).
 		WithRuntimeObjects(persona).
@@ -143,7 +144,7 @@ func TestProposer_AIXorRule_ValidPlan(t *testing.T) {
 	safety := NewSafetyChecker(c, testLogger())
 	p := NewProposer(c, safety, testLogger(), WithPlanner(&stubPlanner{plan: threeStepPlan()}))
 
-	result, err := p.Propose(context.Background(), newOOMDiagnosis("default", "my-app", detection.SeverityCritical), incident)
+	result, err := p.Propose(context.Background(), newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical), incident)
 	require.NoError(t, err)
 	require.True(t, result.Proposed)
 
@@ -158,8 +159,8 @@ func TestProposer_AIXorRule_ValidPlan(t *testing.T) {
 // exactly one rule-based RemediationAction is created and zero AI ones (WS8 F2).
 func TestProposer_AIXorRule_PlannerError(t *testing.T) {
 	scheme := newTestScheme()
-	persona := newTestPersona("default", "my-app", "256Mi", "500m")
-	incident := newTestIncident("default", "oom", "my-app", "OOMKilled")
+	persona := newTestPersona(defaultNamespace, "my-app")
+	incident := newTestIncident(defaultNamespace, "oom", "my-app", "OOMKilled")
 
 	c := fake.NewClientBuilder().WithScheme(scheme).
 		WithRuntimeObjects(persona).
@@ -168,7 +169,7 @@ func TestProposer_AIXorRule_PlannerError(t *testing.T) {
 	safety := NewSafetyChecker(c, testLogger())
 	p := NewProposer(c, safety, testLogger(), WithPlanner(&stubPlanner{err: errors.New("model down")}))
 
-	result, err := p.Propose(context.Background(), newOOMDiagnosis("default", "my-app", detection.SeverityCritical), incident)
+	result, err := p.Propose(context.Background(), newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical), incident)
 	require.NoError(t, err)
 	require.True(t, result.Proposed)
 
@@ -182,8 +183,15 @@ func TestProposer_AIXorRule_PlannerError(t *testing.T) {
 // existingResourceRA builds an active/terminal RemediationAction that actually
 // patches a resource limit (so the WS9 persona+target dedup can read what it
 // remediates), carrying the persona-name label the dedup List filters on.
-func existingResourceRA(name, namespace, personaName, incidentName, phase, patchPath, value string) *dorguv1.RemediationAction {
-	ra := existingRA(name, namespace, personaName, incidentName, phase)
+func existingResourceRA(personaName, phase string) *dorguv1.RemediationAction {
+	const (
+		name         = "ra-oom"
+		namespace    = defaultNamespace
+		incidentName = "im-oom"
+		patchPath    = resourcePathMemory
+		value        = "384Mi"
+	)
+	ra := existingRA(name, personaName, incidentName, phase)
 	ra.Spec.Action = dorguv1.RemediationActionDetail{
 		Type:  "persona-update",
 		Patch: &apiextensionsv1.JSON{Raw: []byte(resourcePatchJSON(patchPath, value))},
@@ -212,7 +220,7 @@ func newCrashLoopOOMDiagnosis(namespace, personaName string, severity detection.
 		Category:   "resource",
 		Severity:   severity,
 		PersonaRef: &dorguv1.PersonaReference{
-			Kind:      "ApplicationPersona",
+			Kind:      kindApplicationPersona,
 			Name:      personaName,
 			Namespace: namespace,
 		},
@@ -235,7 +243,7 @@ func newCPUDiagnosis(namespace, personaName string, severity detection.Severity)
 		Category:   "resource",
 		Severity:   severity,
 		PersonaRef: &dorguv1.PersonaReference{
-			Kind:      "ApplicationPersona",
+			Kind:      kindApplicationPersona,
 			Name:      personaName,
 			Namespace: namespace,
 		},
@@ -252,7 +260,7 @@ func newCPUDiagnosis(namespace, personaName string, severity detection.Severity)
 // down, while a different persona, a different target, or a terminal-phase prior
 // remediation must still propose. One OOM -> one remediation.
 func TestProposer_TargetDedup(t *testing.T) {
-	const ns = "default"
+	const ns = defaultNamespace
 
 	tests := []struct {
 		name         string
@@ -263,28 +271,28 @@ func TestProposer_TargetDedup(t *testing.T) {
 	}{
 		{
 			name:         "different incident, same persona+target is skipped",
-			existing:     existingResourceRA("ra-oom", ns, "memhog", "im-oom", "Pending", resourcePathMemory, "384Mi"),
+			existing:     existingResourceRA("memhog", "Pending"),
 			incidentName: "crashloop",
 			diag:         newCrashLoopOOMDiagnosis(ns, "memhog", detection.SeverityCritical),
 			wantPropose:  false,
 		},
 		{
 			name:         "different persona still proposes",
-			existing:     existingResourceRA("ra-oom", ns, "other-app", "im-oom", "Pending", resourcePathMemory, "384Mi"),
+			existing:     existingResourceRA("other-app", "Pending"),
 			incidentName: "crashloop",
 			diag:         newCrashLoopOOMDiagnosis(ns, "memhog", detection.SeverityCritical),
 			wantPropose:  true,
 		},
 		{
 			name:         "terminal prior remediation still proposes",
-			existing:     existingResourceRA("ra-oom", ns, "memhog", "im-oom", "Completed", resourcePathMemory, "384Mi"),
+			existing:     existingResourceRA("memhog", "Completed"),
 			incidentName: "crashloop",
 			diag:         newCrashLoopOOMDiagnosis(ns, "memhog", detection.SeverityCritical),
 			wantPropose:  true,
 		},
 		{
 			name:         "different target (CPU vs memory) still proposes",
-			existing:     existingResourceRA("ra-oom", ns, "memhog", "im-oom", "Pending", resourcePathMemory, "384Mi"),
+			existing:     existingResourceRA("memhog", "Pending"),
 			incidentName: "cpu",
 			diag:         newCPUDiagnosis(ns, "memhog", detection.SeverityWarning),
 			wantPropose:  true,
@@ -294,7 +302,7 @@ func TestProposer_TargetDedup(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			scheme := newTestScheme()
-			persona := newTestPersona(ns, "memhog", "256Mi", "500m")
+			persona := newTestPersona(ns, "memhog")
 			incident := newTestIncident(ns, tt.incidentName, "memhog", "CrashLoopBackOff")
 
 			c := fake.NewClientBuilder().WithScheme(scheme).

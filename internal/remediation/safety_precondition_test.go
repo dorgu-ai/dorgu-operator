@@ -40,18 +40,18 @@ func failedAction(name, conditionReason string, appliedAt *metav1.Time) *dorguv1
 	return &dorguv1.RemediationAction{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:              name,
-			Namespace:         "default",
+			Namespace:         defaultNamespace,
 			CreationTimestamp: metav1.NewTime(time.Now().Add(-10 * time.Minute)),
 			Labels: map[string]string{
-				"dorgu.io/persona-kind": "ApplicationPersona",
+				"dorgu.io/persona-kind": kindApplicationPersona,
 				"dorgu.io/persona-name": "my-app",
 			},
 		},
 		Spec: dorguv1.RemediationActionSpec{
 			PersonaRef: dorguv1.PersonaReference{
-				Kind:      "ApplicationPersona",
+				Kind:      kindApplicationPersona,
 				Name:      "my-app",
-				Namespace: "default",
+				Namespace: defaultNamespace,
 			},
 			Action:     dorguv1.RemediationActionDetail{Type: "notification"},
 			Confidence: "0.85",
@@ -77,7 +77,7 @@ func TestSafetyChecker_PreconditionRejection_DoesNotCooldown(t *testing.T) {
 		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
 	checker := NewSafetyChecker(c, testLogger())
 
-	result, err := checker.Check(context.Background(), newTestAction("default", "my-app"))
+	result, err := checker.Check(context.Background(), newTestAction(defaultNamespace))
 	require.NoError(t, err)
 
 	for _, v := range result.Violations {
@@ -95,7 +95,7 @@ func TestSafetyChecker_GenuineApplyFailure_StillCoolsDown(t *testing.T) {
 		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
 	checker := NewSafetyChecker(c, testLogger())
 
-	result, err := checker.Check(context.Background(), newTestAction("default", "my-app"))
+	result, err := checker.Check(context.Background(), newTestAction(defaultNamespace))
 	require.NoError(t, err)
 	assert.False(t, result.Allowed)
 
@@ -118,7 +118,7 @@ func TestSafetyChecker_AppliedThenFailed_StillCoolsDown(t *testing.T) {
 		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
 	checker := NewSafetyChecker(c, testLogger())
 
-	result, err := checker.Check(context.Background(), newTestAction("default", "my-app"))
+	result, err := checker.Check(context.Background(), newTestAction(defaultNamespace))
 	require.NoError(t, err)
 	assert.False(t, result.Allowed)
 }
@@ -132,7 +132,7 @@ func TestSafetyChecker_AcknowledgedAction_DoesNotCooldown(t *testing.T) {
 		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
 	checker := NewSafetyChecker(c, testLogger())
 
-	result, err := checker.Check(context.Background(), newTestAction("default", "my-app"))
+	result, err := checker.Check(context.Background(), newTestAction(defaultNamespace))
 	require.NoError(t, err)
 	assert.True(t, result.Allowed, "violations: %+v", result.Violations)
 }

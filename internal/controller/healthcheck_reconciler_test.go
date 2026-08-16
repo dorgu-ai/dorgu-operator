@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -54,35 +55,35 @@ var _ = Describe("HealthCheckReconciler", func() {
 
 	Context("generateIncidentName", func() {
 		It("should create deterministic names", func() {
-			name1 := generateIncidentName("default", "api-server", "OOMKilled")
-			name2 := generateIncidentName("default", "api-server", "OOMKilled")
+			name1 := generateIncidentName("default", "api-server", reasonOOMKilled)
+			name2 := generateIncidentName("default", "api-server", reasonOOMKilled)
 			Expect(name1).To(Equal(name2))
 		})
 
 		It("should create different names for different signals", func() {
-			name1 := generateIncidentName("default", "api-server", "OOMKilled")
+			name1 := generateIncidentName("default", "api-server", reasonOOMKilled)
 			name2 := generateIncidentName("default", "api-server", "CrashLoopBackOff")
 			Expect(name1).NotTo(Equal(name2))
 		})
 
 		It("should start with im- prefix", func() {
-			name := generateIncidentName("default", "api-server", "OOMKilled")
+			name := generateIncidentName("default", "api-server", reasonOOMKilled)
 			Expect(name).To(HavePrefix("im-"))
 		})
 
 		It("should truncate long names to 253 chars", func() {
-			longName := ""
-			for i := 0; i < 300; i++ {
-				longName += "a"
+			var longName strings.Builder
+			for range 300 {
+				longName.WriteString("a")
 			}
-			name := generateIncidentName("default", longName, "OOMKilled")
+			name := generateIncidentName("default", longName.String(), reasonOOMKilled)
 			Expect(len(name)).To(BeNumerically("<=", MaxIncidentNameLength))
 		})
 	})
 
 	Context("sanitizeName", func() {
 		It("should lowercase uppercase characters", func() {
-			Expect(sanitizeName("OOMKilled")).To(Equal("oomkilled"))
+			Expect(sanitizeName(reasonOOMKilled)).To(Equal("oomkilled"))
 		})
 
 		It("should replace non-alphanumeric chars with hyphens", func() {
@@ -130,7 +131,7 @@ var _ = Describe("HealthCheckReconciler", func() {
 			Expect(rc.Confidence).To(Equal("0.85"))
 			Expect(rc.Provider).To(Equal("rule-based"))
 			Expect(rc.Contributing).To(HaveLen(1))
-			Expect(rc.Contributing[0].Signal).To(Equal("OOMKilled"))
+			Expect(rc.Contributing[0].Signal).To(Equal(reasonOOMKilled))
 		})
 
 		It("should return nil for empty diagnosis", func() {
@@ -198,7 +199,7 @@ var _ = Describe("HealthCheckReconciler", func() {
 					},
 					Category: "resource",
 					Detection: dorguv1.DetectionInfo{
-						Signal: "OOMKilled",
+						Signal: reasonOOMKilled,
 					},
 				},
 			}
@@ -272,7 +273,7 @@ var _ = Describe("HealthCheckReconciler", func() {
 			reconciler.reconcile(testCtx)
 
 			// Verify IncidentMemory was created.
-			expectedName := generateIncidentName("default", "hc-test-app", "OOMKilled")
+			expectedName := generateIncidentName("default", "hc-test-app", reasonOOMKilled)
 			var im dorguv1.IncidentMemory
 			Eventually(func() error {
 				return k8sClient.Get(testCtx, types.NamespacedName{
@@ -283,9 +284,9 @@ var _ = Describe("HealthCheckReconciler", func() {
 
 			Expect(im.Spec.Category).To(Equal("resource"))
 			Expect(im.Spec.Severity).To(Equal("critical"))
-			Expect(im.Spec.Detection.Signal).To(Equal("OOMKilled"))
+			Expect(im.Spec.Detection.Signal).To(Equal(reasonOOMKilled))
 			Expect(im.Spec.PersonaRef.Name).To(Equal("hc-test-app"))
-			Expect(im.Labels[LabelSignal]).To(Equal("OOMKilled"))
+			Expect(im.Labels[LabelSignal]).To(Equal(reasonOOMKilled))
 			Expect(im.Labels[LabelCategory]).To(Equal("resource"))
 
 			// Clean up.
@@ -534,7 +535,7 @@ var _ = Describe("HealthCheckReconciler", func() {
 			for _, im := range list.Items {
 				signals[im.Spec.Detection.Signal] = true
 			}
-			Expect(signals).To(HaveKey("OOMKilled"))
+			Expect(signals).To(HaveKey(reasonOOMKilled))
 			Expect(signals).To(HaveKey("CrashLoopBackOff"))
 
 			// Clean up.

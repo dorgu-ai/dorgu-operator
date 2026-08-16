@@ -42,17 +42,17 @@ func rollbackAction() *dorguv1.RemediationAction {
 	return &dorguv1.RemediationAction{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-rollback-action",
-			Namespace: "default",
+			Namespace: defaultNamespace,
 		},
 		Spec: dorguv1.RemediationActionSpec{
 			IncidentRef: dorguv1.IncidentReference{
 				Name:      "test-incident",
-				Namespace: "default",
+				Namespace: defaultNamespace,
 			},
 			PersonaRef: dorguv1.PersonaReference{
-				Kind:      "ApplicationPersona",
+				Kind:      kindApplicationPersona,
 				Name:      "test-persona",
-				Namespace: "default",
+				Namespace: defaultNamespace,
 			},
 			TrustLevel: 2,
 			Confidence: "0.85",
@@ -74,7 +74,7 @@ func patchedPersona() *dorguv1.ApplicationPersona {
 	return &dorguv1.ApplicationPersona{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-persona",
-			Namespace: "default",
+			Namespace: defaultNamespace,
 		},
 		Spec: dorguv1.ApplicationPersonaSpec{
 			Name: "test-app",

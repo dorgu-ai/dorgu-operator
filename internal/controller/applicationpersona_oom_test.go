@@ -180,7 +180,7 @@ var _ = Describe("ApplicationPersona OOM incident flow (BUG-12-1)", func() {
 					},
 					LastTerminationState: corev1.ContainerState{
 						Terminated: &corev1.ContainerStateTerminated{
-							Reason:     "OOMKilled",
+							Reason:     reasonOOMKilled,
 							ExitCode:   137,
 							FinishedAt: metav1.Now(),
 						},
@@ -213,7 +213,7 @@ var _ = Describe("ApplicationPersona OOM incident flow (BUG-12-1)", func() {
 		var oomIncident *dorguv1.IncidentMemory
 		for i := range incidents.Items {
 			im := &incidents.Items[i]
-			if im.Spec.Detection.Signal == "OOMKilled" || (im.Labels != nil && im.Labels[LabelSignal] == "OOMKilled") {
+			if im.Spec.Detection.Signal == reasonOOMKilled || (im.Labels != nil && im.Labels[LabelSignal] == reasonOOMKilled) {
 				oomIncident = im
 				break
 			}
@@ -265,7 +265,7 @@ var _ = Describe("ApplicationPersona OOM incident flow (BUG-12-1)", func() {
 
 		var oom *dorguv1.IncidentMemory
 		for i := range incidents.Items {
-			if incidents.Items[i].Spec.Detection.Signal == "OOMKilled" {
+			if incidents.Items[i].Spec.Detection.Signal == reasonOOMKilled {
 				oom = &incidents.Items[i]
 				break
 			}
@@ -372,7 +372,7 @@ var _ = Describe("ApplicationPersona OOM incident flow (BUG-12-1)", func() {
 		var incidents dorguv1.IncidentMemoryList
 		Expect(k8sClient.List(testCtx, &incidents,
 			client.InNamespace(ns),
-			client.MatchingLabels{LabelSignal: "OOMKilled"},
+			client.MatchingLabels{LabelSignal: reasonOOMKilled},
 		)).To(Succeed())
 		Expect(incidents.Items).To(BeEmpty(), "non-OOM restarts must not produce an OOMKilled incident")
 	})

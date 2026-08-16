@@ -134,7 +134,7 @@ func TestCorrelator_PodWithDeploymentOwner(t *testing.T) {
 			Name:      "web-app-abc123",
 			Namespace: "default",
 			OwnerReferences: []metav1.OwnerReference{
-				{Kind: "Deployment", Name: "web-app"},
+				{Kind: kindDeployment, Name: "web-app"},
 			},
 		},
 	}
@@ -170,7 +170,7 @@ func TestCorrelator_ReplicaSetToApplicationPersona(t *testing.T) {
 			Name:      "api-server-7d9f8b6c4",
 			Namespace: "production",
 			OwnerReferences: []metav1.OwnerReference{
-				{Kind: "Deployment", Name: "api-server"},
+				{Kind: kindDeployment, Name: "api-server"},
 			},
 		},
 	}
@@ -217,7 +217,7 @@ func TestCorrelator_DeploymentToApplicationPersona(t *testing.T) {
 		Build()
 	correlator := NewCorrelator(fakeClient)
 
-	event := newInternalEvent("Deployment", "my-app", "staging")
+	event := newInternalEvent(kindDeployment, "my-app", "staging")
 	err := correlator.Correlate(context.Background(), event)
 
 	require.NoError(t, err)
@@ -352,7 +352,7 @@ func TestFindOwnerDeployment(t *testing.T) {
 		{
 			name: "deployment owner",
 			refs: []metav1.OwnerReference{
-				{Kind: "Deployment", Name: "my-app"},
+				{Kind: kindDeployment, Name: "my-app"},
 			},
 			expected: "my-app",
 		},
@@ -367,7 +367,7 @@ func TestFindOwnerDeployment(t *testing.T) {
 			name: "multiple owners, deployment present",
 			refs: []metav1.OwnerReference{
 				{Kind: "ReplicaSet", Name: "my-app-abc123"},
-				{Kind: "Deployment", Name: "my-app"},
+				{Kind: kindDeployment, Name: "my-app"},
 			},
 			expected: "my-app",
 		},

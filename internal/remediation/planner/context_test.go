@@ -33,6 +33,9 @@ import (
 	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
 )
 
+// testNamespace is the namespace every fixture in the planner tests lives in.
+const testNamespace = "default"
+
 func newScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 	s := runtime.NewScheme()
@@ -40,7 +43,11 @@ func newScheme(t *testing.T) *runtime.Scheme {
 	return s
 }
 
-func appPersona(namespace, name string) *dorguv1.ApplicationPersona {
+func appPersona() *dorguv1.ApplicationPersona {
+	const (
+		namespace = testNamespace
+		name      = "my-app"
+	)
 	return &dorguv1.ApplicationPersona{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
 		Spec: dorguv1.ApplicationPersonaSpec{
@@ -75,7 +82,8 @@ func clusterPersona() *dorguv1.ClusterPersona {
 	}
 }
 
-func incident(namespace, name, persona, signal string, occurred time.Time, remediationRef string) *dorguv1.IncidentMemory {
+func incident(name, persona, signal string, occurred time.Time, remediationRef string) *dorguv1.IncidentMemory {
+	const namespace = testNamespace
 	im := &dorguv1.IncidentMemory{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
@@ -122,7 +130,8 @@ func remediation(namespace, name, persona, phase, verification string) *dorguv1.
 	}
 }
 
-func oomDiagnosis(namespace, persona string) diagnosis.Diagnosis {
+func oomDiagnosis(persona string) diagnosis.Diagnosis {
+	const namespace = testNamespace
 	return diagnosis.Diagnosis{
 		Summary:  "OOMKilled detected",
 		Category: "resource",
@@ -143,13 +152,13 @@ func TestBuildContext_AssemblesAllContext(t *testing.T) {
 
 	objs := []runtime.Object{
 		clusterPersona(),
-		appPersona("default", "my-app"),
+		appPersona(),
 		// 3 incidents for my-app at increasing recency.
-		incident("default", "im-old", "my-app", "OOMKilled", now.Add(-3*time.Hour), "ra-completed"),
-		incident("default", "im-mid", "my-app", "OOMKilled", now.Add(-2*time.Hour), ""),
-		incident("default", "im-new", "my-app", "CrashLoopBackOff", now.Add(-1*time.Hour), "ra-rolledback"),
+		incident("im-old", "my-app", "OOMKilled", now.Add(-3*time.Hour), "ra-completed"),
+		incident("im-mid", "my-app", "OOMKilled", now.Add(-2*time.Hour), ""),
+		incident("im-new", "my-app", "CrashLoopBackOff", now.Add(-1*time.Hour), "ra-rolledback"),
 		// An unrelated incident for another app — must be filtered out.
-		incident("default", "im-other", "other-app", "OOMKilled", now, ""),
+		incident("im-other", "other-app", "OOMKilled", now, ""),
 		// 2 past remediations with outcomes.
 		remediation("default", "ra-completed", "my-app", "Completed", "Healthy"),
 		remediation("default", "ra-rolledback", "my-app", "RolledBack", "Degraded"),
@@ -157,8 +166,8 @@ func TestBuildContext_AssemblesAllContext(t *testing.T) {
 
 	c := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(objs...).Build()
 
-	diag := oomDiagnosis("default", "my-app")
-	rc, err := BuildContext(context.Background(), c, diag, incident("default", "im-trigger", "my-app", "OOMKilled", now, ""))
+	diag := oomDiagnosis("my-app")
+	rc, err := BuildContext(context.Background(), c, diag, incident("im-trigger", "my-app", "OOMKilled", now, ""))
 	require.NoError(t, err)
 	require.NotNil(t, rc)
 
@@ -197,15 +206,15 @@ func TestBuildContext_CapsPastIncidents(t *testing.T) {
 	scheme := newScheme(t)
 	now := time.Now()
 
-	objs := []runtime.Object{appPersona("default", "my-app")}
-	for i := 0; i < MaxPastIncidents+5; i++ {
-		objs = append(objs, incident("default", fmt.Sprintf("im-%02d", i), "my-app", "OOMKilled", now.Add(-time.Duration(i)*time.Minute), ""))
+	objs := []runtime.Object{appPersona()}
+	for i := range MaxPastIncidents + 5 {
+		objs = append(objs, incident(fmt.Sprintf("im-%02d", i), "my-app", "OOMKilled", now.Add(-time.Duration(i)*time.Minute), ""))
 	}
 
 	c := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(objs...).Build()
 
-	rc, err := BuildContext(context.Background(), c, oomDiagnosis("default", "my-app"),
-		incident("default", "trigger", "my-app", "OOMKilled", now, ""))
+	rc, err := BuildContext(context.Background(), c, oomDiagnosis("my-app"),
+		incident("trigger", "my-app", "OOMKilled", now, ""))
 	require.NoError(t, err)
 	assert.Len(t, rc.PastIncidents, MaxPastIncidents)
 	// Most recent (im-00) must be first after the recency sort.
@@ -216,18 +225,18 @@ func TestBuildContext_MissingPersonaIsError(t *testing.T) {
 	scheme := newScheme(t)
 	c := fake.NewClientBuilder().WithScheme(scheme).Build()
 
-	_, err := BuildContext(context.Background(), c, oomDiagnosis("default", "ghost"),
-		incident("default", "trigger", "ghost", "OOMKilled", time.Now(), ""))
+	_, err := BuildContext(context.Background(), c, oomDiagnosis("ghost"),
+		incident("trigger", "ghost", "OOMKilled", time.Now(), ""))
 	require.Error(t, err)
 }
 
 func TestBuildContext_NoClusterPersonaIsTolerated(t *testing.T) {
 	scheme := newScheme(t)
 	c := fake.NewClientBuilder().WithScheme(scheme).
-		WithRuntimeObjects(appPersona("default", "my-app")).Build()
+		WithRuntimeObjects(appPersona()).Build()
 
-	rc, err := BuildContext(context.Background(), c, oomDiagnosis("default", "my-app"),
-		incident("default", "trigger", "my-app", "OOMKilled", time.Now(), ""))
+	rc, err := BuildContext(context.Background(), c, oomDiagnosis("my-app"),
+		incident("trigger", "my-app", "OOMKilled", time.Now(), ""))
 	require.NoError(t, err)
 	assert.Nil(t, rc.ClusterPersona)
 	assert.NotNil(t, rc.AppPersona)

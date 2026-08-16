@@ -60,7 +60,11 @@ func personaWithMemoryLimit(name, namespace, limit string) *dorguv1.ApplicationP
 
 // brownfieldDeployment mirrors the clean-room manifest: labels on the pod
 // template and selector only, nothing on the Deployment object.
-func brownfieldDeployment(name, namespace, memoryLimit string) *appsv1.Deployment {
+func brownfieldDeployment(memoryLimit string) *appsv1.Deployment {
+	const (
+		name      = "web"
+		namespace = "apps"
+	)
 	return &appsv1.Deployment{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "apps/v1", Kind: "Deployment"},
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
@@ -108,7 +112,7 @@ func TestHandle_ValidatesPodTemplateLabelledDeployment(t *testing.T) {
 	v := &DeploymentValidator{Client: client, Mode: ModeAdvisory}
 	require.NoError(t, v.InjectDecoder(admission.NewDecoder(scheme)))
 
-	resp := v.Handle(context.Background(), admissionRequestFor(t, brownfieldDeployment("web", "apps", "512Mi")))
+	resp := v.Handle(context.Background(), admissionRequestFor(t, brownfieldDeployment("512Mi")))
 
 	assert.True(t, resp.Allowed, "advisory mode always allows")
 	require.NotEmpty(t, resp.Warnings, "a Deployment over its persona limit must be warned about")
@@ -126,7 +130,7 @@ func TestHandle_EnforcingRejectsPodTemplateLabelledDeployment(t *testing.T) {
 	v := &DeploymentValidator{Client: client, Mode: ModeEnforcing}
 	require.NoError(t, v.InjectDecoder(admission.NewDecoder(scheme)))
 
-	deploy := brownfieldDeployment("web", "apps", "64Mi")
+	deploy := brownfieldDeployment("64Mi")
 	replicas := int32(1)
 	deploy.Spec.Replicas = &replicas
 
@@ -146,7 +150,7 @@ func TestHandle_AllowsWhenNoPersonaMatches(t *testing.T) {
 	v := &DeploymentValidator{Client: client, Mode: ModeEnforcing}
 	require.NoError(t, v.InjectDecoder(admission.NewDecoder(scheme)))
 
-	resp := v.Handle(context.Background(), admissionRequestFor(t, brownfieldDeployment("web", "apps", "512Mi")))
+	resp := v.Handle(context.Background(), admissionRequestFor(t, brownfieldDeployment("512Mi")))
 
 	assert.True(t, resp.Allowed)
 	assert.Empty(t, resp.Warnings)
@@ -160,7 +164,7 @@ func TestHandle_IgnoresDeleteAndConnect(t *testing.T) {
 	}
 	require.NoError(t, v.InjectDecoder(admission.NewDecoder(scheme)))
 
-	req := admissionRequestFor(t, brownfieldDeployment("web", "apps", "512Mi"))
+	req := admissionRequestFor(t, brownfieldDeployment("512Mi"))
 	req.Operation = admissionv1.Delete
 
 	resp := v.Handle(context.Background(), req)

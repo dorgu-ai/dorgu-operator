@@ -66,7 +66,7 @@ func (p *AIProvider) Diagnose(ctx context.Context, signals []detection.Signal) (
 	enhanced := make([]Diagnosis, 0, len(baseDiagnoses))
 
 	for _, d := range baseDiagnoses {
-		req := buildLLMRequest(d, signals)
+		req := buildLLMRequest(d)
 
 		resp, err := p.llmClient.EnhanceDiagnosis(ctx, req)
 		if err != nil {
@@ -86,9 +86,10 @@ func (p *AIProvider) Diagnose(ctx context.Context, signals []detection.Signal) (
 	return enhanced, nil
 }
 
-// buildLLMRequest converts a diagnosis and its signals into an LLM request.
-func buildLLMRequest(d Diagnosis, signals []detection.Signal) llm.DiagnosisRequest {
-	var signalContexts []llm.SignalContext
+// buildLLMRequest converts a diagnosis into an LLM request. The contributing
+// signals it needs are already carried on the diagnosis.
+func buildLLMRequest(d Diagnosis) llm.DiagnosisRequest {
+	signalContexts := make([]llm.SignalContext, 0, len(d.Contributing))
 	for _, cs := range d.Contributing {
 		sc := llm.SignalContext{
 			Type:    string(cs.Signal.Type),

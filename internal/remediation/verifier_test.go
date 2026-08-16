@@ -41,12 +41,12 @@ func (m *mockCollector) Collect(_ context.Context) ([]detection.Signal, error) {
 	return m.signals, m.err
 }
 
-func newTestVerifier(signals []detection.Signal, collectErr error, objs ...interface{}) *Verifier {
+func newTestVerifier(signals []detection.Signal, collectErr error, objs ...any) *Verifier {
 	collector := &mockCollector{signals: signals, err: collectErr}
 	engine := detection.NewEngine(logr.Discard(), collector)
 
 	var clientObjs []interface {
-		GetObjectKind() interface{ GroupVersionKind() interface{} }
+		GetObjectKind() interface{ GroupVersionKind() any }
 	}
 	_ = clientObjs // suppress unused
 
@@ -68,13 +68,13 @@ func testIncident() *dorguv1.IncidentMemory {
 	return &dorguv1.IncidentMemory{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-incident",
-			Namespace: "default",
+			Namespace: defaultNamespace,
 		},
 		Spec: dorguv1.IncidentMemorySpec{
 			PersonaRef: dorguv1.PersonaReference{
-				Kind:      "ApplicationPersona",
+				Kind:      kindApplicationPersona,
 				Name:      "test-persona",
-				Namespace: "default",
+				Namespace: defaultNamespace,
 			},
 			Category: "resource",
 			Severity: "critical",
@@ -84,7 +84,7 @@ func testIncident() *dorguv1.IncidentMemory {
 				FirstSeen: metav1.NewTime(time.Now().Add(-10 * time.Minute)),
 				LastSeen:  metav1.NewTime(time.Now()),
 				AffectedResources: []dorguv1.ResourceReference{
-					{Kind: "Pod", Name: "test-pod", Namespace: "default"},
+					{Kind: "Pod", Name: "test-pod", Namespace: defaultNamespace},
 				},
 			},
 		},
@@ -125,9 +125,9 @@ func TestVerifier_Verify_Degraded_OriginalSignalPresent(t *testing.T) {
 			Category: detection.CategoryResource,
 			Source:   "pod-failure-detector",
 			PersonaRef: &dorguv1.PersonaReference{
-				Kind:      "ApplicationPersona",
+				Kind:      kindApplicationPersona,
 				Name:      "test-persona",
-				Namespace: "default",
+				Namespace: defaultNamespace,
 			},
 			DetectedAt: time.Now(),
 		},
@@ -156,9 +156,9 @@ func TestVerifier_Verify_Degraded_NewCriticalSignals(t *testing.T) {
 			Category: detection.CategoryResource,
 			Source:   "resource-detector",
 			PersonaRef: &dorguv1.PersonaReference{
-				Kind:      "ApplicationPersona",
+				Kind:      kindApplicationPersona,
 				Name:      "test-persona",
-				Namespace: "default",
+				Namespace: defaultNamespace,
 			},
 			DetectedAt: time.Now(),
 		},
@@ -218,9 +218,9 @@ func TestVerifier_Verify_Healthy_SignalForDifferentPersona(t *testing.T) {
 			Category: detection.CategoryResource,
 			Source:   "pod-failure-detector",
 			PersonaRef: &dorguv1.PersonaReference{
-				Kind:      "ApplicationPersona",
+				Kind:      kindApplicationPersona,
 				Name:      "other-persona",
-				Namespace: "default",
+				Namespace: defaultNamespace,
 			},
 			DetectedAt: time.Now(),
 		},

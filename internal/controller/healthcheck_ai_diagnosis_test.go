@@ -125,7 +125,7 @@ var _ = Describe("HealthCheckReconciler AI diagnosis persistence", func() {
 		Expect(stub.calls).To(BeNumerically(">", 0), "the AI path never ran")
 
 		var im dorguv1.IncidentMemory
-		name := generateIncidentName("default", "hc-ai-new", "OOMKilled")
+		name := generateIncidentName("default", "hc-ai-new", reasonOOMKilled)
 		Eventually(func() error {
 			return k8sClient.Get(testCtx, types.NamespacedName{Name: name, Namespace: "default"}, &im)
 		}, 5*time.Second, 100*time.Millisecond).Should(Succeed())
@@ -147,7 +147,7 @@ var _ = Describe("HealthCheckReconciler AI diagnosis persistence", func() {
 		ruleOnly.reconcile(testCtx)
 
 		var im dorguv1.IncidentMemory
-		name := generateIncidentName("default", "hc-ai-existing", "OOMKilled")
+		name := generateIncidentName("default", "hc-ai-existing", reasonOOMKilled)
 		Eventually(func() error {
 			return k8sClient.Get(testCtx, types.NamespacedName{Name: name, Namespace: "default"}, &im)
 		}, 5*time.Second, 100*time.Millisecond).Should(Succeed())

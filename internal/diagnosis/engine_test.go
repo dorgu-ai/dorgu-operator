@@ -87,15 +87,15 @@ func TestEngine_SingleProvider(t *testing.T) {
 
 func TestEngine_MultipleProviders_DifferentCategories(t *testing.T) {
 	p1 := &mockProvider{
-		name: "rule-based",
+		name: providerNameRuleBased,
 		diagnoses: []Diagnosis{
-			{Summary: "rule-based diagnosis", Confidence: 0.70, Provider: "rule-based", Category: "resource", SuggestedAction: "resource-adjustment"},
+			{Summary: "rule-based diagnosis", Confidence: 0.70, Provider: providerNameRuleBased, Category: "resource", SuggestedAction: actionResourceAdjustment},
 		},
 	}
 	p2 := &mockProvider{
-		name: "ai-enhanced",
+		name: providerNameAI,
 		diagnoses: []Diagnosis{
-			{Summary: "ai-enhanced diagnosis", Confidence: 0.90, Provider: "ai-enhanced", Category: "health", SuggestedAction: "investigate"},
+			{Summary: "ai-enhanced diagnosis", Confidence: 0.90, Provider: providerNameAI, Category: "health", SuggestedAction: actionInvestigate},
 		},
 	}
 	engine := NewEngine(logr.Discard(), p1, p2)
@@ -120,8 +120,8 @@ func TestEngine_MultipleProviders_DifferentCategories(t *testing.T) {
 	if diagnoses[0].Confidence < diagnoses[1].Confidence {
 		t.Errorf("diagnoses not sorted: [0]=%v < [1]=%v", diagnoses[0].Confidence, diagnoses[1].Confidence)
 	}
-	if diagnoses[0].Provider != "ai-enhanced" {
-		t.Errorf("highest confidence diagnosis provider = %q, want %q", diagnoses[0].Provider, "ai-enhanced")
+	if diagnoses[0].Provider != providerNameAI {
+		t.Errorf("highest confidence diagnosis provider = %q, want %q", diagnoses[0].Provider, providerNameAI)
 	}
 }
 
@@ -129,14 +129,14 @@ func TestEngine_Deduplication_KeepsHigherConfidence(t *testing.T) {
 	// Two providers produce diagnoses with the same dedup key (category + action + resources).
 	// Engine should keep only the higher-confidence one.
 	p1 := &mockProvider{
-		name: "rule-based",
+		name: providerNameRuleBased,
 		diagnoses: []Diagnosis{
 			{
 				Summary:         "rule-based OOM",
 				Confidence:      0.70,
-				Provider:        "rule-based",
+				Provider:        providerNameRuleBased,
 				Category:        "resource",
-				SuggestedAction: "resource-adjustment",
+				SuggestedAction: actionResourceAdjustment,
 				AffectedResources: []dorguv1.ResourceReference{
 					{Kind: "Pod", Name: "api-pod", Namespace: "default"},
 				},
@@ -144,14 +144,14 @@ func TestEngine_Deduplication_KeepsHigherConfidence(t *testing.T) {
 		},
 	}
 	p2 := &mockProvider{
-		name: "ai-enhanced",
+		name: providerNameAI,
 		diagnoses: []Diagnosis{
 			{
 				Summary:         "AI-enhanced OOM explanation",
 				Confidence:      0.90,
-				Provider:        "ai-enhanced",
+				Provider:        providerNameAI,
 				Category:        "resource",
-				SuggestedAction: "resource-adjustment",
+				SuggestedAction: actionResourceAdjustment,
 				AffectedResources: []dorguv1.ResourceReference{
 					{Kind: "Pod", Name: "api-pod", Namespace: "default"},
 				},
@@ -176,7 +176,7 @@ func TestEngine_Deduplication_KeepsHigherConfidence(t *testing.T) {
 	if len(diagnoses) != 1 {
 		t.Fatalf("expected 1 deduplicated diagnosis, got %d", len(diagnoses))
 	}
-	if diagnoses[0].Provider != "ai-enhanced" {
+	if diagnoses[0].Provider != providerNameAI {
 		t.Errorf("expected ai-enhanced provider (higher confidence), got %q", diagnoses[0].Provider)
 	}
 	if diagnoses[0].Confidence != 0.90 {
@@ -257,7 +257,7 @@ func TestEngine_IntegrationWithRuleBasedProvider(t *testing.T) {
 	// Should produce an OOM diagnosis with high confidence.
 	found := false
 	for _, d := range diagnoses {
-		if d.Provider == "rule-based" && d.SuggestedAction == "resource-adjustment" {
+		if d.Provider == providerNameRuleBased && d.SuggestedAction == actionResourceAdjustment {
 			found = true
 			if d.Confidence < 0.70 {
 				t.Errorf("OOM+memory diagnosis confidence = %v, expected >= 0.70", d.Confidence)

@@ -45,8 +45,8 @@ func (m *mockLLMClient) Provider() string { return "mock" }
 
 func TestAIProvider_Name(t *testing.T) {
 	provider := NewAIProvider(&mockLLMClient{}, logr.Discard())
-	if provider.Name() != "ai-enhanced" {
-		t.Errorf("name = %q, want %q", provider.Name(), "ai-enhanced")
+	if provider.Name() != providerNameAI {
+		t.Errorf("name = %q, want %q", provider.Name(), providerNameAI)
 	}
 }
 
@@ -54,7 +54,7 @@ func TestAIProvider_Diagnose_EnhancesRuleBasedSummary(t *testing.T) {
 	mock := &mockLLMClient{
 		response: &llm.DiagnosisResponse{
 			EnhancedSummary:   "Memory limit of 256Mi is insufficient. The workload peaks at ~280Mi during startup. Increase to 512Mi.",
-			RecommendedAction: "resource-adjustment",
+			RecommendedAction: actionResourceAdjustment,
 		},
 	}
 
@@ -78,8 +78,8 @@ func TestAIProvider_Diagnose_EnhancesRuleBasedSummary(t *testing.T) {
 	if len(diagnoses) == 0 {
 		t.Fatal("expected at least one diagnosis")
 	}
-	if diagnoses[0].Provider != "ai-enhanced" {
-		t.Errorf("provider = %q, want %q", diagnoses[0].Provider, "ai-enhanced")
+	if diagnoses[0].Provider != providerNameAI {
+		t.Errorf("provider = %q, want %q", diagnoses[0].Provider, providerNameAI)
 	}
 	if diagnoses[0].Summary != "Memory limit of 256Mi is insufficient. The workload peaks at ~280Mi during startup. Increase to 512Mi." {
 		t.Errorf("summary not enhanced: %q", diagnoses[0].Summary)
@@ -172,7 +172,7 @@ func TestAIProvider_ConfidenceAdjustment_Clamped(t *testing.T) {
 				Confidence:      tt.baseConfidence,
 				Category:        "resource",
 				Severity:        detection.SeverityCritical,
-				SuggestedAction: "investigate",
+				SuggestedAction: actionInvestigate,
 				DiagnosedAt:     time.Now(),
 			}
 			resp := &llm.DiagnosisResponse{
@@ -196,7 +196,7 @@ func TestBuildLLMRequest(t *testing.T) {
 		Category:        "resource",
 		Severity:        detection.SeverityCritical,
 		Confidence:      0.85,
-		SuggestedAction: "resource-adjustment",
+		SuggestedAction: actionResourceAdjustment,
 		Contributing: []ContributingSignal{
 			{
 				Signal: detection.Signal{
@@ -214,7 +214,7 @@ func TestBuildLLMRequest(t *testing.T) {
 		},
 	}
 
-	req := buildLLMRequest(d, nil)
+	req := buildLLMRequest(d)
 
 	if req.Summary != "OOM kill detected" {
 		t.Errorf("summary = %q", req.Summary)

@@ -27,6 +27,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
+// kindDeployment is the workload kind the correlator and emitter both special-case.
+const kindDeployment = "Deployment"
+
 // Correlator enriches an InternalEvent with a PersonaRef by looking up
 // which ApplicationPersona or ClusterPersona the event relates to.
 type Correlator interface {
@@ -62,7 +65,7 @@ func (c *PersonaCorrelator) Correlate(ctx context.Context, event *InternalEvent)
 		return c.correlatePod(ctx, event)
 	case "ReplicaSet":
 		return c.correlateReplicaSet(ctx, event)
-	case "Deployment":
+	case kindDeployment:
 		return c.correlateDeployment(ctx, event)
 	default:
 		// Try namespace-based correlation for other resource kinds.
@@ -232,7 +235,7 @@ func (c *PersonaCorrelator) correlateByNamespace(ctx context.Context, event *Int
 // findOwnerDeployment walks owner references looking for a Deployment or ReplicaSet owner.
 func findOwnerDeployment(refs []metav1.OwnerReference) string {
 	for _, ref := range refs {
-		if ref.Kind == "Deployment" {
+		if ref.Kind == kindDeployment {
 			return ref.Name
 		}
 	}

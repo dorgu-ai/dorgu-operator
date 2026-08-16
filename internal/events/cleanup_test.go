@@ -30,7 +30,8 @@ import (
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 )
 
-func newTestDorguEvent(name, namespace string, eventTime time.Time, ttl *time.Duration) *dorguv1.DorguEvent {
+func newTestDorguEvent(name string, eventTime time.Time, ttl *time.Duration) *dorguv1.DorguEvent {
+	const namespace = "default"
 	de := &dorguv1.DorguEvent{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
@@ -58,9 +59,9 @@ func newTestDorguEvent(name, namespace string, eventTime time.Time, ttl *time.Du
 func TestCleaner_Cleanup_DeletesExpiredEvents(t *testing.T) {
 	scheme := testScheme()
 
-	expired := newTestDorguEvent("de-expired", "default",
+	expired := newTestDorguEvent("de-expired",
 		time.Now().Add(-48*time.Hour), nil) // 48h old, default TTL is 24h
-	fresh := newTestDorguEvent("de-fresh", "default",
+	fresh := newTestDorguEvent("de-fresh",
 		time.Now().Add(-1*time.Hour), nil) // 1h old, still within 24h TTL
 
 	fakeClient := fake.NewClientBuilder().
@@ -86,12 +87,12 @@ func TestCleaner_Cleanup_RespectsCustomTTL(t *testing.T) {
 
 	shortTTL := 10 * time.Minute
 	// 15 minutes old with 10-minute TTL — should be expired.
-	expiredCustom := newTestDorguEvent("de-custom-expired", "default",
+	expiredCustom := newTestDorguEvent("de-custom-expired",
 		time.Now().Add(-15*time.Minute), &shortTTL)
 
 	longTTL := 72 * time.Hour
 	// 48 hours old with 72-hour TTL — should NOT be expired.
-	freshCustom := newTestDorguEvent("de-custom-fresh", "default",
+	freshCustom := newTestDorguEvent("de-custom-fresh",
 		time.Now().Add(-48*time.Hour), &longTTL)
 
 	fakeClient := fake.NewClientBuilder().
@@ -114,11 +115,10 @@ func TestCleaner_Cleanup_RespectsCustomTTL(t *testing.T) {
 func TestCleaner_Cleanup_BatchSizeLimit(t *testing.T) {
 	scheme := testScheme()
 
-	var objects []dorguv1.DorguEvent
+	objects := make([]dorguv1.DorguEvent, 0, 5)
 	for i := range 5 {
 		de := newTestDorguEvent(
 			"de-expired-"+string(rune('a'+i)),
-			"default",
 			time.Now().Add(-48*time.Hour),
 			nil,
 		)
@@ -145,7 +145,7 @@ func TestCleaner_Cleanup_BatchSizeLimit(t *testing.T) {
 func TestCleaner_Cleanup_NoExpiredEvents(t *testing.T) {
 	scheme := testScheme()
 
-	fresh := newTestDorguEvent("de-fresh", "default", time.Now(), nil)
+	fresh := newTestDorguEvent("de-fresh", time.Now(), nil)
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(fresh).
@@ -207,19 +207,19 @@ func TestIsExpired(t *testing.T) {
 	}{
 		{
 			name:     "expired with default TTL",
-			de:       newTestDorguEvent("de-1", "default", now.Add(-25*time.Hour), nil),
+			de:       newTestDorguEvent("de-1", now.Add(-25*time.Hour), nil),
 			expected: true,
 		},
 		{
 			name:     "not expired with default TTL",
-			de:       newTestDorguEvent("de-2", "default", now.Add(-23*time.Hour), nil),
+			de:       newTestDorguEvent("de-2", now.Add(-23*time.Hour), nil),
 			expected: false,
 		},
 		{
 			name: "expired with custom TTL",
 			de: func() *dorguv1.DorguEvent {
 				ttl := 1 * time.Hour
-				return newTestDorguEvent("de-3", "default", now.Add(-2*time.Hour), &ttl)
+				return newTestDorguEvent("de-3", now.Add(-2*time.Hour), &ttl)
 			}(),
 			expected: true,
 		},
@@ -227,7 +227,7 @@ func TestIsExpired(t *testing.T) {
 			name: "not expired with custom TTL",
 			de: func() *dorguv1.DorguEvent {
 				ttl := 48 * time.Hour
-				return newTestDorguEvent("de-4", "default", now.Add(-24*time.Hour), &ttl)
+				return newTestDorguEvent("de-4", now.Add(-24*time.Hour), &ttl)
 			}(),
 			expected: false,
 		},

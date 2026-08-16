@@ -30,15 +30,15 @@ func TestNewClient(t *testing.T) {
 	}{
 		{
 			name:     "claude provider",
-			provider: "claude",
+			provider: providerClaude,
 			apiKey:   "sk-test-key",
-			wantProv: "claude",
+			wantProv: providerClaude,
 		},
 		{
 			name:     "gemini provider",
-			provider: "gemini",
+			provider: providerGemini,
 			apiKey:   "test-key",
-			wantProv: "gemini",
+			wantProv: providerGemini,
 		},
 		{
 			name:     "unknown provider",
@@ -48,7 +48,7 @@ func TestNewClient(t *testing.T) {
 		},
 		{
 			name:     "empty API key",
-			provider: "claude",
+			provider: providerClaude,
 			apiKey:   "",
 			wantErr:  true,
 		},

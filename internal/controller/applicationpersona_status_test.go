@@ -230,7 +230,7 @@ func TestIsFailureReason(t *testing.T) {
 		"InvalidImageName",
 		"RunContainerError",
 		"ContainerCannotRun",
-		"OOMKilled",
+		reasonOOMKilled,
 	}
 
 	for _, reason := range failureReasons {

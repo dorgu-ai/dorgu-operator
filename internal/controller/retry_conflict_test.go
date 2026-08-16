@@ -87,7 +87,7 @@ func TestUpdateExistingIncident_RetriesOnConflict(t *testing.T) {
 			Category: "health",
 			Severity: "critical",
 			Detection: dorguv1.DetectionInfo{
-				Signal:   "OOMKilled",
+				Signal:   reasonOOMKilled,
 				Source:   "test",
 				LastSeen: metav1.Now(),
 			},
@@ -157,7 +157,7 @@ func TestUpdateIncidentResolution_RetriesOnConflict(t *testing.T) {
 			Category: "health",
 			Severity: "critical",
 			Detection: dorguv1.DetectionInfo{
-				Signal:    "OOMKilled",
+				Signal:    reasonOOMKilled,
 				Source:    "test",
 				FirstSeen: firstSeen,
 				LastSeen:  firstSeen,

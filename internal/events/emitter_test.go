@@ -73,7 +73,7 @@ func TestEmitter_EmitNormalEvent(t *testing.T) {
 		Source:   "deployment-controller",
 		Message:  "Scaled up replica set to 3",
 		InvolvedObject: dorguv1.ResourceReference{
-			Kind:      "Deployment",
+			Kind:      kindDeployment,
 			Name:      "web-app",
 			Namespace: "default",
 		},

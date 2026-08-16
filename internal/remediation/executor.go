@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 
 	"github.com/go-logr/logr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -104,7 +105,7 @@ func (e *Executor) validatePreconditions(action *dorguv1.RemediationAction) erro
 	}
 
 	// Validate patch is valid JSON.
-	var patchData map[string]interface{}
+	var patchData map[string]any
 	if err := json.Unmarshal(action.Spec.Action.Patch.Raw, &patchData); err != nil {
 		return fmt.Errorf("patch is not valid JSON: %w", err)
 	}
@@ -114,7 +115,7 @@ func (e *Executor) validatePreconditions(action *dorguv1.RemediationAction) erro
 
 // getTargetPersona fetches the ApplicationPersona referenced by the action.
 func (e *Executor) getTargetPersona(ctx context.Context, action *dorguv1.RemediationAction) (*dorguv1.ApplicationPersona, error) {
-	if action.Spec.PersonaRef.Kind != "ApplicationPersona" {
+	if action.Spec.PersonaRef.Kind != kindApplicationPersona {
 		return nil, fmt.Errorf("unsupported persona kind %q, only ApplicationPersona is supported", action.Spec.PersonaRef.Kind)
 	}
 
@@ -141,7 +142,7 @@ func (e *Executor) applyPatch(ctx context.Context, persona *dorguv1.ApplicationP
 	}
 
 	// The patch is structured as {"spec": {...}} — extract the inner spec portion.
-	var patchWrapper map[string]interface{}
+	var patchWrapper map[string]any
 	if err := json.Unmarshal(patchRaw, &patchWrapper); err != nil {
 		return fmt.Errorf("unmarshalling patch: %w", err)
 	}
@@ -178,12 +179,12 @@ func (e *Executor) applyPatch(ctx context.Context, persona *dorguv1.ApplicationP
 
 // jsonMergePatch applies a JSON merge patch (RFC 7396) to a target JSON document.
 func jsonMergePatch(target, patch []byte) ([]byte, error) {
-	var targetMap map[string]interface{}
+	var targetMap map[string]any
 	if err := json.Unmarshal(target, &targetMap); err != nil {
 		return nil, fmt.Errorf("unmarshalling target: %w", err)
 	}
 
-	var patchMap map[string]interface{}
+	var patchMap map[string]any
 	if err := json.Unmarshal(patch, &patchMap); err != nil {
 		return nil, fmt.Errorf("unmarshalling patch: %w", err)
 	}
@@ -194,11 +195,9 @@ func jsonMergePatch(target, patch []byte) ([]byte, error) {
 }
 
 // mergeMaps recursively merges patch into target following JSON merge patch semantics.
-func mergeMaps(target, patch map[string]interface{}) map[string]interface{} {
-	result := make(map[string]interface{}, len(target))
-	for k, v := range target {
-		result[k] = v
-	}
+func mergeMaps(target, patch map[string]any) map[string]any {
+	result := make(map[string]any, len(target))
+	maps.Copy(result, target)
 
 	for k, patchVal := range patch {
 		if patchVal == nil {
@@ -206,7 +205,7 @@ func mergeMaps(target, patch map[string]interface{}) map[string]interface{} {
 			continue
 		}
 
-		patchMap, patchIsMap := patchVal.(map[string]interface{})
+		patchMap, patchIsMap := patchVal.(map[string]any)
 		if !patchIsMap {
 			result[k] = patchVal
 			continue
@@ -218,7 +217,7 @@ func mergeMaps(target, patch map[string]interface{}) map[string]interface{} {
 			continue
 		}
 
-		targetMap, targetIsMap := targetVal.(map[string]interface{})
+		targetMap, targetIsMap := targetVal.(map[string]any)
 		if !targetIsMap {
 			result[k] = patchVal
 			continue

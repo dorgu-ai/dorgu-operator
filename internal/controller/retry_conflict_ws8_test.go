@@ -46,7 +46,7 @@ func TestIncidentController_Conditions_RetriesOnConflict(t *testing.T) {
 			PersonaRef: dorguv1.PersonaReference{Kind: "ApplicationPersona", Name: "api", Namespace: "default"},
 			Category:   "health",
 			Severity:   "critical",
-			Detection:  dorguv1.DetectionInfo{Signal: "OOMKilled"},
+			Detection:  dorguv1.DetectionInfo{Signal: reasonOOMKilled},
 		},
 		Status: dorguv1.IncidentMemoryStatus{Phase: PhaseDetected, OccurrenceCount: 1},
 	}
@@ -103,7 +103,7 @@ func TestIncidentController_SyncPersonaStatus_RetriesOnConflict(t *testing.T) {
 		Spec: dorguv1.IncidentMemorySpec{
 			PersonaRef: dorguv1.PersonaReference{Kind: "ApplicationPersona", Name: "api", Namespace: "default"},
 			Category:   "health",
-			Detection:  dorguv1.DetectionInfo{Signal: "OOMKilled"},
+			Detection:  dorguv1.DetectionInfo{Signal: reasonOOMKilled},
 		},
 		Status: dorguv1.IncidentMemoryStatus{Phase: PhaseDetected},
 	}

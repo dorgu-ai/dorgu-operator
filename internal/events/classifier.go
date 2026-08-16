@@ -106,7 +106,7 @@ func generateEventID(event *corev1.Event) string {
 		event.InvolvedObject.Kind,
 		event.InvolvedObject.Name,
 		event.Reason,
-		event.LastTimestamp.Time.Format(time.RFC3339),
+		event.LastTimestamp.Format(time.RFC3339),
 	)
 	hash := sha256.Sum256([]byte(data))
 	return fmt.Sprintf("%x", hash[:8])

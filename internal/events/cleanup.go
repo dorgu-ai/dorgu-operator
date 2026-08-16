@@ -135,6 +135,6 @@ func isExpired(de *dorguv1.DorguEvent, now time.Time) bool {
 		ttl = de.Spec.TTL.Duration
 	}
 
-	expiry := de.Spec.EventTime.Time.Add(ttl)
+	expiry := de.Spec.EventTime.Add(ttl)
 	return now.After(expiry)
 }

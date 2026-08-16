@@ -40,7 +40,7 @@ type GeminiClient struct {
 }
 
 // Provider returns "gemini".
-func (g *GeminiClient) Provider() string { return "gemini" }
+func (g *GeminiClient) Provider() string { return providerGemini }
 
 // SetModel overrides the default model.
 func (g *GeminiClient) SetModel(model string) { g.model = model }
@@ -81,7 +81,7 @@ func (g *GeminiClient) EnhanceDiagnosis(ctx context.Context, req DiagnosisReques
 	if err != nil {
 		return nil, fmt.Errorf("API call failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {

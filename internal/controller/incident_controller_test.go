@@ -69,7 +69,7 @@ var _ = Describe("IncidentController", func() {
 					Category: "resource",
 					Severity: "critical",
 					Detection: dorguv1.DetectionInfo{
-						Signal:    "OOMKilled",
+						Signal:    reasonOOMKilled,
 						Source:    "test",
 						FirstSeen: now,
 						LastSeen:  now,
@@ -117,7 +117,7 @@ var _ = Describe("IncidentController", func() {
 			Expect(updated.Labels[LabelPersonaNamespace]).To(Equal("default"))
 			Expect(updated.Labels[LabelCategory]).To(Equal("resource"))
 			Expect(updated.Labels[LabelSeverity]).To(Equal("critical"))
-			Expect(updated.Labels[LabelSignal]).To(Equal("OOMKilled"))
+			Expect(updated.Labels[LabelSignal]).To(Equal(reasonOOMKilled))
 			Expect(updated.Labels[LabelPhase]).To(Equal("Detected"))
 		})
 	})
@@ -260,7 +260,7 @@ var _ = Describe("IncidentController", func() {
 					Category: "resource",
 					Severity: "critical",
 					Detection: dorguv1.DetectionInfo{
-						Signal:    "OOMKilled",
+						Signal:    reasonOOMKilled,
 						Source:    "test",
 						FirstSeen: now,
 						LastSeen:  now,
@@ -350,7 +350,7 @@ var _ = Describe("IncidentController", func() {
 					Category: "resource",
 					Severity: "critical",
 					Detection: dorguv1.DetectionInfo{
-						Signal:    "OOMKilled",
+						Signal:    reasonOOMKilled,
 						Source:    "test",
 						FirstSeen: now,
 						LastSeen:  now,
@@ -411,7 +411,7 @@ var _ = Describe("IncidentController", func() {
 					Category: "resource",
 					Severity: "critical",
 					Detection: dorguv1.DetectionInfo{
-						Signal: "OOMKilled",
+						Signal: reasonOOMKilled,
 					},
 				},
 				Status: dorguv1.IncidentMemoryStatus{
@@ -435,7 +435,7 @@ var _ = Describe("IncidentController", func() {
 						LabelPersonaNamespace: "default",
 						LabelCategory:         "resource",
 						LabelSeverity:         "critical",
-						LabelSignal:           "OOMKilled",
+						LabelSignal:           reasonOOMKilled,
 						LabelPhase:            "Detected",
 					},
 				},
@@ -448,7 +448,7 @@ var _ = Describe("IncidentController", func() {
 					Category: "resource",
 					Severity: "critical",
 					Detection: dorguv1.DetectionInfo{
-						Signal: "OOMKilled",
+						Signal: reasonOOMKilled,
 					},
 				},
 				Status: dorguv1.IncidentMemoryStatus{

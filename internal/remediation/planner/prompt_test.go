@@ -29,11 +29,11 @@ import (
 
 func TestBuildPlanUserMessage_IncludesAllContext(t *testing.T) {
 	rc := RemediationContext{
-		Diagnosis:        oomDiagnosis("default", "my-app"),
-		Signals:          signalsFromDiagnosis(oomDiagnosis("default", "my-app")),
-		AppPersona:       appPersona("default", "my-app"),
+		Diagnosis:        oomDiagnosis("my-app"),
+		Signals:          signalsFromDiagnosis(oomDiagnosis("my-app")),
+		AppPersona:       appPersona(),
 		ClusterPersona:   clusterPersona(),
-		PastIncidents:    []dorguv1.IncidentMemory{*incident("default", "im-1", "my-app", "OOMKilled", time.Unix(0, 0), "ra-1")},
+		PastIncidents:    []dorguv1.IncidentMemory{*incident("im-1", "my-app", "OOMKilled", time.Unix(0, 0), "ra-1")},
 		PastRemediations: []dorguv1.RemediationAction{*remediation("default", "ra-1", "my-app", "Completed", "Healthy")},
 	}
 
@@ -69,7 +69,7 @@ func TestBuildPlanUserMessage_IncludesAllContext(t *testing.T) {
 }
 
 func TestBuildPlanUserMessage_HandlesEmptyContext(t *testing.T) {
-	msg := buildPlanUserMessage(RemediationContext{Diagnosis: oomDiagnosis("default", "my-app")})
+	msg := buildPlanUserMessage(RemediationContext{Diagnosis: oomDiagnosis("my-app")})
 	assert.Contains(t, msg, "(unavailable)") // no app persona
 	assert.Contains(t, msg, "(no ClusterPersona configured)")
 	assert.Contains(t, msg, "## Past remediation outcomes")
@@ -80,11 +80,11 @@ func TestPlanToolSchema_IsValidJSON(t *testing.T) {
 	raw, err := json.Marshal(schema)
 	require.NoError(t, err)
 
-	var roundtrip map[string]interface{}
+	var roundtrip map[string]any
 	require.NoError(t, json.Unmarshal(raw, &roundtrip))
 	assert.Equal(t, "object", roundtrip["type"])
 	assert.Equal(t, false, roundtrip["additionalProperties"])
-	props, ok := roundtrip["properties"].(map[string]interface{})
+	props, ok := roundtrip["properties"].(map[string]any)
 	require.True(t, ok)
 	assert.Contains(t, props, "rootCause")
 	assert.Contains(t, props, "confidence")
@@ -95,11 +95,11 @@ func TestPlanToolSchema_IsValidJSON(t *testing.T) {
 // the model cannot return a copy-paste command unless the tool schema has a
 // field for it, and cannot stay within the sanitizer unless the schema says so.
 func TestPlanToolSchema_OffersAnAdvisoryCommand(t *testing.T) {
-	props := planToolSchema()["properties"].(map[string]interface{})
-	item := props["steps"].(map[string]interface{})["items"].(map[string]interface{})
-	stepProps := item["properties"].(map[string]interface{})
+	props := planToolSchema()["properties"].(map[string]any)
+	item := props["steps"].(map[string]any)["items"].(map[string]any)
+	stepProps := item["properties"].(map[string]any)
 
-	command, ok := stepProps["command"].(map[string]interface{})
+	command, ok := stepProps["command"].(map[string]any)
 	require.True(t, ok, "steps[].command missing from the tool schema")
 	assert.Equal(t, "string", command["type"])
 	assert.Contains(t, command["description"], "kubectl ")

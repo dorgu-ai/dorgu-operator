@@ -61,7 +61,7 @@ func TestClaudeClient_EnhanceDiagnosis_Success(t *testing.T) {
 			},
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
 
@@ -96,7 +96,7 @@ func TestClaudeClient_EnhanceDiagnosis_Success(t *testing.T) {
 func TestClaudeClient_EnhanceDiagnosis_HTTPError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(`{"error": "internal server error"}`))
+		_, _ = w.Write([]byte(`{"error": "internal server error"}`))
 	}))
 	defer server.Close()
 
@@ -148,7 +148,7 @@ func TestClaudeClient_EnhanceDiagnosis_EmptyResponse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		resp := claudeResponse{Content: []claudeContent{}}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
 
@@ -170,7 +170,7 @@ func TestClaudeClient_EnhanceDiagnosis_EmptyResponse(t *testing.T) {
 
 func TestClaudeClient_Provider(t *testing.T) {
 	client := &ClaudeClient{}
-	if client.Provider() != "claude" {
-		t.Errorf("provider = %q, want %q", client.Provider(), "claude")
+	if client.Provider() != providerClaude {
+		t.Errorf("provider = %q, want %q", client.Provider(), providerClaude)
 	}
 }

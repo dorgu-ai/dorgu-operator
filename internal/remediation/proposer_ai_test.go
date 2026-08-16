@@ -74,8 +74,8 @@ func threeStepPlan() *planner.RemediationPlan {
 
 func TestProposer_AIPath_MapsPlanToSteps(t *testing.T) {
 	scheme := newTestScheme()
-	persona := newTestPersona("default", "my-app", "256Mi", "500m")
-	incident := newTestIncident("default", "oom", "my-app", "OOMKilled")
+	persona := newTestPersona(defaultNamespace, "my-app")
+	incident := newTestIncident(defaultNamespace, "oom", "my-app", "OOMKilled")
 
 	c := fake.NewClientBuilder().WithScheme(scheme).
 		WithRuntimeObjects(persona).
@@ -84,7 +84,7 @@ func TestProposer_AIPath_MapsPlanToSteps(t *testing.T) {
 	safety := NewSafetyChecker(c, testLogger())
 	p := NewProposer(c, safety, testLogger(), WithPlanner(&stubPlanner{plan: threeStepPlan()}))
 
-	diag := newOOMDiagnosis("default", "my-app", detection.SeverityCritical)
+	diag := newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical)
 	result, err := p.Propose(context.Background(), diag, incident)
 	require.NoError(t, err)
 	require.True(t, result.Proposed)
@@ -104,9 +104,9 @@ func TestProposer_AIPath_MapsPlanToSteps(t *testing.T) {
 	// persona-update step carries patch + pre-patch snapshot.
 	require.NotNil(t, a.Spec.Steps[0].Patch)
 	require.NotNil(t, a.Spec.Steps[0].PrePatchState)
-	var pre map[string]interface{}
+	var pre map[string]any
 	require.NoError(t, json.Unmarshal(a.Spec.Steps[0].PrePatchState.Raw, &pre))
-	limits := pre["spec"].(map[string]interface{})["resources"].(map[string]interface{})["limits"].(map[string]interface{})
+	limits := pre["spec"].(map[string]any)["resources"].(map[string]any)["limits"].(map[string]any)
 	assert.Equal(t, "256Mi", limits["memory"], "pre-patch snapshots the current value")
 
 	// Back-compat single Action populated from the persona-update step.
@@ -120,8 +120,8 @@ func TestProposer_AIPath_MapsPlanToSteps(t *testing.T) {
 
 func TestProposer_AIPath_BlastRadiusFlagsStep(t *testing.T) {
 	scheme := newTestScheme()
-	persona := newTestPersona("default", "my-app", "256Mi", "500m")
-	incident := newTestIncident("default", "oom", "my-app", "OOMKilled")
+	persona := newTestPersona(defaultNamespace, "my-app")
+	incident := newTestIncident(defaultNamespace, "oom", "my-app", "OOMKilled")
 
 	c := fake.NewClientBuilder().WithScheme(scheme).
 		WithRuntimeObjects(persona).
@@ -141,7 +141,7 @@ func TestProposer_AIPath_BlastRadiusFlagsStep(t *testing.T) {
 	safety := NewSafetyChecker(c, testLogger())
 	p := NewProposer(c, safety, testLogger(), WithPlanner(&stubPlanner{plan: plan}))
 
-	result, err := p.Propose(context.Background(), newOOMDiagnosis("default", "my-app", detection.SeverityCritical), incident)
+	result, err := p.Propose(context.Background(), newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical), incident)
 	require.NoError(t, err)
 	require.True(t, result.Proposed, "advisory plan is still persisted")
 
@@ -160,7 +160,7 @@ func TestProposer_AIPath_BlastRadiusFlagsStep(t *testing.T) {
 
 func TestProposer_AIPath_DenyListSkips(t *testing.T) {
 	scheme := newTestScheme()
-	persona := newTestPersona("kube-system", "coredns", "256Mi", "500m")
+	persona := newTestPersona("kube-system", "coredns")
 	incident := newTestIncident("kube-system", "oom", "coredns", "OOMKilled")
 
 	c := fake.NewClientBuilder().WithScheme(scheme).
@@ -178,8 +178,8 @@ func TestProposer_AIPath_DenyListSkips(t *testing.T) {
 
 func TestProposer_AIPath_FallbackOnPlannerError(t *testing.T) {
 	scheme := newTestScheme()
-	persona := newTestPersona("default", "my-app", "256Mi", "500m")
-	incident := newTestIncident("default", "oom", "my-app", "OOMKilled")
+	persona := newTestPersona(defaultNamespace, "my-app")
+	incident := newTestIncident(defaultNamespace, "oom", "my-app", "OOMKilled")
 
 	c := fake.NewClientBuilder().WithScheme(scheme).
 		WithRuntimeObjects(persona).
@@ -189,7 +189,7 @@ func TestProposer_AIPath_FallbackOnPlannerError(t *testing.T) {
 	p := NewProposer(c, safety, testLogger(), WithPlanner(&stubPlanner{err: errors.New("model down")}))
 
 	// Planner errors -> fall back to the rule-based single-action path.
-	result, err := p.Propose(context.Background(), newOOMDiagnosis("default", "my-app", detection.SeverityCritical), incident)
+	result, err := p.Propose(context.Background(), newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical), incident)
 	require.NoError(t, err)
 	require.True(t, result.Proposed)
 	assert.Empty(t, result.Action.Spec.Steps, "rule-based path produces a single Action, not Steps")
@@ -199,8 +199,8 @@ func TestProposer_AIPath_FallbackOnPlannerError(t *testing.T) {
 
 func TestProposer_AIPath_FallbackOnEmptyPlan(t *testing.T) {
 	scheme := newTestScheme()
-	persona := newTestPersona("default", "my-app", "256Mi", "500m")
-	incident := newTestIncident("default", "oom", "my-app", "OOMKilled")
+	persona := newTestPersona(defaultNamespace, "my-app")
+	incident := newTestIncident(defaultNamespace, "oom", "my-app", "OOMKilled")
 
 	c := fake.NewClientBuilder().WithScheme(scheme).
 		WithRuntimeObjects(persona).
@@ -209,7 +209,7 @@ func TestProposer_AIPath_FallbackOnEmptyPlan(t *testing.T) {
 	safety := NewSafetyChecker(c, testLogger())
 	p := NewProposer(c, safety, testLogger(), WithPlanner(&stubPlanner{plan: &planner.RemediationPlan{}}))
 
-	result, err := p.Propose(context.Background(), newOOMDiagnosis("default", "my-app", detection.SeverityCritical), incident)
+	result, err := p.Propose(context.Background(), newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical), incident)
 	require.NoError(t, err)
 	require.True(t, result.Proposed)
 	assert.Empty(t, result.Action.Spec.Steps, "empty plan falls back to rules")
@@ -217,8 +217,8 @@ func TestProposer_AIPath_FallbackOnEmptyPlan(t *testing.T) {
 
 func TestProposer_NoPlanner_UsesRules(t *testing.T) {
 	scheme := newTestScheme()
-	persona := newTestPersona("default", "my-app", "256Mi", "500m")
-	incident := newTestIncident("default", "oom", "my-app", "OOMKilled")
+	persona := newTestPersona(defaultNamespace, "my-app")
+	incident := newTestIncident(defaultNamespace, "oom", "my-app", "OOMKilled")
 
 	c := fake.NewClientBuilder().WithScheme(scheme).
 		WithRuntimeObjects(persona).
@@ -227,7 +227,7 @@ func TestProposer_NoPlanner_UsesRules(t *testing.T) {
 	safety := NewSafetyChecker(c, testLogger())
 	p := NewProposer(c, safety, testLogger()) // no planner
 
-	result, err := p.Propose(context.Background(), newOOMDiagnosis("default", "my-app", detection.SeverityCritical), incident)
+	result, err := p.Propose(context.Background(), newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical), incident)
 	require.NoError(t, err)
 	require.True(t, result.Proposed)
 	assert.Empty(t, result.Action.Spec.Steps)
@@ -236,8 +236,8 @@ func TestProposer_NoPlanner_UsesRules(t *testing.T) {
 
 func TestProposer_AIPath_AllAdvisoryPlanPersists(t *testing.T) {
 	scheme := newTestScheme()
-	persona := newTestPersona("default", "my-app", "256Mi", "500m")
-	incident := newTestIncident("default", "oom", "my-app", "OOMKilled")
+	persona := newTestPersona(defaultNamespace, "my-app")
+	incident := newTestIncident(defaultNamespace, "oom", "my-app", "OOMKilled")
 
 	c := fake.NewClientBuilder().WithScheme(scheme).
 		WithRuntimeObjects(persona).
@@ -257,7 +257,7 @@ func TestProposer_AIPath_AllAdvisoryPlanPersists(t *testing.T) {
 	safety := NewSafetyChecker(c, testLogger())
 	p := NewProposer(c, safety, testLogger(), WithPlanner(&stubPlanner{plan: plan}))
 
-	result, err := p.Propose(context.Background(), newOOMDiagnosis("default", "my-app", detection.SeverityCritical), incident)
+	result, err := p.Propose(context.Background(), newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical), incident)
 	require.NoError(t, err)
 	require.True(t, result.Proposed)
 	require.Len(t, result.Action.Spec.Steps, 2)
@@ -275,8 +275,8 @@ func TestFormatConfidence_Clamps(t *testing.T) {
 
 func TestProposer_AIPath_InvariantNeverAutoExecsWorkload(t *testing.T) {
 	scheme := newTestScheme()
-	persona := newTestPersona("default", "my-app", "256Mi", "500m")
-	incident := newTestIncident("default", "oom", "my-app", "OOMKilled")
+	persona := newTestPersona(defaultNamespace, "my-app")
+	incident := newTestIncident(defaultNamespace, "oom", "my-app", "OOMKilled")
 
 	c := fake.NewClientBuilder().WithScheme(scheme).
 		WithRuntimeObjects(persona).
@@ -298,7 +298,7 @@ func TestProposer_AIPath_InvariantNeverAutoExecsWorkload(t *testing.T) {
 	safety := NewSafetyChecker(c, testLogger())
 	p := NewProposer(c, safety, testLogger(), WithPlanner(&stubPlanner{plan: plan}))
 
-	result, err := p.Propose(context.Background(), newOOMDiagnosis("default", "my-app", detection.SeverityCritical), incident)
+	result, err := p.Propose(context.Background(), newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical), incident)
 	require.NoError(t, err)
 	require.True(t, result.Proposed)
 
@@ -352,8 +352,8 @@ func imagePullPlan() *planner.RemediationPlan {
 // something the reader can actually run.
 func TestProposer_AIPath_PersistsAdvisoryCommands(t *testing.T) {
 	scheme := newTestScheme()
-	persona := newTestPersona("default", "my-app", "256Mi", "500m")
-	incident := newTestIncident("default", "imagepull", "my-app", "ImagePullBackOff")
+	persona := newTestPersona(defaultNamespace, "my-app")
+	incident := newTestIncident(defaultNamespace, "imagepull", "my-app", "ImagePullBackOff")
 
 	c := fake.NewClientBuilder().WithScheme(scheme).
 		WithRuntimeObjects(persona).
@@ -362,7 +362,7 @@ func TestProposer_AIPath_PersistsAdvisoryCommands(t *testing.T) {
 	p := NewProposer(c, NewSafetyChecker(c, testLogger()), testLogger(),
 		WithPlanner(&stubPlanner{plan: imagePullPlan()}))
 
-	diag := newOOMDiagnosis("default", "my-app", detection.SeverityCritical)
+	diag := newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical)
 	result, err := p.Propose(context.Background(), diag, incident)
 	require.NoError(t, err)
 	require.True(t, result.Proposed)
@@ -385,8 +385,8 @@ func TestProposer_AIPath_PersistsAdvisoryCommands(t *testing.T) {
 // not be the same sentence.
 func TestProposer_AIPath_ExplanationDiffersFromPlanSummary(t *testing.T) {
 	scheme := newTestScheme()
-	persona := newTestPersona("default", "my-app", "256Mi", "500m")
-	incident := newTestIncident("default", "oom", "my-app", "OOMKilled")
+	persona := newTestPersona(defaultNamespace, "my-app")
+	incident := newTestIncident(defaultNamespace, "oom", "my-app", "OOMKilled")
 
 	c := fake.NewClientBuilder().WithScheme(scheme).
 		WithRuntimeObjects(persona).
@@ -395,7 +395,7 @@ func TestProposer_AIPath_ExplanationDiffersFromPlanSummary(t *testing.T) {
 	p := NewProposer(c, NewSafetyChecker(c, testLogger()), testLogger(),
 		WithPlanner(&stubPlanner{plan: threeStepPlan()}))
 
-	diag := newOOMDiagnosis("default", "my-app", detection.SeverityCritical)
+	diag := newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical)
 	result, err := p.Propose(context.Background(), diag, incident)
 	require.NoError(t, err)
 
@@ -482,8 +482,8 @@ func clampedPlan() *planner.RemediationPlan {
 // features' own unit tests would still pass.
 func TestProposer_AIPath_ClampNoticeSurvivesExplanationRecompute(t *testing.T) {
 	scheme := newTestScheme()
-	persona := newTestPersona("default", "my-app", "256Mi", "500m")
-	incident := newTestIncident("default", "oom", "my-app", "OOMKilled")
+	persona := newTestPersona(defaultNamespace, "my-app")
+	incident := newTestIncident(defaultNamespace, "oom", "my-app", "OOMKilled")
 
 	c := fake.NewClientBuilder().WithScheme(scheme).
 		WithRuntimeObjects(persona).
@@ -492,7 +492,7 @@ func TestProposer_AIPath_ClampNoticeSurvivesExplanationRecompute(t *testing.T) {
 	p := NewProposer(c, NewSafetyChecker(c, testLogger()), testLogger(),
 		WithPlanner(&stubPlanner{plan: clampedPlan()}))
 
-	diag := newOOMDiagnosis("default", "my-app", detection.SeverityCritical)
+	diag := newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical)
 	result, err := p.Propose(context.Background(), diag, incident)
 	require.NoError(t, err)
 	require.True(t, result.Proposed)

@@ -35,6 +35,10 @@ import (
 
 // detectAndRecordOOMIncidents scans pods for OOM signals and creates/updates
 // IncidentMemory + RemediationAction CRDs when OOM is detected.
+// reasonOOMKilled is the container termination reason Kubernetes reports for an
+// out-of-memory kill, and the signal name Dorgu records for it.
+const reasonOOMKilled = "OOMKilled"
+
 func (r *ApplicationPersonaReconciler) detectAndRecordOOMIncidents(
 	ctx context.Context,
 	persona *dorguv1.ApplicationPersona,
@@ -131,7 +135,7 @@ func (r *ApplicationPersonaReconciler) detectAndRecordOOMIncidents(
 				LabelPersonaNamespace: persona.Namespace,
 				LabelCategory:         "health",
 				LabelSeverity:         "critical",
-				LabelSignal:           "OOMKilled",
+				LabelSignal:           reasonOOMKilled,
 				LabelPhase:            PhaseDetected,
 			},
 		},
@@ -140,7 +144,7 @@ func (r *ApplicationPersonaReconciler) detectAndRecordOOMIncidents(
 			Category:   "health",
 			Severity:   "critical",
 			Detection: dorguv1.DetectionInfo{
-				Signal:    "OOMKilled",
+				Signal:    reasonOOMKilled,
 				Source:    "applicationpersona-reconciler",
 				FirstSeen: now,
 				LastSeen:  now,
@@ -158,7 +162,7 @@ func (r *ApplicationPersonaReconciler) detectAndRecordOOMIncidents(
 				Confidence: "0.90",
 				Provider:   "applicationpersona-reconciler",
 				Contributing: []dorguv1.ContributingSignal{
-					{Signal: "OOMKilled", Detail: fmt.Sprintf("Container memory limit: %s", memoryLimit)},
+					{Signal: reasonOOMKilled, Detail: fmt.Sprintf("Container memory limit: %s", memoryLimit)},
 				},
 			},
 		},
@@ -193,9 +197,9 @@ func (r *ApplicationPersonaReconciler) proposeMemoryRemediation(
 	incident *dorguv1.IncidentMemory,
 	currentLimit string,
 ) error {
-	patch := map[string]interface{}{
-		"resources": map[string]interface{}{
-			"limits": map[string]interface{}{
+	patch := map[string]any{
+		"resources": map[string]any{
+			"limits": map[string]any{
 				"memory": doubleMemory(currentLimit),
 			},
 		},
@@ -205,9 +209,9 @@ func (r *ApplicationPersonaReconciler) proposeMemoryRemediation(
 		return fmt.Errorf("marshaling patch: %w", err)
 	}
 
-	prePatch := map[string]interface{}{
-		"resources": map[string]interface{}{
-			"limits": map[string]interface{}{
+	prePatch := map[string]any{
+		"resources": map[string]any{
+			"limits": map[string]any{
 				"memory": currentLimit,
 			},
 		},
@@ -220,7 +224,7 @@ func (r *ApplicationPersonaReconciler) proposeMemoryRemediation(
 			Namespace: persona.Namespace,
 			Labels: map[string]string{
 				LabelPersonaName: persona.Name,
-				LabelSignal:      "OOMKilled",
+				LabelSignal:      reasonOOMKilled,
 			},
 		},
 		Spec: dorguv1.RemediationActionSpec{
@@ -276,10 +280,10 @@ func (r *ApplicationPersonaReconciler) proposeMemoryRemediation(
 
 // isOOMKilled checks if a container status indicates OOM.
 func isOOMKilled(cs corev1.ContainerStatus) bool {
-	if cs.State.Terminated != nil && cs.State.Terminated.Reason == "OOMKilled" {
+	if cs.State.Terminated != nil && cs.State.Terminated.Reason == reasonOOMKilled {
 		return true
 	}
-	if cs.LastTerminationState.Terminated != nil && cs.LastTerminationState.Terminated.Reason == "OOMKilled" {
+	if cs.LastTerminationState.Terminated != nil && cs.LastTerminationState.Terminated.Reason == reasonOOMKilled {
 		return true
 	}
 	return false
@@ -317,22 +321,17 @@ func parseMemoryQuantity(s string) (int64, error) {
 		multiplier = 1024
 		numStr = s[:len(s)-2]
 	case len(s) > 2 && s[len(s)-2:] == "Ki":
-		multiplier = 1
+		// No multiplier: this branch returns directly rather than falling through
+		// to the shared "value * multiplier" tail below.
 		numStr = s[:len(s)-2]
 		// Ki -> MiB: divide by 1024, but keep at least 1
 		val := parseInt64(numStr)
-		result := val / 1024
-		if result < 1 {
-			result = 1
-		}
+		result := max(val/1024, 1)
 		return result, nil
 	default:
 		// Assume bytes, convert to MiB
 		val := parseInt64(s)
-		result := val / (1024 * 1024)
-		if result < 1 {
-			result = 1
-		}
+		result := max(val/(1024*1024), 1)
 		return result, nil
 	}
 

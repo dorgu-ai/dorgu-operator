@@ -31,7 +31,7 @@ import (
 
 // toolUseResponse builds an Anthropic Messages API response carrying a single
 // tool_use block with the given input.
-func toolUseResponse(input map[string]interface{}) claudeResponse {
+func toolUseResponse(input map[string]any) claudeResponse {
 	raw, _ := json.Marshal(input)
 	return claudeResponse{
 		StopReason: "tool_use",
@@ -41,7 +41,7 @@ func toolUseResponse(input map[string]interface{}) claudeResponse {
 	}
 }
 
-func writeJSON(t *testing.T, w http.ResponseWriter, v interface{}) {
+func writeJSON(t *testing.T, w http.ResponseWriter, v any) {
 	t.Helper()
 	w.Header().Set("Content-Type", "application/json")
 	require.NoError(t, json.NewEncoder(w).Encode(v))
@@ -62,10 +62,10 @@ func TestPlanRemediation_WellFormed(t *testing.T) {
 		assert.True(t, req.Tools[0].Strict)
 		assert.Equal(t, planMaxTokens, req.MaxTokens)
 
-		writeJSON(t, w, toolUseResponse(map[string]interface{}{
+		writeJSON(t, w, toolUseResponse(map[string]any{
 			"rootCause":  "memory limit too low for workload peak",
 			"confidence": 0.9,
-			"steps": []map[string]interface{}{
+			"steps": []map[string]any{
 				{
 					"order":       1,
 					"type":        "persona-update",
@@ -134,10 +134,10 @@ func TestPlanRemediation_MalformedThenValidSucceeds(t *testing.T) {
 			writeJSON(t, w, claudeResponse{Content: []claudeContent{{Type: "text", Text: "oops"}}})
 			return
 		}
-		writeJSON(t, w, toolUseResponse(map[string]interface{}{
+		writeJSON(t, w, toolUseResponse(map[string]any{
 			"rootCause":  "ok",
 			"confidence": 0.7,
-			"steps": []map[string]interface{}{
+			"steps": []map[string]any{
 				{"order": 1, "type": "manual", "description": "investigate", "rationale": "n/a", "risk": "low"},
 			},
 		}))
@@ -174,10 +174,10 @@ func TestPlanRemediation_HTTPErrorNoRetry(t *testing.T) {
 
 func TestPlanRemediation_InvalidPatchDropped(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(t, w, toolUseResponse(map[string]interface{}{
+		writeJSON(t, w, toolUseResponse(map[string]any{
 			"rootCause":  "x",
 			"confidence": 0.5,
-			"steps": []map[string]interface{}{
+			"steps": []map[string]any{
 				{"order": 1, "type": "persona-update", "description": "d", "rationale": "r", "risk": "low", "patch": "not-json{"},
 			},
 		}))

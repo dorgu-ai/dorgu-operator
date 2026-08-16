@@ -43,7 +43,7 @@ type ClaudeClient struct {
 }
 
 // Provider returns "claude".
-func (c *ClaudeClient) Provider() string { return "claude" }
+func (c *ClaudeClient) Provider() string { return providerClaude }
 
 // SetModel overrides the default model.
 func (c *ClaudeClient) SetModel(model string) { c.model = model }
@@ -82,7 +82,7 @@ func (c *ClaudeClient) EnhanceDiagnosis(ctx context.Context, req DiagnosisReques
 	if err != nil {
 		return nil, fmt.Errorf("API call failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {

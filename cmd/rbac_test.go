@@ -19,6 +19,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -49,12 +50,7 @@ func hasRule(role rbacv1.ClusterRole, apiGroup, resource string, wantVerbs ...st
 }
 
 func contains(haystack []string, needle string) bool {
-	for _, h := range haystack {
-		if h == needle {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(haystack, needle)
 }
 
 // TestGeneratedRole_CoversEventsAndPodMetrics locks the WS8 F1 RBAC additions:

@@ -68,7 +68,7 @@ func TestEngine_EqualConfidence_KeepsEnhancingProvider(t *testing.T) {
 			Confidence:        0.70,
 			Provider:          providerNameRuleBased,
 			Category:          "resource",
-			SuggestedAction:   "resource-adjustment",
+			SuggestedAction:   actionResourceAdjustment,
 			AffectedResources: same,
 		}},
 	}
@@ -79,7 +79,7 @@ func TestEngine_EqualConfidence_KeepsEnhancingProvider(t *testing.T) {
 			Confidence:        0.70,
 			Provider:          providerNameAI,
 			Category:          "resource",
-			SuggestedAction:   "resource-adjustment",
+			SuggestedAction:   actionResourceAdjustment,
 			AffectedResources: same,
 		}},
 	}
@@ -111,22 +111,22 @@ func TestEngine_HigherConfidenceWinsOverProviderOrder(t *testing.T) {
 	ruleBased := &mockProvider{
 		name: providerNameRuleBased,
 		diagnoses: []Diagnosis{{
-			Summary:           "rule-based",
+			Summary:           providerNameRuleBased,
 			Confidence:        0.90,
 			Provider:          providerNameRuleBased,
 			Category:          "resource",
-			SuggestedAction:   "resource-adjustment",
+			SuggestedAction:   actionResourceAdjustment,
 			AffectedResources: same,
 		}},
 	}
 	aiEnhanced := &mockProvider{
 		name: providerNameAI,
 		diagnoses: []Diagnosis{{
-			Summary:           "ai-enhanced",
+			Summary:           providerNameAI,
 			Confidence:        0.40,
 			Provider:          providerNameAI,
 			Category:          "resource",
-			SuggestedAction:   "resource-adjustment",
+			SuggestedAction:   actionResourceAdjustment,
 			AffectedResources: same,
 		}},
 	}
@@ -154,7 +154,7 @@ func TestEngine_RealProviders_AIEnhancedSurvives(t *testing.T) {
 	mock := &mockLLMClient{
 		response: &llm.DiagnosisResponse{
 			EnhancedSummary:   "report-worker was OOM-killed: it needs ~120M, the limit is 48Mi.",
-			RecommendedAction: "resource-adjustment",
+			RecommendedAction: actionResourceAdjustment,
 			// No ConfidenceAdjustment, exactly as parseEnhancedResponse returns.
 		},
 	}

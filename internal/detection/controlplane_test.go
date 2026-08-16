@@ -146,7 +146,7 @@ func collectCPSignals(t *testing.T, leases ...*coordinationv1.Lease) []Signal {
 	scheme := runtime.NewScheme()
 	require.NoError(t, coordinationv1.AddToScheme(scheme))
 
-	var objs []runtime.Object
+	objs := make([]runtime.Object, 0, len(leases))
 	for _, l := range leases {
 		objs = append(objs, l)
 	}
