@@ -66,6 +66,14 @@ type RemediationActionSpec struct {
 	// +kubebuilder:validation:Pattern=`^(0(\.\d+)?|1(\.0+)?)$`
 	Confidence string `json:"confidence"`
 
+	// WorkloadRef records the live workload this remediation concerns, who owns
+	// it, and what its resources actually were when the plan was made.
+	//
+	// Absent means the operator could not observe a workload. Consumers must
+	// then treat the workload as owned (see WorkloadRef.ManagedBy).
+	// +optional
+	WorkloadRef *WorkloadRef `json:"workloadRef,omitempty"`
+
 	// Approval configures the approval requirements for this remediation.
 	// +optional
 	Approval *ApprovalSpec `json:"approval,omitempty"`
@@ -73,6 +81,126 @@ type RemediationActionSpec struct {
 	// Rollback configures automatic rollback behavior.
 	// +optional
 	Rollback *RemediationRollbackSpec `json:"rollback,omitempty"`
+}
+
+// ManagedBy values for WorkloadRef.ManagedBy. Everything except
+// ManagedByUnmanaged means some other system owns the workload's desired state.
+const (
+	// ManagedByHelm marks a workload owned by a Helm release.
+	ManagedByHelm = "helm"
+	// ManagedByArgoCD marks a workload owned by an ArgoCD Application.
+	ManagedByArgoCD = "argocd"
+	// ManagedByFlux marks a workload reconciled by a Flux controller.
+	ManagedByFlux = "flux"
+	// ManagedByKustomize marks a workload declared through kustomize.
+	ManagedByKustomize = "kustomize"
+	// ManagedByUnmanaged marks a workload nothing reconciles: it is only ever
+	// changed by a human with kubectl. This is the one value under which the
+	// CLI may patch the Deployment.
+	ManagedByUnmanaged = "unmanaged"
+	// ManagedByUnknown marks a workload whose owner could not be determined,
+	// including the case where the Deployment could not be read at all. It is
+	// deliberately the default: unknown is treated as owned, so Dorgu explains
+	// rather than writes.
+	ManagedByUnknown = "unknown"
+)
+
+// WorkloadRef records the live workload a remediation concerns and who owns it.
+//
+// It exists because the ApplicationPersona is a point-in-time import that
+// drifts from the running Deployment. Every fact Dorgu states, and every cap it
+// computes, is grounded in these observed values rather than in the persona.
+//
+// Two different writes hang off this record, and they are NOT the same thing:
+//
+//   - A persona-update step patches the ApplicationPersona. The operator does
+//     that itself, it is always safe, and ManagedBy has no bearing on it. Its
+//     autoExecutable semantics are unchanged.
+//   - The CLI patching the Deployment with the user's credentials is the write
+//     that makes the next `helm upgrade` hard-fail on a field-manager conflict.
+//     ManagedBy governs only that: the CLI heals the workload only when
+//     ManagedBy is "unmanaged".
+type WorkloadRef struct {
+	// Kind is the workload kind. Only Deployment is resolved today.
+	// +kubebuilder:validation:Enum=Deployment
+	Kind string `json:"kind"`
+
+	// Name is the live workload's metadata.name. It is not the persona name:
+	// the two differ in most brownfield clusters (persona "frontend" resolving
+	// to Deployment "frontend-podinfo").
+	Name string `json:"name"`
+
+	// Namespace is the live workload's namespace.
+	Namespace string `json:"namespace"`
+
+	// Container is the container within the pod template whose resources were
+	// observed and which a fix would target.
+	// +optional
+	Container string `json:"container,omitempty"`
+
+	// ManagedBy is derived from server-side-apply field managers plus
+	// labels/annotations (app.kubernetes.io/managed-by, meta.helm.sh/*,
+	// argocd.argoproj.io/*, *.toolkit.fluxcd.io/*).
+	//
+	// Only "unmanaged" permits the CLI to patch the Deployment. Everything
+	// else, including "unknown", means Dorgu recommends and does not write.
+	// +kubebuilder:validation:Enum=helm;argocd;flux;kustomize;unmanaged;unknown
+	// +kubebuilder:default=unknown
+	ManagedBy string `json:"managedBy"`
+
+	// ManagedByDetail names the specific owner when one was identified, e.g.
+	// `Helm release "frontend" in namespace apps`. It exists so a refusal can
+	// name what owns the workload instead of saying "something does".
+	// +optional
+	// +kubebuilder:validation:MaxLength=253
+	ManagedByDetail string `json:"managedByDetail,omitempty"`
+
+	// ObservedResources is the LIVE container resource block at proposal time.
+	//
+	// An empty CPU or Memory string means the workload does not set that key.
+	// That distinction is load-bearing: a remediation may only change a key the
+	// workload already has, so approving a memory fix can never silently add a
+	// CPU limit.
+	// +optional
+	ObservedResources *ObservedResources `json:"observedResources,omitempty"`
+
+	// ObservedImage is the container's live image reference, including its tag.
+	// It is the only image Dorgu has actually read, and the planner is
+	// instructed never to assert a version it has not read.
+	// +optional
+	ObservedImage string `json:"observedImage,omitempty"`
+
+	// ObservedAt is when the live workload was read.
+	// +optional
+	ObservedAt *metav1.Time `json:"observedAt,omitempty"`
+}
+
+// ObservedResources is a live container's resource block, split the same way
+// the container spec splits it.
+//
+// It deliberately mirrors the workload rather than the persona's
+// ResourceConstraints: a key absent here is absent on the running pod, which is
+// what callers need in order to avoid introducing one.
+type ObservedResources struct {
+	// Requests are the container's live resource requests. An empty field means
+	// the container does not set that request.
+	// +optional
+	Requests *ResourceValues `json:"requests,omitempty"`
+
+	// Limits are the container's live resource limits. An empty field means the
+	// container does not set that limit.
+	// +optional
+	Limits *ResourceValues `json:"limits,omitempty"`
+}
+
+// IsOwned reports whether some other system owns this workload's desired state,
+// which is true for every ManagedBy value except "unmanaged".
+//
+// A nil ref is owned: no observation means no evidence that patching is safe.
+// This governs the CLI patching the Deployment only. Persona writes by the
+// operator are always safe and are not gated on it.
+func (w *WorkloadRef) IsOwned() bool {
+	return w == nil || w.ManagedBy != ManagedByUnmanaged
 }
 
 // RemediationActionDetail describes the specific remediation to apply.

@@ -21,12 +21,14 @@ import (
 	"encoding/json"
 	"fmt"
 
+	appsv1 "k8s.io/api/apps/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation/planner"
+	"github.com/dorgu-ai/dorgu-operator/internal/workload"
 )
 
 // proposeWithPlanner runs the AI planning path: build context, ask the planner
@@ -41,11 +43,19 @@ func (p *Proposer) proposeWithPlanner(
 	ctx context.Context,
 	diag diagnosis.Diagnosis,
 	incident *dorguv1.IncidentMemory,
+	obs *workload.Observation,
+	workloadRef *dorguv1.WorkloadRef,
 ) (*ProposalResult, error) {
 	rc, err := planner.BuildContext(ctx, p.client, diag, incident)
 	if err != nil {
 		return nil, fmt.Errorf("building remediation context: %w", err)
 	}
+
+	// Hand the planner the live workload as ground truth. Without it the model
+	// reasons from a persona that may be months stale, which is how it came to
+	// state a 96Mi limit for a 32Mi container and to invent an image tag while
+	// the real prior tag sat in an annotation Dorgu had written itself.
+	rc.Workload = planner.NewWorkloadContext(workloadRef, observedDeployment(obs), rc.AppPersona)
 
 	plan, err := p.planner.PlanRemediation(ctx, *rc)
 	if err != nil {
@@ -55,14 +65,21 @@ func (p *Proposer) proposeWithPlanner(
 		return nil, fmt.Errorf("planner returned an empty plan")
 	}
 
-	steps := mapPlannedSteps(plan, rc.AppPersona)
+	steps := mapPlannedSteps(plan, rc.AppPersona, workloadRef)
 
-	action := p.buildPlanAction(diag, incident, plan, steps)
+	action := p.buildPlanAction(diag, incident, plan, steps, workloadRef)
+
+	// Shape the advisory half of the plan for whoever owns the Deployment, and
+	// make sure no step hands the reader a command that writes to an owned
+	// workload. Persona-update steps are untouched: the operator patches the
+	// persona, which is safe whoever owns the workload.
+	applyOwnershipShaping(action, workloadRef)
+	stripWorkloadWriteCommands(action, workloadRef)
 
 	// Validate persona-update steps through the existing safety guardrails.
 	// Per-step blast-radius violations flag that step advisory; persona-wide
 	// violations (rate-limit, concurrent, deny-list) skip the whole proposal.
-	skip, err := p.applyStepSafety(ctx, action)
+	skip, err := p.applyStepSafety(ctx, action, workloadRef)
 	if err != nil {
 		return nil, fmt.Errorf("safety check: %w", err)
 	}
@@ -85,10 +102,10 @@ func (p *Proposer) proposeWithPlanner(
 	// to Explanation, and recomputing afterwards would erase it.
 	action.Spec.Explanation = planExplanation(action.Spec.Steps)
 
-	// The planner is told to keep changes within ~2x an existing limit, so a plan
+	// The planner is told to keep changes within ~2x the live limit, so a plan
 	// can arrive already pressed against the cap. Say so rather than presenting a
-	// truncated fix as a confident one.
-	if discloseBlastRadiusClamp(action) {
+	// truncated fix as a confident one. Measured against the live workload.
+	if discloseGroundedBlastRadiusClamp(action, workloadRef) {
 		p.logger.Info("plan sits at the blast-radius cap; disclosing the clamp in the plan summary",
 			"action", action.Name, "confidence", action.Spec.Confidence)
 	}
@@ -112,7 +129,17 @@ func (p *Proposer) proposeWithPlanner(
 // Advisory steps may additionally carry a suggested kubectl command, which is
 // sanitized here: the planner's output is model-authored, and this is the last
 // point before it is persisted for the CLI to print to a human.
-func mapPlannedSteps(plan *planner.RemediationPlan, persona *dorguv1.ApplicationPersona) []dorguv1.RemediationStep {
+//
+// A persona-update patch is also filtered against the live container: a leaf
+// targeting a resource key the workload does not set is dropped, because
+// approving a memory fix must never quietly add a CPU limit (F-05). A step
+// whose patch is emptied by that filter becomes advisory rather than silently
+// applying nothing.
+func mapPlannedSteps(
+	plan *planner.RemediationPlan,
+	persona *dorguv1.ApplicationPersona,
+	ref *dorguv1.WorkloadRef,
+) []dorguv1.RemediationStep {
 	steps := make([]dorguv1.RemediationStep, 0, len(plan.Steps))
 	for _, ps := range plan.Steps {
 		step := dorguv1.RemediationStep{
@@ -127,9 +154,17 @@ func mapPlannedSteps(plan *planner.RemediationPlan, persona *dorguv1.Application
 		}
 
 		if ps.Type == dorguv1.StepTypePersonaUpdate && len(ps.Patch) > 0 && json.Valid(ps.Patch) {
-			step.Patch = &apiextensionsv1.JSON{Raw: append([]byte(nil), ps.Patch...)}
-			if pre := snapshotPrePatch(persona, ps.Patch); pre != nil {
-				step.PrePatchState = &apiextensionsv1.JSON{Raw: pre}
+			patch, dropped := dropAbsentResourceKeys(&apiextensionsv1.JSON{Raw: append([]byte(nil), ps.Patch...)}, ref)
+			if len(dropped) > 0 {
+				step.Rationale = appendNote(step.Rationale, absentKeyNote(ref, dropped))
+			}
+			step.Patch = patch
+			if patch != nil {
+				if pre := snapshotPrePatch(persona, patch.Raw); pre != nil {
+					step.PrePatchState = &apiextensionsv1.JSON{Raw: pre}
+				}
+			} else {
+				step.AutoExecutable = false
 			}
 		} else if ps.Type == dorguv1.StepTypePersonaUpdate {
 			// A persona-update with no usable patch can't be auto-applied.
@@ -139,6 +174,15 @@ func mapPlannedSteps(plan *planner.RemediationPlan, persona *dorguv1.Application
 		steps = append(steps, step)
 	}
 	return steps
+}
+
+// observedDeployment unwraps the live Deployment from an observation, tolerating
+// the nil observation an unresolvable workload produces.
+func observedDeployment(obs *workload.Observation) *appsv1.Deployment {
+	if obs == nil {
+		return nil
+	}
+	return obs.Deployment
 }
 
 // advisoryCommand returns the sanitized copy-paste command for an advisory step.
@@ -163,6 +207,7 @@ func (p *Proposer) buildPlanAction(
 	incident *dorguv1.IncidentMemory,
 	plan *planner.RemediationPlan,
 	steps []dorguv1.RemediationStep,
+	workloadRef *dorguv1.WorkloadRef,
 ) *dorguv1.RemediationAction {
 	namespace := diag.PersonaRef.Namespace
 	if namespace == "" {
@@ -189,6 +234,7 @@ func (p *Proposer) buildPlanAction(
 			PersonaRef:  *diag.PersonaRef,
 			TrustLevel:  2,
 			Steps:       steps,
+			WorkloadRef: workloadRef,
 			PlanSource:  dorguv1.PlanSourceAIAnthropic,
 			PlanSummary: plan.RootCause,
 			Explanation: planExplanation(steps),
@@ -212,7 +258,7 @@ func (p *Proposer) buildPlanAction(
 // guardrails. Blast-radius violations flag the offending step advisory
 // (AutoExecutable=false, annotated). Persona-wide violations (rate-limit,
 // concurrent, deny-list) return a non-empty skip reason for the whole proposal.
-func (p *Proposer) applyStepSafety(ctx context.Context, action *dorguv1.RemediationAction) (string, error) {
+func (p *Proposer) applyStepSafety(ctx context.Context, action *dorguv1.RemediationAction, ref *dorguv1.WorkloadRef) (string, error) {
 	globalSeen := make(map[string]struct{})
 	var globalReasons []string
 
@@ -224,7 +270,7 @@ func (p *Proposer) applyStepSafety(ctx context.Context, action *dorguv1.Remediat
 		}
 		checkedAny = true
 
-		probe := probeActionForStep(action, step)
+		probe := probeActionForStep(action, step, ref)
 		result, err := p.safety.Check(ctx, probe)
 		if err != nil {
 			return "", err
@@ -267,13 +313,21 @@ func (p *Proposer) applyStepSafety(ctx context.Context, action *dorguv1.Remediat
 // probeActionForStep builds a throwaway RemediationAction whose single Action is
 // the given persona-update step, so the existing safety.Check (which inspects
 // Spec.Action) validates that step's patch and the persona-wide guardrails.
-func probeActionForStep(action *dorguv1.RemediationAction, step *dorguv1.RemediationStep) *dorguv1.RemediationAction {
+//
+// The probe's pre-patch state is the LIVE workload's values when they are
+// known, not the persona's. The blast-radius rule measures new-versus-old, and
+// measuring against a stale persona is exactly how a 32Mi container was raised
+// to 144Mi while the plan reported it as within the 2x cap.
+func probeActionForStep(action *dorguv1.RemediationAction, step *dorguv1.RemediationStep, ref *dorguv1.WorkloadRef) *dorguv1.RemediationAction {
 	probe := action.DeepCopy()
 	probe.Spec.Steps = nil
 	probe.Spec.Action = dorguv1.RemediationActionDetail{
 		Type:          dorguv1.StepTypePersonaUpdate,
 		Patch:         step.Patch.DeepCopy(),
 		PrePatchState: step.PrePatchState.DeepCopy(),
+	}
+	if grounded := groundedPrePatch(step.Patch, ref); grounded != nil {
+		probe.Spec.Action.PrePatchState = grounded
 	}
 	return probe
 }

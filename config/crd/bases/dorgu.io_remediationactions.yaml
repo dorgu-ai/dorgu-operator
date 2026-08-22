@@ -295,6 +295,104 @@ spec:
                 maximum: 5
                 minimum: 0
                 type: integer
+              workloadRef:
+                description: |-
+                  WorkloadRef records the live workload this remediation concerns, who owns
+                  it, and what its resources actually were when the plan was made.
+
+                  Absent means the operator could not observe a workload. Consumers must
+                  then treat the workload as owned (see WorkloadRef.ManagedBy).
+                properties:
+                  container:
+                    description: |-
+                      Container is the container within the pod template whose resources were
+                      observed and which a fix would target.
+                    type: string
+                  kind:
+                    description: Kind is the workload kind. Only Deployment is resolved
+                      today.
+                    enum:
+                    - Deployment
+                    type: string
+                  managedBy:
+                    default: unknown
+                    description: |-
+                      ManagedBy is derived from server-side-apply field managers plus
+                      labels/annotations (app.kubernetes.io/managed-by, meta.helm.sh/*,
+                      argocd.argoproj.io/*, *.toolkit.fluxcd.io/*).
+
+                      Only "unmanaged" permits the CLI to patch the Deployment. Everything
+                      else, including "unknown", means Dorgu recommends and does not write.
+                    enum:
+                    - helm
+                    - argocd
+                    - flux
+                    - kustomize
+                    - unmanaged
+                    - unknown
+                    type: string
+                  managedByDetail:
+                    description: |-
+                      ManagedByDetail names the specific owner when one was identified, e.g.
+                      `Helm release "frontend" in namespace apps`. It exists so a refusal can
+                      name what owns the workload instead of saying "something does".
+                    maxLength: 253
+                    type: string
+                  name:
+                    description: |-
+                      Name is the live workload's metadata.name. It is not the persona name:
+                      the two differ in most brownfield clusters (persona "frontend" resolving
+                      to Deployment "frontend-podinfo").
+                    type: string
+                  namespace:
+                    description: Namespace is the live workload's namespace.
+                    type: string
+                  observedAt:
+                    description: ObservedAt is when the live workload was read.
+                    format: date-time
+                    type: string
+                  observedImage:
+                    description: |-
+                      ObservedImage is the container's live image reference, including its tag.
+                      It is the only image Dorgu has actually read, and the planner is
+                      instructed never to assert a version it has not read.
+                    type: string
+                  observedResources:
+                    description: |-
+                      ObservedResources is the LIVE container resource block at proposal time.
+
+                      An empty CPU or Memory string means the workload does not set that key.
+                      That distinction is load-bearing: a remediation may only change a key the
+                      workload already has, so approving a memory fix can never silently add a
+                      CPU limit.
+                    properties:
+                      limits:
+                        description: |-
+                          Limits are the container's live resource limits. An empty field means the
+                          container does not set that limit.
+                        properties:
+                          cpu:
+                            type: string
+                          memory:
+                            type: string
+                        type: object
+                      requests:
+                        description: |-
+                          Requests are the container's live resource requests. An empty field means
+                          the container does not set that request.
+                        properties:
+                          cpu:
+                            type: string
+                          memory:
+                            type: string
+                        type: object
+                    type: object
+                required:
+                - kind
+                - managedBy
+                - name
+                - namespace
+                type: object
             required:
             - action
             - confidence

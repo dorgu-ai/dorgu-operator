@@ -269,11 +269,17 @@ func (p *Proposer) Propose(ctx context.Context, diag diagnosis.Diagnosis, incide
 		}
 	}
 
+	// Read the live workload once, before either planning path. The persona is a
+	// point-in-time import that drifts, so every stated fact and every cap below
+	// is grounded in this observation rather than in the persona. When it cannot
+	// be read, ref records ManagedBy=unknown, which is treated as owned.
+	obs, workloadRef := p.observeWorkload(ctx, diag.PersonaRef)
+
 	// AI path: when a planner is configured, try it first across all signal
 	// types. Any failure degrades gracefully to the deterministic rules below
 	// (mirroring diagnosis/ai.go's degrade-to-rules behavior).
 	if p.planner != nil {
-		result, err := p.proposeWithPlanner(ctx, diag, incident)
+		result, err := p.proposeWithPlanner(ctx, diag, incident, obs, workloadRef)
 		if err != nil {
 			p.logger.V(0).Info("AI remediation planning failed, falling back to rules",
 				"error", err, "category", diag.Category)
@@ -284,7 +290,7 @@ func (p *Proposer) Propose(ctx context.Context, diag diagnosis.Diagnosis, incide
 
 	switch diag.SuggestedAction {
 	case "resource-adjustment":
-		return p.proposeResourceAdjustment(ctx, diag, incident)
+		return p.proposeResourceAdjustment(ctx, diag, incident, workloadRef)
 	case "restart":
 		return &ProposalResult{SkipReason: "restart remediation not automated in Phase 2b"}, nil
 	default:
@@ -293,32 +299,46 @@ func (p *Proposer) Propose(ctx context.Context, diag diagnosis.Diagnosis, incide
 }
 
 // proposeResourceAdjustment creates a RemediationAction for resource limit changes.
-func (p *Proposer) proposeResourceAdjustment(ctx context.Context, diag diagnosis.Diagnosis, incident *dorguv1.IncidentMemory) (*ProposalResult, error) {
-	// Read the current ApplicationPersona to get resource values.
+//
+// workloadRef is the live workload read in Propose. Every number this path
+// states, and the cap it applies, come from it whenever it resolved.
+func (p *Proposer) proposeResourceAdjustment(
+	ctx context.Context,
+	diag diagnosis.Diagnosis,
+	incident *dorguv1.IncidentMemory,
+	workloadRef *dorguv1.WorkloadRef,
+) (*ProposalResult, error) {
+	// Read the current ApplicationPersona: it is the object being patched, and
+	// its prior values are the rollback target. It is NOT the source of the
+	// numbers below.
 	persona, err := p.getApplicationPersona(ctx, diag.PersonaRef)
 	if err != nil {
 		return nil, fmt.Errorf("getting application persona: %w", err)
 	}
 
-	if persona.Spec.Resources == nil || persona.Spec.Resources.Limits == nil {
+	if personaLimits(persona) == nil && !hasObservedLimits(workloadRef) {
 		return &ProposalResult{SkipReason: "persona has no resource limits configured"}, nil
 	}
 
-	// Determine which resource to adjust and by how much based on signals.
-	patchMap, prePatchMap, explanation, err := p.calculateResourceChange(diag, persona)
+	// Determine which resource to adjust and by how much, sized against the
+	// live workload.
+	change, err := p.calculateResourceChange(diag, persona, workloadRef)
 	if err != nil {
 		return nil, fmt.Errorf("calculating resource change: %w", err)
 	}
-	if patchMap == nil {
+	if change.skipReason != "" {
+		return &ProposalResult{SkipReason: change.skipReason}, nil
+	}
+	if change.patch == nil {
 		return &ProposalResult{SkipReason: "no applicable resource adjustment"}, nil
 	}
 
-	patchJSON, err := json.Marshal(patchMap)
+	patchJSON, err := json.Marshal(change.patch)
 	if err != nil {
 		return nil, fmt.Errorf("marshalling patch: %w", err)
 	}
 
-	prePatchJSON, err := json.Marshal(prePatchMap)
+	prePatchJSON, err := json.Marshal(change.prePatch)
 	if err != nil {
 		return nil, fmt.Errorf("marshalling pre-patch state: %w", err)
 	}
@@ -347,8 +367,9 @@ func (p *Proposer) proposeResourceAdjustment(ctx context.Context, diag diagnosis
 			},
 			PersonaRef:  *diag.PersonaRef,
 			TrustLevel:  2,
-			Explanation: explanation,
+			Explanation: change.explanation,
 			Confidence:  fmt.Sprintf("%.2f", diag.Confidence),
+			WorkloadRef: workloadRef,
 			Action: dorguv1.RemediationActionDetail{
 				Type:          "persona-update",
 				Patch:         &apiextensionsv1.JSON{Raw: patchJSON},
@@ -365,14 +386,18 @@ func (p *Proposer) proposeResourceAdjustment(ctx context.Context, diag diagnosis
 		},
 	}
 
-	// Say so when the guardrail, not the diagnosis, picked the number.
-	if discloseBlastRadiusClamp(action) {
+	// Say so when the guardrail, not the diagnosis, picked the number. Measured
+	// against the live workload, so the disclosure describes the change the
+	// cluster will actually see.
+	if discloseGroundedBlastRadiusClamp(action, workloadRef) {
 		p.logger.Info("proposed change sits at the blast-radius cap; disclosing the clamp in the plan",
 			"action", action.Name, "confidence", action.Spec.Confidence)
 	}
 
-	// Run safety checks.
-	safetyResult, err := p.safety.Check(ctx, action)
+	// Run safety checks against a probe whose pre-patch state is the live
+	// workload's, so the 2x cap bounds the real change rather than a change
+	// relative to a stale persona.
+	safetyResult, err := p.safety.Check(ctx, groundedSafetyProbe(action, workloadRef))
 	if err != nil {
 		return nil, fmt.Errorf("safety check: %w", err)
 	}
@@ -407,104 +432,185 @@ func (p *Proposer) proposeResourceAdjustment(ctx context.Context, diag diagnosis
 	}, nil
 }
 
+// resourceAdjustment is the outcome of sizing a resource change: the persona
+// patch, the persona values it replaces (the rollback target), the prose shown
+// to the user, or a reason nothing should be proposed.
+type resourceAdjustment struct {
+	patch       map[string]any
+	prePatch    map[string]any
+	explanation string
+	skipReason  string
+}
+
 // calculateResourceChange determines what resource change to apply based on signals.
 func (p *Proposer) calculateResourceChange(
 	diag diagnosis.Diagnosis,
 	persona *dorguv1.ApplicationPersona,
-) (patchMap, prePatchMap map[string]any, explanation string, err error) {
-	primarySignal := primarySignalType(diag)
-
-	switch primarySignal {
+	ref *dorguv1.WorkloadRef,
+) (resourceAdjustment, error) {
+	switch primarySignalType(diag) {
 	case detection.SignalOOMKilled, detection.SignalMemorySaturationCrit, detection.SignalMemorySaturationHigh:
-		return p.calculateMemoryIncrease(diag, persona)
+		return p.calculateLimitIncrease(diag, persona, ref, resourceKeyMemory)
 
 	case detection.SignalCPUSaturationHigh, detection.SignalCPUSaturationCritical:
-		return p.calculateCPUIncrease(diag, persona)
+		return p.calculateLimitIncrease(diag, persona, ref, resourceKeyCPU)
 
 	case detection.SignalCrashLoopBackOff:
 		// CrashLoop with OOM correlation → memory increase.
 		if hasOOMCorrelation(diag) {
-			return p.calculateMemoryIncrease(diag, persona)
+			return p.calculateLimitIncrease(diag, persona, ref, resourceKeyMemory)
 		}
 		// CrashLoop without OOM → skip.
-		return nil, nil, "", nil
+		return resourceAdjustment{}, nil
 
 	default:
-		return nil, nil, "", nil
+		return resourceAdjustment{}, nil
 	}
 }
 
-// calculateMemoryIncrease computes a memory limit increase.
-func (p *Proposer) calculateMemoryIncrease(
+// calculateLimitIncrease sizes a limit increase for one resource dimension.
+//
+// The baseline is the LIVE container's limit whenever the workload resolved.
+// Sizing off the persona is what turned a 2x cap into a 4.5x jump on the
+// cluster (32Mi live, 96Mi in a months-old persona, 144Mi applied), and what
+// made the plan narrate a 96Mi limit for a pod that had 32Mi.
+//
+// Two refusals fall out of that grounding:
+//   - the live container does not set this limit at all: raising one would
+//     introduce a field the workload has never had, and a CPU limit in
+//     particular starts throttling a service that was not throttled before.
+//   - nothing is known: no live value and no persona value, so there is nothing
+//     honest to compute from.
+func (p *Proposer) calculateLimitIncrease(
 	diag diagnosis.Diagnosis,
 	persona *dorguv1.ApplicationPersona,
-) (map[string]any, map[string]any, string, error) {
-	currentMemory := persona.Spec.Resources.Limits.Memory
-	if currentMemory == "" {
-		return nil, nil, "", nil
+	ref *dorguv1.WorkloadRef,
+	key string,
+) (resourceAdjustment, error) {
+	personaValue := personaLimit(persona, key)
+	path := pathPrefixLimits + key
+
+	baseline, groundedInLive := observedValue(ref, path)
+	switch {
+	case groundedInLive:
+		// Sized against what is running.
+	case resolved(ref):
+		return resourceAdjustment{skipReason: fmt.Sprintf(
+			"container %q on Deployment %s does not set a %s limit, so raising one would introduce a field the workload has never had",
+			ref.Container, ref.Name, key)}, nil
+	case personaValue != "":
+		baseline = personaValue
+	default:
+		return resourceAdjustment{}, nil
 	}
 
-	qty, err := resource.ParseQuantity(currentMemory)
+	qty, err := resource.ParseQuantity(baseline)
 	if err != nil {
-		return nil, nil, "", fmt.Errorf("parsing memory quantity %q: %w", currentMemory, err)
+		return resourceAdjustment{}, fmt.Errorf("parsing %s quantity %q: %w", key, baseline, err)
 	}
 
-	multiplier := memoryIncreaseWarning
-	if diag.Severity == detection.SeverityCritical {
-		multiplier = memoryIncreaseCritical
+	multiplier := increaseMultiplier(key, diag.Severity)
+	newValue := scaleQuantity(qty, multiplier, key)
+
+	adjustment := resourceAdjustment{
+		patch:       buildNestedMap("spec", "resources", "limits", key, newValue),
+		explanation: limitIncreaseExplanation(diag, ref, key, baseline, newValue, multiplier, groundedInLive),
 	}
-
-	// Cap at maxResourceMultiplier.
-	if multiplier > maxResourceMultiplier {
-		multiplier = maxResourceMultiplier
+	// The pre-patch state is the persona's prior value, because it is the
+	// persona this patch rewrites and the persona a rollback restores. It is
+	// deliberately not the cap baseline: the cap is measured against the live
+	// workload (see groundedSafetyProbe), the rollback against the persona.
+	//
+	// When the persona records nothing at this path, the patch introduces the
+	// key, and there is no prior persona value to restore. The live value is
+	// used instead, so a rollback returns the persona to what the workload
+	// actually has rather than to an empty snapshot the executor would reject.
+	rollbackValue := personaValue
+	if rollbackValue == "" {
+		rollbackValue = baseline
 	}
-
-	newBytes := int64(float64(qty.Value()) * multiplier)
-	newQty := resource.NewQuantity(newBytes, resource.BinarySI)
-
-	explanation := fmt.Sprintf("Increase memory limit from %s to %s (%.0f%% increase) due to %s signal with %s severity",
-		currentMemory, newQty.String(), (multiplier-1)*100, primarySignalType(diag), diag.Severity)
-
-	patchMap := buildNestedMap("spec", "resources", "limits", "memory", newQty.String())
-	prePatchMap := buildNestedMap("spec", "resources", "limits", "memory", currentMemory)
-
-	return patchMap, prePatchMap, explanation, nil
+	adjustment.prePatch = buildNestedMap("spec", "resources", "limits", key, rollbackValue)
+	return adjustment, nil
 }
 
-// calculateCPUIncrease computes a CPU limit increase.
-func (p *Proposer) calculateCPUIncrease(
+// increaseMultiplier picks the increase for a dimension and severity, never
+// exceeding the blast-radius cap.
+func increaseMultiplier(key string, severity detection.Severity) float64 {
+	warning, critical := memoryIncreaseWarning, memoryIncreaseCritical
+	if key == resourceKeyCPU {
+		warning, critical = cpuIncreaseWarning, cpuIncreaseCritical
+	}
+
+	multiplier := warning
+	if severity == detection.SeverityCritical {
+		multiplier = critical
+	}
+	return min(multiplier, maxResourceMultiplier)
+}
+
+// scaleQuantity multiplies a quantity, rendering it in the format each
+// dimension is normally written in.
+func scaleQuantity(qty resource.Quantity, multiplier float64, key string) string {
+	if key == resourceKeyCPU {
+		return resource.NewMilliQuantity(int64(float64(qty.MilliValue())*multiplier), resource.DecimalSI).String()
+	}
+	return resource.NewQuantity(int64(float64(qty.Value())*multiplier), resource.BinarySI).String()
+}
+
+// limitIncreaseExplanation states where every number came from.
+//
+// When the workload resolved, the sentence quotes only live values and names
+// the Deployment and container they were read from. When it did not, it says
+// plainly that the figure is the persona's record and may have drifted, rather
+// than presenting an import from weeks ago as the current limit.
+func limitIncreaseExplanation(
 	diag diagnosis.Diagnosis,
-	persona *dorguv1.ApplicationPersona,
-) (map[string]any, map[string]any, string, error) {
-	currentCPU := persona.Spec.Resources.Limits.CPU
-	if currentCPU == "" {
-		return nil, nil, "", nil
+	ref *dorguv1.WorkloadRef,
+	key, baseline, newValue string,
+	multiplier float64,
+	groundedInLive bool,
+) string {
+	percent := (multiplier - 1) * 100
+
+	if !groundedInLive {
+		return fmt.Sprintf(
+			"Increase the %s limit from %s to %s (a %.0f%% increase) after a %s signal at %s severity. "+
+				"%s is the limit recorded in the persona: the live Deployment could not be read, so the running value may differ.",
+			key, baseline, newValue, percent, primarySignalType(diag), diag.Severity, baseline)
 	}
 
-	qty, err := resource.ParseQuantity(currentCPU)
-	if err != nil {
-		return nil, nil, "", fmt.Errorf("parsing CPU quantity %q: %w", currentCPU, err)
+	return fmt.Sprintf(
+		"Increase the %s limit from %s to %s (a %.0f%% increase) after a %s signal at %s severity. "+
+			"%s is the live limit read from container %q on Deployment %s/%s.",
+		key, baseline, newValue, percent, primarySignalType(diag), diag.Severity,
+		baseline, ref.Container, ref.Namespace, ref.Name)
+}
+
+// personaLimits returns the persona's recorded limits, or nil.
+func personaLimits(persona *dorguv1.ApplicationPersona) *dorguv1.ResourceValues {
+	if persona == nil || persona.Spec.Resources == nil {
+		return nil
 	}
+	return persona.Spec.Resources.Limits
+}
 
-	multiplier := cpuIncreaseWarning
-	if diag.Severity == detection.SeverityCritical {
-		multiplier = cpuIncreaseCritical
+// personaLimit returns the persona's recorded limit for one dimension. It is
+// the patch target and the rollback value, never a statement of current state.
+func personaLimit(persona *dorguv1.ApplicationPersona, key string) string {
+	limits := personaLimits(persona)
+	if limits == nil {
+		return ""
 	}
-
-	if multiplier > maxResourceMultiplier {
-		multiplier = maxResourceMultiplier
+	if key == resourceKeyCPU {
+		return limits.CPU
 	}
+	return limits.Memory
+}
 
-	newMillis := int64(float64(qty.MilliValue()) * multiplier)
-	newQty := resource.NewMilliQuantity(newMillis, resource.DecimalSI)
-
-	explanation := fmt.Sprintf("Increase CPU limit from %s to %s (%.0f%% increase) due to %s signal with %s severity",
-		currentCPU, newQty.String(), (multiplier-1)*100, primarySignalType(diag), diag.Severity)
-
-	patchMap := buildNestedMap("spec", "resources", "limits", "cpu", newQty.String())
-	prePatchMap := buildNestedMap("spec", "resources", "limits", "cpu", currentCPU)
-
-	return patchMap, prePatchMap, explanation, nil
+// hasObservedLimits reports whether the live container sets any limit, which
+// makes a proposal possible even when the persona records none.
+func hasObservedLimits(ref *dorguv1.WorkloadRef) bool {
+	return resolved(ref) && ref.ObservedResources != nil && ref.ObservedResources.Limits != nil
 }
 
 // getApplicationPersona fetches the ApplicationPersona by reference.

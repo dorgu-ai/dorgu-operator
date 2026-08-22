@@ -24,6 +24,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
@@ -350,13 +351,19 @@ func imagePullPlan() *planner.RemediationPlan {
 // TestProposer_AIPath_PersistsAdvisoryCommands is F-10: an advisory step that
 // has a one-command fix must carry that command, so a correct diagnosis becomes
 // something the reader can actually run.
+//
+// The workload here is unmanaged, which is the only case where handing over a
+// direct kubectl command is the right instruction. The owned case is covered by
+// TestProposer_AIPath_NoWorkloadWriteCommandForOwnedWorkload.
 func TestProposer_AIPath_PersistsAdvisoryCommands(t *testing.T) {
-	scheme := newTestScheme()
+	scheme := newWorkloadScheme()
 	persona := newTestPersona(defaultNamespace, "my-app")
 	incident := newTestIncident(defaultNamespace, "imagepull", "my-app", "ImagePullBackOff")
+	deploy := liveDeployment("my-app",
+		map[corev1.ResourceName]string{corev1.ResourceMemory: "256Mi"}, nil)
 
 	c := fake.NewClientBuilder().WithScheme(scheme).
-		WithRuntimeObjects(persona).
+		WithRuntimeObjects(persona, deploy).
 		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
 
 	p := NewProposer(c, NewSafetyChecker(c, testLogger()), testLogger(),
