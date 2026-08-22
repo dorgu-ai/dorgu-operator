@@ -46,7 +46,17 @@ type RemediationContext struct {
 
 	// AppPersona is the affected application's persona (spec + status, including
 	// Learned.ResourceBaseline). Nil when it could not be loaded.
+	//
+	// The persona is a point-in-time import and drifts from the running
+	// workload, so it describes intent, not current reality. Anything the
+	// planner states as a present-tense fact must come from Workload instead.
 	AppPersona *dorguv1.ApplicationPersona
+
+	// Workload is the live workload read at proposal time: the ground truth for
+	// every stated number, every cap, and who owns the Deployment. Nil when no
+	// Deployment could be resolved, which the prompt reports honestly rather
+	// than papering over with persona values.
+	Workload *WorkloadContext
 
 	// ClusterPersona is the singleton cluster persona (environment, policies,
 	// selfHealing mode/trustLevel, quotas). Nil when none exists.
@@ -60,6 +70,32 @@ type RemediationContext struct {
 	// carried WITH their status (phase + verification result) so the planner can
 	// prefer fixes that previously succeeded and avoid ones that failed.
 	PastRemediations []dorguv1.RemediationAction
+}
+
+// WorkloadContext is the live workload the incident concerns, as read from the
+// cluster rather than from the persona.
+//
+// It exists because run #2 of the clean room caught Dorgu narrating a 96Mi
+// memory limit for a pod whose limit was 32Mi, and computing a "2x" increase
+// off that stale number. Every present-tense claim the planner makes has to be
+// traceable to this struct.
+type WorkloadContext struct {
+	// Ref is the observed workload record: name, namespace, container, owner,
+	// live resources and live image.
+	Ref *dorguv1.WorkloadRef
+
+	// Replicas is the Deployment's desired replica count.
+	Replicas int32
+
+	// ReadyReplicas is how many replicas are currently ready.
+	ReadyReplicas int32
+
+	// PriorImages are image references Dorgu has actually read for this
+	// application (the persona's imported-image annotation and its recorded
+	// deployment history). They are the only prior versions the planner may
+	// name, which is what stops it inventing a "latest stable release" from
+	// training data.
+	PriorImages []string
 }
 
 // RemediationPlan is the structured output the planner returns: a root-cause

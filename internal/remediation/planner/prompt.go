@@ -29,12 +29,53 @@ import (
 // everything else is advisory.
 const planSystemPrompt = `You are a senior Site Reliability Engineer acting as a Kubernetes remediation planner.
 
-You are given a diagnosed incident plus rich context: the affected application's
-persona (desired spec and learned resource baselines), the cluster's self-healing
+You are given a diagnosed incident plus rich context: the LIVE workload as read
+from the cluster, the affected application's persona (an imported snapshot of
+desired spec, which drifts and is often stale), the cluster's self-healing
 policy and environment, the recent incident history for this application, and the
 OUTCOMES of past remediations (which prior fixes succeeded, failed, or were rolled back).
 
 Produce a correct, ORDERED remediation plan by calling the submit_remediation_plan tool.
+
+GROUNDING (the highest-priority rules; a wrong fact is worse than a missing one):
+G1. The "Live workload" section is the only source of truth for what is running
+   NOW. Every number, image tag, limit, request and replica count you state as
+   current MUST be copied from it.
+G2. The persona is a point-in-time import. Its values may be months out of date
+   and may describe fields the workload does not have. NEVER present a persona
+   value as the current state, and never compute from one when a live value
+   exists.
+G3. Size every change against the LIVE value. "No more than ~2x" means no more
+   than twice what the live workload has, not twice what the persona records.
+G4. Only change resource keys the live workload ALREADY sets. If the live
+   container has no CPU limit, do not add one as part of an unrelated fix.
+   If adding a key is genuinely the fix, it must be its own step whose
+   description says plainly that a new field is being introduced and why.
+G5. Never assert a version, tag or release you have not read in the context
+   above. The live image and the "Prior images on record" list are the only
+   versions you may name. If the right version is not among them, say you
+   cannot verify it and prefer a rollback (kubectl rollout undo) or an explicit
+   instruction to the operator to pick a known-good tag. Do not describe a tag
+   as "latest" or "stable" unless the context says so.
+G6. Do not claim to have queried anything you were not given. You did not query
+   an image registry, a metrics backend, or an external API.
+
+OWNERSHIP (what you may tell the reader to run):
+O1. The live workload section states managedBy. When it is anything other than
+   "unmanaged", another system owns that Deployment's desired state.
+O2. For an owned workload, NEVER suggest a command that writes to it (no
+   kubectl patch, set, apply, edit, scale, replace, delete, annotate, label, or
+   rollout undo/restart). A direct write takes field ownership and makes the
+   owner's next apply fail or silently revert the fix.
+O3. Instead, tell the reader exactly what to change in the owner's source of
+   truth: the values file for a Helm release, the Git manifests for an ArgoCD
+   application or a Flux source, the overlay for kustomize. Name the owner.
+O4. managedBy "unknown" is treated as owned. Do not suggest workload writes.
+O5. Read-only commands (kubectl get, describe, logs, top, events, rollout
+   status/history) are fine for any workload.
+O6. persona-update steps are unaffected by all of this. The operator patches the
+   ApplicationPersona, never the workload, so those steps stay safe and
+   auto-applied whoever owns the Deployment.
 
 Rules you MUST follow:
 1. Order steps by execution sequence, starting at 1.
@@ -46,16 +87,17 @@ Rules you MUST follow:
    (Deployment/Pod) patch here — the operator never writes workloads directly.
 4. All other step types are ADVISORY: they describe an action for a human, CLI,
    or platform to apply. Do not include a patch on them.
-4a. When an advisory step can be carried out by ONE kubectl command, include it
-   as "command", fully resolved with the real namespace, workload, container and
-   value from the context above (e.g. "kubectl set image deployment/web
-   web=nginx:1.27-alpine -n demo"). A reader should be able to paste it and be
-   done. Constraints: a single line, starting with "kubectl ", and containing
-   none of ; & | < > $ or backticks. If no single command does the job, or you
-   would have to guess at a name, omit "command" and say what to do in the
-   description instead. Never guess.
+4a. When an advisory step can be carried out by ONE kubectl command AND the
+   command is permitted for this workload's owner (see O1-O5), include it as
+   "command", fully resolved with the real namespace, workload, container and
+   value from the Live workload section (e.g. "kubectl set image
+   deployment/web web=nginx:1.27-alpine -n demo"). A reader should be able to
+   paste it and be done. Constraints: a single line, starting with "kubectl ",
+   and containing none of ; & | < > $ or backticks. If no single command does
+   the job, the workload is owned, or you would have to guess at a name, omit
+   "command" and say what to do in the description instead. Never guess.
 5. Respect the cluster's self-healing policy and trust level. Keep resource
-   changes conservative (no more than ~2x an existing limit).
+   changes conservative (no more than ~2x the LIVE limit, per G3).
 6. PREFER approaches that succeeded in past remediations for this app; AVOID
    approaches that previously failed or were rolled back.
 7. Give a concise rootCause and a confidence between 0 and 1.
@@ -160,6 +202,9 @@ func buildPlanUserMessage(rc RemediationContext) string {
 	}
 	sb.WriteString("\n")
 
+	// The live workload goes first, ahead of the persona, because it is the only
+	// section that describes the present.
+	writeLiveWorkload(&sb, rc.Workload)
 	writeAppPersona(&sb, rc.AppPersona)
 	writeClusterPersona(&sb, rc.ClusterPersona)
 	writePastIncidents(&sb, rc.PastIncidents)
@@ -168,18 +213,98 @@ func buildPlanUserMessage(rc RemediationContext) string {
 	return sb.String()
 }
 
+// writeLiveWorkload renders the ground-truth section: what is actually running,
+// which resource keys it actually sets, and who owns it.
+func writeLiveWorkload(sb *strings.Builder, w *WorkloadContext) {
+	sb.WriteString("## Live workload (ground truth, read from the cluster just now)\n")
+	if w == nil || w.Ref == nil {
+		sb.WriteString("(no Deployment could be resolved for this application)\n")
+		sb.WriteString("Because the live workload is unreadable, you may not state any current\n")
+		sb.WriteString("resource value, image tag or replica count as fact. Say what you cannot see.\n\n")
+		return
+	}
+
+	ref := w.Ref
+	fmt.Fprintf(sb, "%s: %s/%s | container: %s\n", ref.Kind, ref.Namespace, ref.Name, ref.Container)
+	fmt.Fprintf(sb, "Image (running now): %s\n", valueOrNone(ref.ObservedImage))
+	fmt.Fprintf(sb, "Replicas: desired=%d ready=%d\n", w.Replicas, w.ReadyReplicas)
+
+	writeObservedResources(sb, ref.ObservedResources)
+
+	if len(w.PriorImages) > 0 {
+		fmt.Fprintf(sb, "Prior images on record (read by Dorgu, safe to name): %s\n",
+			strings.Join(w.PriorImages, ", "))
+	} else {
+		sb.WriteString("Prior images on record: (none) - you have no verified previous tag to roll back to.\n")
+	}
+
+	owner := ref.ManagedBy
+	if ref.ManagedByDetail != "" {
+		owner = fmt.Sprintf("%s (%s)", ref.ManagedBy, ref.ManagedByDetail)
+	}
+	fmt.Fprintf(sb, "managedBy: %s\n", owner)
+	if ref.IsOwned() {
+		sb.WriteString("This workload is OWNED. Do not suggest any command that writes to it; " +
+			"tell the reader what to change in the owner's source of truth instead.\n")
+	} else {
+		sb.WriteString("Nothing reconciles this workload, so a direct kubectl command is the right " +
+			"instruction to give.\n")
+	}
+	sb.WriteString("\n")
+}
+
+// writeObservedResources spells out both the values and the absences, because
+// "the container sets no CPU limit" is the fact that stops a memory fix from
+// quietly introducing one.
+func writeObservedResources(sb *strings.Builder, res *dorguv1.ObservedResources) {
+	if res == nil {
+		sb.WriteString("Live resources: the container sets NO requests and NO limits. " +
+			"Do not add one as a side effect of another fix.\n")
+		return
+	}
+	fmt.Fprintf(sb, "Live limits: %s\n", describeResourceValues(res.Limits))
+	fmt.Fprintf(sb, "Live requests: %s\n", describeResourceValues(res.Requests))
+}
+
+// describeResourceValues renders a live resource pair, naming absent keys
+// explicitly rather than printing an empty value that reads as zero.
+func describeResourceValues(v *dorguv1.ResourceValues) string {
+	if v == nil {
+		return "none set (adding one would introduce a field the workload does not have)"
+	}
+	parts := make([]string, 0, 2)
+	if v.CPU != "" {
+		parts = append(parts, "cpu="+v.CPU)
+	} else {
+		parts = append(parts, "cpu=NOT SET (do not introduce)")
+	}
+	if v.Memory != "" {
+		parts = append(parts, "memory="+v.Memory)
+	} else {
+		parts = append(parts, "memory=NOT SET (do not introduce)")
+	}
+	return strings.Join(parts, " ")
+}
+
+func valueOrNone(s string) string {
+	if s == "" {
+		return "(unknown)"
+	}
+	return s
+}
+
 func writeAppPersona(sb *strings.Builder, p *dorguv1.ApplicationPersona) {
-	sb.WriteString("## Application persona\n")
+	sb.WriteString("## Application persona (imported snapshot of INTENT, may be stale)\n")
 	if p == nil {
 		sb.WriteString("(unavailable)\n\n")
 		return
 	}
 	fmt.Fprintf(sb, "Name: %s | Type: %s | Tier: %s\n", p.Spec.Name, p.Spec.Type, p.Spec.Tier)
 	if r := p.Spec.Resources; r != nil && r.Limits != nil {
-		fmt.Fprintf(sb, "Current limits: cpu=%s memory=%s\n", r.Limits.CPU, r.Limits.Memory)
+		fmt.Fprintf(sb, "Persona-recorded limits (NOT current): cpu=%s memory=%s\n", r.Limits.CPU, r.Limits.Memory)
 	}
 	if r := p.Spec.Resources; r != nil && r.Requests != nil {
-		fmt.Fprintf(sb, "Current requests: cpu=%s memory=%s\n", r.Requests.CPU, r.Requests.Memory)
+		fmt.Fprintf(sb, "Persona-recorded requests (NOT current): cpu=%s memory=%s\n", r.Requests.CPU, r.Requests.Memory)
 	}
 	if learned := p.Status.Learned; learned != nil && learned.ResourceBaseline != nil {
 		b := learned.ResourceBaseline
