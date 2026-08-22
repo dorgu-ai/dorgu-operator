@@ -124,8 +124,10 @@ const (
 	CategorySecurity     Category = "security"
 )
 
-// severityRank returns a numeric rank for sorting (higher = more severe).
-func severityRank(s Severity) int {
+// SeverityRank returns a numeric rank for ordering severities (higher = more
+// severe). An unrecognised severity ranks below info so it never reads as an
+// escalation.
+func SeverityRank(s Severity) int {
 	switch s {
 	case SeverityCritical:
 		return 2
