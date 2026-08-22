@@ -154,11 +154,24 @@ make docker-build IMG=ghcr.io/dorgu-ai/dorgu-operator:<VERSION_NO_V>
 
 # The chart it will package, with CRDs regenerated the way CI does it
 make manifests && cp config/crd/bases/*.yaml charts/dorgu-operator/crds/
-helm package charts/dorgu-operator -d dist/
+helm package charts/dorgu-operator -d /tmp/dorgu-release
 ```
 
-`dist/dorgu-operator-<VERSION_NO_V>.tgz` should appear. If `cp` changed anything
-under `crds/`, commit it: the chart test compares those files byte for byte.
+`/tmp/dorgu-release/dorgu-operator-<VERSION_NO_V>.tgz` should appear. If `cp`
+changed anything under `crds/`, commit it: the chart test compares those files byte
+for byte.
+
+<!-- Package into /tmp, not ./dist. CI does use `-d dist/` on a fresh checkout,
+     but `dist/install.yaml` is tracked in this repo, so cleaning up a local
+     rehearsal with `rm -rf dist` deletes a committed file. -->
+
+Then read the notes a user will actually get, which is the one artifact no test
+sees until it is published:
+
+```bash
+helm install verify /tmp/dorgu-release/dorgu-operator-<VERSION_NO_V>.tgz \
+  --dry-run=client -n dorgu-system | sed -n '/NOTES:/,$p'
+```
 
 ## Step 9: Push tag to trigger release workflow
 
