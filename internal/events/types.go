@@ -37,6 +37,12 @@ type InternalEvent struct {
 	// Source identifies the detector.
 	Source string
 
+	// Reason is the K8s Event reason. Empty means the default detection reason,
+	// so a detection event needs to say nothing; an operator-internal failure
+	// sets its own so alerting can tell "dorgu found a problem" apart from
+	// "dorgu hit a problem".
+	Reason string
+
 	// Message is human-readable.
 	Message string
 

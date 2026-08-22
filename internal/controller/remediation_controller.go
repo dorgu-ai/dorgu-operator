@@ -101,8 +101,11 @@ func (r *RemediationController) Reconcile(ctx context.Context, req ctrl.Request)
 	case RemediationPhaseVerifying:
 		return r.handleVerifying(ctx, logger, &action)
 
+	case RemediationPhaseRejected:
+		return ctrl.Result{}, r.recordRejection(ctx, logger, &action)
+
 	case RemediationPhaseCompleted, RemediationPhaseAcknowledged, RemediationPhaseRolledBack,
-		RemediationPhaseFailed, RemediationPhaseRejected, RemediationPhaseExpired:
+		RemediationPhaseFailed, RemediationPhaseExpired:
 		// Terminal states — no-op.
 		return ctrl.Result{}, nil
 
@@ -110,6 +113,51 @@ func (r *RemediationController) Reconcile(ctx context.Context, req ctrl.Request)
 		logger.V(1).Info("unknown phase, ignoring", "phase", action.Status.Phase)
 		return ctrl.Result{}, nil
 	}
+}
+
+// recordRejection timestamps a rejection the first time the operator sees it.
+//
+// `dorgu remediation reject` patches status.phase and nothing else, so the
+// decision is recorded but not when it was made, and there is no time to hold a
+// cooldown against. That is why declining a remediation bought about 30 seconds
+// of quiet before the same fix came back, billed again (F-07). Stamping a
+// condition keeps the timestamp inside the existing schema, and stamping it once
+// keeps the cooldown from restarting on every pass.
+func (r *RemediationController) recordRejection(ctx context.Context, logger logr.Logger, action *dorguv1.RemediationAction) error {
+	if hasCondition(action.Status.Conditions, ConditionRejected) {
+		return nil
+	}
+
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var fresh dorguv1.RemediationAction
+		if err := r.Get(ctx, client.ObjectKeyFromObject(action), &fresh); err != nil {
+			return err
+		}
+		if fresh.Status.Phase != RemediationPhaseRejected ||
+			hasCondition(fresh.Status.Conditions, ConditionRejected) {
+			return nil
+		}
+		setCondition(&fresh.Status.Conditions, ConditionRejected, metav1.ConditionTrue,
+			ReasonUserRejected,
+			fmt.Sprintf("declined by a human; dorgu will not re-propose this fix for %s", RejectionCooldown))
+		return r.Status().Update(ctx, &fresh)
+	})
+	if err != nil {
+		return fmt.Errorf("recording the rejection timestamp on %s: %w", action.Name, err)
+	}
+
+	logger.Info("rejection recorded; suppressing re-proposal", "cooldown", RejectionCooldown)
+	return nil
+}
+
+// hasCondition reports whether a condition of the given type is present.
+func hasCondition(conditions []metav1.Condition, condType string) bool {
+	for i := range conditions {
+		if conditions[i].Type == condType {
+			return true
+		}
+	}
+	return false
 }
 
 // handleApproved applies the remediation patch and transitions to Applying.

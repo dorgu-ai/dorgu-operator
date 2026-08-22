@@ -64,6 +64,12 @@ const (
 	PhaseDetected      = "Detected"
 	PhaseInvestigating = "Investigating"
 	PhaseResolved      = "Resolved"
+
+	// ReasonDiagnosisDiscarded is the Kubernetes Event reason for a diagnosis the
+	// operator produced but could not persist. It is deliberately distinct from
+	// the detection reason: this is dorgu reporting its own failure, not a
+	// finding about the cluster.
+	ReasonDiagnosisDiscarded = "DorguDiagnosisDiscarded"
 )
 
 // +kubebuilder:rbac:groups=dorgu.io,resources=incidentmemories,verbs=get;list;watch;create;update;patch
@@ -146,6 +152,7 @@ func (r *HealthCheckReconciler) reconcile(ctx context.Context) {
 
 	// 3. Process each diagnosis: create/update IncidentMemory + store events.
 	activeSignalKeys := make(map[string]bool)
+	attempted, discarded := 0, 0
 	for i := range diagnoses {
 		diag := &diagnoses[i]
 		// Only track diagnoses with a PersonaRef for resolution detection.
@@ -153,13 +160,16 @@ func (r *HealthCheckReconciler) reconcile(ctx context.Context) {
 		if diag.PersonaRef == nil {
 			continue
 		}
+		attempted++
 		if err := r.processDiagnosis(ctx, diag, activeSignalKeys); err != nil {
+			discarded++
 			r.Logger.Error(err, "failed to process diagnosis",
 				"summary", diag.Summary,
 				"category", diag.Category,
 			)
 		}
 	}
+	r.logCycleSummary(attempted, discarded)
 
 	// 4. Check for resolved incidents.
 	if err := r.resolveCleared(ctx, activeSignalKeys); err != nil {
@@ -170,6 +180,24 @@ func (r *HealthCheckReconciler) reconcile(ctx context.Context) {
 	if r.WebSocket != nil {
 		r.broadcastHealthSummary(ctx)
 	}
+}
+
+// logCycleSummary closes each cycle with a count of the diagnoses it could not
+// persist. Individual failures are already logged, but nothing ever added them
+// up, which is how 176 discarded diagnoses in one 4h20m window went unnoticed
+// until someone grepped the raw operator log (F-01). A cycle that lost work says
+// so at ERROR; a clean cycle stays quiet at V(1).
+func (r *HealthCheckReconciler) logCycleSummary(attempted, discarded int) {
+	if discarded == 0 {
+		r.Logger.V(1).Info("reconciliation cycle complete", "diagnosesPersisted", attempted)
+		return
+	}
+	r.Logger.Error(
+		fmt.Errorf("%d of %d diagnoses could not be persisted", discarded, attempted),
+		"diagnoses discarded this cycle; each one cost a diagnosis call and is not recorded anywhere",
+		"discarded", discarded,
+		"attempted", attempted,
+	)
 }
 
 // processDiagnosis creates or updates an IncidentMemory for a diagnosis,
@@ -209,6 +237,22 @@ func (r *HealthCheckReconciler) processDiagnosis(
 
 	// Propose remediation if proposer is configured and incident is not resolved.
 	if r.Proposer != nil && incident != nil && incident.Status.Phase != PhaseResolved {
+		// Honour a rejection before spending anything. Proposing runs an AI
+		// planning call, so re-asking a question the user already answered bills
+		// them for saying no (F-07).
+		suppressed, rejectionErr := r.rejectionSuppressesProposal(ctx, diag, incident)
+		if rejectionErr != nil {
+			// Fail closed. Guessing "no rejection" when we cannot tell is the
+			// expensive direction to be wrong in.
+			r.Logger.Error(rejectionErr, "could not read the rejection history; not proposing a remediation",
+				"incident", incident.Name)
+			return nil
+		}
+		if suppressed != "" {
+			r.Logger.V(1).Info("remediation not proposed", "reason", suppressed, "incident", incident.Name)
+			return nil
+		}
+
 		result, proposeErr := r.Proposer.Propose(ctx, *diag, incident)
 		if proposeErr != nil {
 			r.Logger.Error(proposeErr, "failed to propose remediation", "incident", incident.Name)
@@ -276,38 +320,35 @@ func (r *HealthCheckReconciler) findMatchingIncident(
 }
 
 // updateExistingIncident updates an active IncidentMemory with new diagnosis data.
+//
+// Both writes are wrapped in retry-on-conflict with a re-fetch. The object
+// handed in comes from a List, so its ResourceVersion is a snapshot: any
+// concurrent write (the incident controller stamping conditions, the remediation
+// controller resolving) invalidates it and the bare Update that used to sit here
+// failed with "the object has been modified". That error was returned, the
+// diagnosis behind it was dropped, and nobody was told. 176 diagnoses went that
+// way in one 4h20m window, and because AI enhancement lands via this path, the
+// discarded ones were the better ones (F-01).
 func (r *HealthCheckReconciler) updateExistingIncident(
 	ctx context.Context,
 	im *dorguv1.IncidentMemory,
 	diag *diagnosis.Diagnosis,
 	now metav1.Time,
 ) error {
-	// Update spec fields.
-	im.Spec.Detection.LastSeen = now
-
-	// Refresh the root cause when the new diagnosis is at least as confident as
-	// the recorded one. The tie matters: an AI-enhanced diagnosis carries the
-	// same numeric confidence as the rule-based diagnosis it enhances, so
-	// requiring a strict improvement is how an incident first recorded before AI
-	// was configured stayed stamped "rule-based" for its whole life (F-05).
-	if diag.Confidence > 0 {
-		existingConfidence := 0.0
-		if im.Spec.RootCause != nil {
-			parsed, err := strconv.ParseFloat(im.Spec.RootCause.Confidence, 64)
-			if err == nil {
-				existingConfidence = parsed
-			}
+	specErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var fresh dorguv1.IncidentMemory
+		if err := r.Client.Get(ctx, client.ObjectKeyFromObject(im), &fresh); err != nil {
+			return err
 		}
-		if diag.Confidence >= existingConfidence {
-			im.Spec.RootCause = buildRootCause(diag)
+		applyDiagnosisToSpec(&fresh, diag, now)
+		if err := r.Client.Update(ctx, &fresh); err != nil {
+			return err
 		}
-	}
-
-	// Update affected resources.
-	im.Spec.Detection.AffectedResources = toResourceRefs(diag.AffectedResources)
-
-	if err := r.Client.Update(ctx, im); err != nil {
-		return fmt.Errorf("updating IncidentMemory %s: %w", im.Name, err)
+		fresh.DeepCopyInto(im)
+		return nil
+	})
+	if specErr != nil {
+		return r.reportDiscardedDiagnosis(ctx, im, diag, "recording the root cause", specErr)
 	}
 
 	// Update status subresource with retry-on-conflict. Re-fetching inside
@@ -322,7 +363,7 @@ func (r *HealthCheckReconciler) updateExistingIncident(
 		return r.Client.Status().Update(ctx, im)
 	})
 	if err != nil {
-		return fmt.Errorf("updating IncidentMemory status %s: %w", im.Name, err)
+		return r.reportDiscardedDiagnosis(ctx, im, diag, "recording the occurrence count", err)
 	}
 
 	r.Logger.V(1).Info("updated existing incident",
@@ -403,18 +444,23 @@ func (r *HealthCheckReconciler) createIncident(
 		return fmt.Errorf("creating IncidentMemory: %w", err)
 	}
 
-	// Set initial status.
-	im.Status = dorguv1.IncidentMemoryStatus{
-		Phase:           PhaseDetected,
-		OccurrenceCount: 1,
-		LastOccurrence:  &now,
-	}
-	if err := r.Client.Status().Update(ctx, im); err != nil {
-		// Object was created but status was not set. Log prominently so the
-		// orphan is observable; updateExistingIncident will repair on next cycle.
-		r.Logger.Error(err, "IncidentMemory created but initial status update failed",
-			"name", im.Name)
-		return fmt.Errorf("setting initial IncidentMemory status: %w", err)
+	// Set initial status, retrying on conflict with a re-fetch. Without the
+	// retry a single concurrent write left the incident created but statusless,
+	// and took the diagnosis down with it (F-01).
+	statusErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		if err := r.Client.Get(ctx, client.ObjectKeyFromObject(im), im); err != nil {
+			return err
+		}
+		im.Status.Phase = PhaseDetected
+		im.Status.OccurrenceCount = 1
+		im.Status.LastOccurrence = &now
+		return r.Client.Status().Update(ctx, im)
+	})
+	if statusErr != nil {
+		// The object exists but carries no status. Surface the loss rather than
+		// leaving an orphan nobody knows about; updateExistingIncident repairs
+		// the status on the next cycle.
+		return r.reportDiscardedDiagnosis(ctx, im, diag, "setting the initial incident status", statusErr)
 	}
 
 	r.Logger.Info("created incident",
@@ -704,6 +750,108 @@ func sanitizeName(s string) string {
 		}
 	}
 	return string(result)
+}
+
+// applyDiagnosisToSpec folds a diagnosis into an IncidentMemory spec. It is
+// separate from the write so the retry loop can re-apply it to a freshly fetched
+// object instead of replaying a stale one.
+func applyDiagnosisToSpec(im *dorguv1.IncidentMemory, diag *diagnosis.Diagnosis, now metav1.Time) {
+	im.Spec.Detection.LastSeen = now
+
+	// Refresh the root cause when the new diagnosis is at least as confident as
+	// the recorded one. The tie matters: an AI-enhanced diagnosis carries the
+	// same numeric confidence as the rule-based diagnosis it enhances, so
+	// requiring a strict improvement is how an incident first recorded before AI
+	// was configured stayed stamped "rule-based" for its whole life (F-05).
+	if diag.Confidence > 0 {
+		existingConfidence := 0.0
+		if im.Spec.RootCause != nil {
+			parsed, err := strconv.ParseFloat(im.Spec.RootCause.Confidence, 64)
+			if err == nil {
+				existingConfidence = parsed
+			}
+		}
+		if diag.Confidence >= existingConfidence {
+			im.Spec.RootCause = buildRootCause(diag)
+		}
+	}
+
+	im.Spec.Detection.AffectedResources = toResourceRefs(diag.AffectedResources)
+}
+
+// reportDiscardedDiagnosis makes a lost diagnosis loud, then returns the error
+// so the cycle counts it.
+//
+// A diagnosis is not free: the AI path bills a model call for every one. Losing
+// one to a write that could not be retried is a real cost to the user, so it is
+// logged at ERROR, recorded as a DorguEvent, and emitted as a Kubernetes Warning
+// on the incident. Whatever the operator's failure mode, the user finds out.
+func (r *HealthCheckReconciler) reportDiscardedDiagnosis(
+	ctx context.Context,
+	im *dorguv1.IncidentMemory,
+	diag *diagnosis.Diagnosis,
+	stage string,
+	cause error,
+) error {
+	err := fmt.Errorf("%s for IncidentMemory %s: %w", stage, im.Name, cause)
+
+	persona := ""
+	if diag.PersonaRef != nil {
+		persona = diag.PersonaRef.Name
+	}
+
+	r.Logger.Error(err, "diagnosis discarded: could not persist it after retrying on conflict",
+		"incident", im.Name,
+		"namespace", im.Namespace,
+		"persona", persona,
+		"provider", diag.Provider,
+		"confidence", diag.Confidence,
+		"summary", diag.Summary,
+	)
+
+	message := fmt.Sprintf(
+		"discarded the%s diagnosis for %s after %s failed: %v. The analysis was produced and paid for but is not recorded.",
+		providerSuffix(diag.Provider), im.Name, stage, cause)
+
+	surfaced := &events.InternalEvent{
+		ID:       fmt.Sprintf("diagnosis-discarded-%s-%d", im.Name, time.Now().UnixNano()),
+		Severity: events.SeverityCritical,
+		Category: events.Category(im.Spec.Category),
+		Source:   "healthcheck-reconciler",
+		Reason:   ReasonDiagnosisDiscarded,
+		Message:  message,
+		InvolvedObject: dorguv1.ResourceReference{
+			Kind:      "IncidentMemory",
+			Name:      im.Name,
+			Namespace: im.Namespace,
+		},
+		PersonaRef: diag.PersonaRef,
+		EventTime:  time.Now(),
+	}
+
+	if r.EventStore != nil {
+		if storeErr := r.EventStore.Store(ctx, surfaced); storeErr != nil {
+			r.Logger.Error(storeErr, "could not record the discarded diagnosis as a DorguEvent",
+				"incident", im.Name)
+		}
+	}
+	if r.EventEmitter != nil {
+		if emitErr := r.EventEmitter.Emit(ctx, surfaced); emitErr != nil {
+			r.Logger.Error(emitErr, "could not emit a Kubernetes event for the discarded diagnosis",
+				"incident", im.Name)
+		}
+	}
+
+	return err
+}
+
+// providerSuffix names the diagnosis source in a user-facing message, and says
+// nothing when the source is unknown rather than inventing one.
+func providerSuffix(provider string) string {
+	if provider == "" {
+		return ""
+	}
+	return " " + provider
 }
 
 // buildRootCause converts a diagnosis into an IncidentMemory RootCauseInfo.

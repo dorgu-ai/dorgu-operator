@@ -74,8 +74,8 @@ func (e *Engine) CollectAll(ctx context.Context) ([]Signal, error) {
 	}
 
 	sort.Slice(allSignals, func(i, j int) bool {
-		ri := severityRank(allSignals[i].Severity)
-		rj := severityRank(allSignals[j].Severity)
+		ri := SeverityRank(allSignals[i].Severity)
+		rj := SeverityRank(allSignals[j].Severity)
 		if ri != rj {
 			return ri > rj
 		}

@@ -27,6 +27,10 @@ import (
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 )
 
+// ReasonDorguDetected is the K8s Event reason for a signal dorgu detected in the
+// cluster. It is the default for any event that does not name its own reason.
+const ReasonDorguDetected = "DorguDetected"
+
 // Emitter emits standard K8s Events from the operator so that
 // dorgu detections are visible via `kubectl describe`.
 type Emitter interface {
@@ -65,7 +69,12 @@ func (e *K8sEventEmitter) Emit(_ context.Context, event *InternalEvent) error {
 
 	message := fmt.Sprintf("[dorgu] %s: %s", event.Severity, event.Message)
 
-	e.recorder.Event(ref, eventType, "DorguDetected", message)
+	reason := event.Reason
+	if reason == "" {
+		reason = ReasonDorguDetected
+	}
+
+	e.recorder.Event(ref, eventType, reason, message)
 
 	e.logger.V(1).Info("emitted K8s event",
 		"kind", ref.Kind,
