@@ -48,7 +48,7 @@ dorgu-operator {{ .Chart.AppVersion }} is installed in namespace {{ .Release.Nam
 
 5. Dorgu only watches workloads that have an ApplicationPersona. For a cluster
    that already has apps running, create them from the live Deployments
-   (requires CLI v0.8.2 or newer):
+   (requires CLI v0.9.0 or newer):
 
      dorgu persona import -n <your-namespace> --all
      dorgu persona import -n <your-namespace> --all --apply

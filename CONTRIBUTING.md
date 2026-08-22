@@ -1,6 +1,6 @@
 # Contributing to Dorgu Operator
 
-Thank you for considering contributing to the Dorgu Operator. This document covers operator-specific steps; for general practices (code of conduct, issue and PR etiquette, code standards), see the [Dorgu CLI CONTRIBUTING guidelines](https://github.com/dorgu-ai/dorgu/blob/main/CONTRIBUTING.md).
+Thank you for considering contributing to the Dorgu Operator. This document covers operator-specific steps; for general practices (code of conduct, issue and PR etiquette, code standards), see the [Dorgu CLI CONTRIBUTING guidelines](https://github.com/dorgu-ai/dorgu/blob/master/CONTRIBUTING.md).
 
 ---
 
@@ -20,7 +20,7 @@ For **security-sensitive issues** (e.g. vulnerabilities), do not open a public i
 
 ### General guidelines
 
-The [Dorgu CLI CONTRIBUTING](https://github.com/dorgu-ai/dorgu/blob/main/CONTRIBUTING.md) applies for:
+The [Dorgu CLI CONTRIBUTING](https://github.com/dorgu-ai/dorgu/blob/master/CONTRIBUTING.md) applies for:
 
 - How to fork, clone, and create branches
 - Commit message style and PR process

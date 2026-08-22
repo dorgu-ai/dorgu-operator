@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- **The install notes pointed at a CLI release that has never existed.** `NOTES.txt` told anyone onboarding a brownfield cluster that `dorgu persona import` "requires CLI v0.8.2 or newer". The CLI tags go 0.8.0, 0.8.1, 0.9.0: there is no 0.8.2, and `persona import` shipped in **v0.9.0**. Someone on 0.8.1 reading the notes would conclude they were new enough, run the command, and get "unknown command". A chart test now pins the claim, so it can only change deliberately, and the constant carries the command for re-deriving it from the CLI repo.
+- Two links in `CONTRIBUTING.md` to the CLI's contributing guide used `/blob/main/`. The CLI's default branch is `master`, so both 404'd. `README.md` already had it right.
+- **The `/release` runbook described a repo we do not have.** It told the releaser to run `make check` (no such target here; it is `make test`), `go test ./test/chart/` (no such path; the chart guards live in `./charts/dorgu-operator/`), `goreleaser release --snapshot` (there is no GoReleaser in this repo, which ships a container image and an OCI Helm chart), `go install <module-path>@<VERSION>` as the install check (nothing installable), and `git push origin main` (the default branch is `master`, so the push would fail outright). Every step now matches what `.github/workflows/release.yaml` actually does, and pre-flight gained an uncapped `golangci-lint` run: the default caps of 50 issues per linter and 3 per message mean a release check can stop counting before it has told you the tree is red.
+
 ## [0.8.0] - 2026-08-16
 
 ### Upgrade notes
