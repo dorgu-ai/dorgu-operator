@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-08-22
+
 ### Fixed
 
 - **The install notes pointed at a CLI release that has never existed.** `NOTES.txt` told anyone onboarding a brownfield cluster that `dorgu persona import` "requires CLI v0.8.2 or newer". The CLI tags go 0.8.0, 0.8.1, 0.9.0: there is no 0.8.2, and `persona import` shipped in **v0.9.0**. Someone on 0.8.1 reading the notes would conclude they were new enough, run the command, and get "unknown command". A chart test now pins the claim, so it can only change deliberately, and the constant carries the command for re-deriving it from the CLI repo.
