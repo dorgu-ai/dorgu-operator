@@ -1,5 +1,5 @@
 ---
-description: Cut a new release with auto-detected version, changelog update, tagging, and GoReleaser verification.
+description: Cut a new operator release with auto-detected version, changelog update, chart bump, tagging, and image/chart verification.
 ---
 
 # Release
@@ -41,18 +41,33 @@ If the user provides an explicit version as argument, skip auto-detection and us
 ## Step 2: Pre-flight checks
 
 ```bash
-# Must be on main branch and clean
-git branch --show-current    # must be "main" or "master"
+# Must be on the default branch and clean
+git branch --show-current    # must be "master"
 git status                   # must be clean (no uncommitted changes)
 
-# Full CI check
-make check
+# Full test suite (fmt, vet, manifests, generate, envtest)
+make test
 
-# Verify binary builds
+# Verify the manager binary builds
 make build
 ```
 
-If `make check` fails, stop and fix the issues. Do not tag a failing build.
+If `make test` fails, stop and fix the issues. Do not tag a failing build.
+
+### Lint, with the caps off
+
+`make lint` runs `golangci-lint run`, which truncates at **50 issues per linter**
+and **3 per unique message** by default. A release check that stops counting is
+how a red tree reads as a short list. Run it uncapped:
+
+```bash
+make golangci-lint    # installs the pinned version into ./bin
+./bin/golangci-lint run --max-issues-per-linter=0 --max-same-issues=0
+```
+
+Must print `0 issues.` and exit 0. Lint is enforced in CI (`.github/workflows/lint.yml`),
+but confirm it locally before tagging rather than trusting a green check: a cached
+action run can report success without having linted the current tree.
 
 ## Step 3: Validate CHANGELOG.md
 
@@ -102,9 +117,15 @@ operator image.
 sed -i '' "s/^version:.*/version: <VERSION_NO_V>/" charts/dorgu-operator/Chart.yaml
 sed -i '' "s/^appVersion:.*/appVersion: \"<VERSION_NO_V>\"/" charts/dorgu-operator/Chart.yaml
 
-# Guarded by test/chart — this must pass before tagging
-go test ./test/chart/
+# Guarded by the chart tests; these must pass before tagging
+go test ./charts/dorgu-operator/
 ```
+
+Those tests assert that `appVersion` does not lag the latest tag, that `version`
+and `appVersion` agree, that the bundled `crds/` match `config/crd/bases` byte for
+byte, and that `NOTES.txt` reports the state the install actually landed in. The
+NOTES tests need **Helm 4** on `PATH`; on Helm 3 they fail with "cluster
+unreachable", because only Helm 4 makes `--dry-run=client` genuinely client-only.
 
 ## Step 6: Commit the changelog and chart bump
 
@@ -121,13 +142,23 @@ git tag -a <VERSION> -m "Release <VERSION>"
 
 Version must follow semver (`vMAJOR.MINOR.PATCH`). Pre-releases use `-rc.N` suffix (e.g. `v0.3.0-rc.1`).
 
-## Step 8: Verify the build with GoReleaser (dry run)
+## Step 8: Verify the artifacts build (dry run)
+
+This repo ships a **container image and an OCI Helm chart**, not Go binaries. There
+is no GoReleaser here; `.github/workflows/release.yaml` builds the image with
+Docker and packages the chart with Helm. Rehearse both locally:
 
 ```bash
-goreleaser release --snapshot --clean
+# The image the release workflow will build and push
+make docker-build IMG=ghcr.io/dorgu-ai/dorgu-operator:<VERSION_NO_V>
+
+# The chart it will package, with CRDs regenerated the way CI does it
+make manifests && cp config/crd/bases/*.yaml charts/dorgu-operator/crds/
+helm package charts/dorgu-operator -d dist/
 ```
 
-Check that `./dist/` contains binaries for expected platforms (linux/darwin amd64/arm64, windows amd64).
+`dist/dorgu-operator-<VERSION_NO_V>.tgz` should appear. If `cp` changed anything
+under `crds/`, commit it: the chart test compares those files byte for byte.
 
 ## Step 9: Push tag to trigger release workflow
 
@@ -137,18 +168,31 @@ Check that `./dist/` contains binaries for expected platforms (linux/darwin amd6
 > Push now?
 
 ```bash
-git push origin main
+git push origin master
 git push origin <VERSION>
 ```
 
-The release GitHub Actions workflow triggers on tag push and runs GoReleaser to publish binaries and create the GitHub Release.
+The release workflow triggers on the tag push and runs three jobs in order: build
+and push the image to GHCR, package and push the chart to
+`oci://ghcr.io/dorgu-ai/dorgu-operator-charts`, then create the GitHub Release with
+notes extracted from `CHANGELOG.md`.
 
 ## Step 10: Verify the release
 
 After CI completes:
-1. Check GitHub Releases page for `<VERSION>` with attached binaries and checksums
-2. Test install: `go install <module-path>@<VERSION>`
-3. Verify version output matches the tag
+1. Check the GitHub Releases page for `<VERSION>` with the chart `.tgz` attached
+2. Confirm the image exists: `docker manifest inspect ghcr.io/dorgu-ai/dorgu-operator:<VERSION_NO_V>`
+3. Pull the published chart and check what it actually contains:
+   ```bash
+   helm pull oci://ghcr.io/dorgu-ai/dorgu-operator-charts/dorgu-operator \
+     --version <VERSION_NO_V> --untar --untardir /tmp/verify
+   grep -E "^(version|appVersion):" /tmp/verify/dorgu-operator/Chart.yaml
+   ls /tmp/verify/dorgu-operator/crds/          # must list all five CRDs
+   ```
+4. Render the notes a user will see on install:
+   ```bash
+   helm install verify /tmp/verify/dorgu-operator --dry-run=client -n dorgu-system
+   ```
 
 ## Rollback
 

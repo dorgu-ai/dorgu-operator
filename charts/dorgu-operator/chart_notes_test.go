@@ -123,6 +123,40 @@ func TestNotesReportAIState(t *testing.T) {
 	})
 }
 
+// personaImportMinCLIVersion is the CLI release in which `dorgu persona import`
+// first shipped, and therefore the only version the notes may name as its
+// prerequisite.
+//
+// Verify it against the CLI repo rather than trusting this constant:
+//
+//	git -C ../dorgu tag --contains \
+//	  "$(git -C ../dorgu log --format=%H --reverse -- internal/cli/persona_import.go | head -1)" | sort -V | head -1
+//
+// The notes shipped in 0.8.0 claiming "v0.8.2 or newer", a CLI release that has
+// never existed: the tags go 0.8.0, 0.8.1, 0.9.0. Anyone who read the notes and
+// went looking for it found nothing.
+const personaImportMinCLIVersion = "v0.9.0"
+
+// TestNotesNameTheRealPersonaImportVersion pins the CLI version the notes
+// require for `dorgu persona import`.
+//
+// This cannot prove the constant is right: the notes reference a release in a
+// different repository, and reaching for the CLI's tag list would make the chart
+// tests depend on the network. What it does buy is that the claim can only change
+// deliberately, with the verification command above in view, rather than drifting
+// into another version that was never cut.
+func TestNotesNameTheRealPersonaImportVersion(t *testing.T) {
+	notes := helmNotes(t)
+
+	mustContain(t, notes, "requires CLI "+personaImportMinCLIVersion+" or newer",
+		"the persona import prerequisite must name a CLI release that exists")
+
+	// Catch a stale claim left behind next to a corrected one.
+	for _, neverReleased := range []string{"v0.8.2", "v0.8.3"} {
+		mustNotContain(t, notes, neverReleased, "no CLI version that was never released")
+	}
+}
+
 // TestNotesPreserveTheApprovalInvariant guards the product's core promise
 // against a copy edit: the notes must not suggest the operator changes
 // workloads on its own.
