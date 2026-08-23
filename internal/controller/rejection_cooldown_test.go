@@ -110,7 +110,7 @@ func proposalRun(t *testing.T, diag *diagnosis.Diagnosis, objs ...client.Object)
 		EventEmitter: &noopEmitter{},
 	}
 
-	err := r.processDiagnosis(context.Background(), diag, map[string]bool{})
+	err := r.processDiagnosis(context.Background(), personaSubject(*diag.PersonaRef), diag, map[string]bool{})
 	return proposer.calls, err
 }
 
@@ -230,7 +230,7 @@ func TestRejectionCheck_FailsClosed(t *testing.T) {
 		EventEmitter: &noopEmitter{},
 	}
 
-	require.NoError(t, r.processDiagnosis(context.Background(), aiDiagnosis(), map[string]bool{}))
+	require.NoError(t, r.processDiagnosis(context.Background(), personaSubject(*aiDiagnosis().PersonaRef), aiDiagnosis(), map[string]bool{}))
 	assert.Zero(t, proposer.calls, "an unreadable rejection history must not produce a proposal")
 	assert.True(t, sink.hasError("rejection"),
 		"the skipped proposal must be reported at ERROR, got: %v", sink.messages())

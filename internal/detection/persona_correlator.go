@@ -43,11 +43,18 @@ func NewPersonaCorrelator(c client.Reader, logger logr.Logger) PersonaCorrelator
 	return &personaCorrelator{client: c, logger: logger}
 }
 
-// Correlate sets PersonaRef on signals that can be matched to an ApplicationPersona.
-// Matching strategy:
-//  1. List all ApplicationPersonas in the signal's namespace
-//  2. Match by persona name == resource name prefix (handles pod suffixes)
-//  3. If matched, set signal.PersonaRef
+// Correlate sets PersonaRef on signals that can be attributed to exactly one
+// ApplicationPersona in the signal's own namespace.
+//
+// Two rules hold, and they are the reason a diagnosis can be trusted to be
+// about one application:
+//
+//   - Namespace scoping. Only personas in the signal's namespace are
+//     considered, so an app can never claim another namespace's pod.
+//   - Exactly one owner. A resource that several personas claim is left
+//     unattributed rather than handed to whichever persona the API server
+//     happened to list first. An unattributed incident is honest; an incident
+//     filed against the wrong app is not (F-02).
 func (pc *personaCorrelator) Correlate(ctx context.Context, signals []Signal) {
 	cache := make(map[string][]dorguv1.ApplicationPersona)
 
@@ -75,39 +82,98 @@ func (pc *personaCorrelator) Correlate(ctx context.Context, signals []Signal) {
 			cache[ns] = personas
 		}
 
-		for _, p := range personas {
-			if matchesPersona(sig, &p) {
-				sig.PersonaRef = &dorguv1.PersonaReference{
-					Kind:      "ApplicationPersona",
-					Name:      p.Name,
-					Namespace: p.Namespace,
-				}
-				break
+		matched := personasClaiming(sig, personas)
+		switch len(matched) {
+		case 0:
+			// Left unattributed on purpose. The signal still becomes an
+			// incident of its own; it just does not become somebody else's.
+		case 1:
+			sig.PersonaRef = &dorguv1.PersonaReference{
+				Kind:      "ApplicationPersona",
+				Name:      matched[0].Name,
+				Namespace: matched[0].Namespace,
 			}
+		default:
+			pc.logger.Info("signal left unattributed: more than one persona claims the resource",
+				"namespace", ns,
+				"resource", sig.Resource.Name,
+				"personas", personaNames(matched),
+			)
 		}
 	}
 }
 
-// matchesPersona checks if a signal's resource matches an ApplicationPersona.
-// Match criteria:
-//   - Resource name equals persona name, or starts with persona name + "-"
-//   - Also checks spec.Name if different from metadata.Name
-func matchesPersona(sig *Signal, persona *dorguv1.ApplicationPersona) bool {
-	resourceName := sig.Resource.Name
-	if resourceName == "" {
-		return false
-	}
-	personaName := persona.Name
+// personasClaiming returns the personas that claim a signal's resource, keeping
+// only the most specific claim.
+//
+// Personas "api" and "api-server" both match pod "api-server-7f9d-x2q" under
+// the documented prefix rule, but only one of them is the pod's application:
+// the longer name is the specific claim and the shorter one is a coincidence of
+// prefixes. A tie at the same specificity is a genuine ambiguity and returns
+// every tied persona, so the caller can decline to guess.
+func personasClaiming(sig *Signal, personas []dorguv1.ApplicationPersona) []*dorguv1.ApplicationPersona {
+	var matched []*dorguv1.ApplicationPersona
+	best := 0
 
-	if resourceName == personaName || strings.HasPrefix(resourceName, personaName+"-") {
-		return true
-	}
-
-	if persona.Spec.Name != "" && persona.Spec.Name != personaName {
-		if resourceName == persona.Spec.Name || strings.HasPrefix(resourceName, persona.Spec.Name+"-") {
-			return true
+	for i := range personas {
+		length := claimLength(sig.Resource.Name, &personas[i])
+		switch {
+		case length == 0 || length < best:
+			continue
+		case length > best:
+			best = length
+			matched = []*dorguv1.ApplicationPersona{&personas[i]}
+		default:
+			matched = append(matched, &personas[i])
 		}
 	}
 
-	return false
+	return matched
+}
+
+// claimLength returns the length of the persona name that claims resourceName,
+// or 0 when the persona does not claim it. A resource is claimed when its name
+// equals the persona name or starts with the persona name followed by a hyphen,
+// checked against both metadata.name and spec.name.
+func claimLength(resourceName string, persona *dorguv1.ApplicationPersona) int {
+	if resourceName == "" {
+		return 0
+	}
+
+	best := 0
+	for _, name := range []string{persona.Name, persona.Spec.Name} {
+		if name == "" || len(name) <= best {
+			continue
+		}
+		if resourceName == name || strings.HasPrefix(resourceName, name+"-") {
+			best = len(name)
+		}
+	}
+	return best
+}
+
+// matchesPersona reports whether a persona claims a signal's resource at all,
+// ignoring how specifically. Attribution uses personasClaiming; this is for
+// callers asking the simpler "is this resource this app's?" question.
+func matchesPersona(sig *Signal, persona *dorguv1.ApplicationPersona) bool {
+	return claimLength(sig.Resource.Name, persona) > 0
+}
+
+// NameClaimedByPersona reports whether a resource name belongs to the named
+// persona under the same prefix rule attribution uses. Callers outside
+// detection use it to ask which pods an incident's workload owns.
+func NameClaimedByPersona(resourceName, personaName string) bool {
+	if resourceName == "" || personaName == "" {
+		return false
+	}
+	return resourceName == personaName || strings.HasPrefix(resourceName, personaName+"-")
+}
+
+// personaNames lists persona names for a log line.
+func personaNames(personas []*dorguv1.ApplicationPersona) []string {
+	names := make([]string, 0, len(personas))
+	for _, p := range personas {
+		names = append(names, p.Name)
+	}
+	return names
 }

@@ -323,7 +323,7 @@ func podMetadata(pod corev1.Pod) map[string]string {
 		"nodeName":  pod.Spec.NodeName,
 	}
 	if deploy := ownerDeployment(pod); deploy != "" {
-		meta["deployment"] = deploy
+		meta[MetadataKeyDeployment] = deploy
 	}
 	return meta
 }

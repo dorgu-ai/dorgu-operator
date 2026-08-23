@@ -63,6 +63,18 @@ spec:
           spec:
             description: Spec defines the desired state of IncidentMemory.
             properties:
+              attribution:
+                description: |-
+                  Attribution records how confidently this incident was tied to an
+                  application. "persona" means personaRef names a Persona that exists.
+                  "unattributed" means no single Persona claimed the signals, so the
+                  incident is recorded against the workload itself rather than being
+                  folded into a neighbouring application's incident. An unattributed
+                  incident is a real outage Dorgu can see but cannot diagnose or remediate.
+                enum:
+                - persona
+                - unattributed
+                type: string
               category:
                 description: Category classifies the incident type.
                 enum:
@@ -128,7 +140,10 @@ spec:
                 - source
                 type: object
               personaRef:
-                description: PersonaRef references the affected Persona.
+                description: |-
+                  PersonaRef references the affected Persona. On an incident whose
+                  attribution is "unattributed" it names the workload the signals came
+                  from, and no Persona of that name need exist.
                 properties:
                   kind:
                     description: Kind is ApplicationPersona or ClusterPersona.

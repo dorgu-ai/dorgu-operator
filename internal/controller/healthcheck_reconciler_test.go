@@ -23,6 +23,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -183,7 +184,7 @@ var _ = Describe("HealthCheckReconciler", func() {
 					{Signal: detection.Signal{Type: detection.SignalOOMKilled}},
 				},
 			}
-			key := r.signalKey(diag)
+			key := r.signalKey(personaSubject(*diag.PersonaRef), diag)
 			Expect(key).To(Equal("ApplicationPersona/default/api-server/resource/OOMKilled"))
 		})
 	})
@@ -369,7 +370,7 @@ var _ = Describe("HealthCheckReconciler", func() {
 			}
 		})
 
-		It("should auto-resolve incidents when signal clears", func() {
+		It("should auto-resolve incidents when the workload is gone", func() {
 			persona := &dorguv1.ApplicationPersona{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "hc-resolve-app",
@@ -444,7 +445,8 @@ var _ = Describe("HealthCheckReconciler", func() {
 			emptyCollector := &stubCollector{name: "test-collector", signals: nil}
 			reconciler.Detection = detection.NewEngine(testLogger, emptyCollector)
 
-			// Run reconcile again — should resolve.
+			// Run reconcile again: it should resolve. There is no Deployment and
+			// no pod for this persona, so the workload is genuinely gone.
 			reconciler.reconcile(testCtx)
 
 			// Verify incident resolved.
@@ -455,10 +457,113 @@ var _ = Describe("HealthCheckReconciler", func() {
 			}, &resolved)).To(Succeed())
 			Expect(resolved.Status.Phase).To(Equal("Resolved"))
 			Expect(resolved.Spec.Resolution).NotTo(BeNil())
-			Expect(resolved.Spec.Resolution.Action).To(Equal("auto-resolved"))
+			Expect(resolved.Spec.Resolution.Action).To(HavePrefix(ResolutionActionPrefix))
+			Expect(resolved.Spec.Resolution.Action).To(ContainSubstring("no longer running"),
+				"a workload that was deleted must not be reported as having recovered")
 
 			// Clean up.
 			_ = k8sClient.Delete(testCtx, &resolved)
+		})
+
+		// F-01, against a real API server. platform/checkout reached 51
+		// occurrences and was then marked Resolved with its pod still in
+		// CrashLoopBackOff, because the crash loop's lengthening backoff stops
+		// producing signals long before the pod recovers.
+		It("should never resolve an incident whose pod is still crash-looping", func() {
+			persona := &dorguv1.ApplicationPersona{
+				ObjectMeta: metav1.ObjectMeta{Name: "hc-crash-app", Namespace: "default"},
+				Spec:       dorguv1.ApplicationPersonaSpec{Name: "hc-crash-app", Type: "api"},
+			}
+			Expect(k8sClient.Create(testCtx, persona)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(testCtx, persona) }()
+
+			pod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "hc-crash-app-57c95bf9b8-47vp9",
+					Namespace: "default",
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{Name: "app", Image: "example/app:1"}},
+				},
+			}
+			Expect(k8sClient.Create(testCtx, pod)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(testCtx, pod) }()
+
+			pod.Status = corev1.PodStatus{
+				Phase: corev1.PodRunning,
+				Conditions: []corev1.PodCondition{{
+					Type:               corev1.PodReady,
+					Status:             corev1.ConditionFalse,
+					LastTransitionTime: metav1.Now(),
+				}},
+				ContainerStatuses: []corev1.ContainerStatus{{
+					Name:         "app",
+					Image:        "example/app:1",
+					Ready:        false,
+					RestartCount: 24,
+					State: corev1.ContainerState{
+						Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"},
+					},
+				}},
+			}
+			Expect(k8sClient.Status().Update(testCtx, pod)).To(Succeed())
+
+			stale := metav1.Time{Time: time.Now().Add(-ResolutionGracePeriod - time.Minute)}
+			im := &dorguv1.IncidentMemory{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "im-default-hc-crash-app-crashloopbackoff-51",
+					Namespace: "default",
+					Labels: map[string]string{
+						LabelPersonaKind:      "ApplicationPersona",
+						LabelPersonaName:      "hc-crash-app",
+						LabelPersonaNamespace: "default",
+						LabelCategory:         "health",
+						LabelSeverity:         "critical",
+						LabelSignal:           "CrashLoopBackOff",
+						LabelPhase:            PhaseDetected,
+						LabelAttribution:      AttributionPersona,
+					},
+				},
+				Spec: dorguv1.IncidentMemorySpec{
+					PersonaRef: dorguv1.PersonaReference{
+						Kind: "ApplicationPersona", Name: "hc-crash-app", Namespace: "default",
+					},
+					Attribution: AttributionPersona,
+					Category:    "health",
+					Severity:    "critical",
+					Detection: dorguv1.DetectionInfo{
+						Signal:            "CrashLoopBackOff",
+						Source:            "pod-failure-detector",
+						FirstSeen:         stale,
+						LastSeen:          stale,
+						AffectedResources: []dorguv1.ResourceReference{},
+					},
+				},
+			}
+			Expect(k8sClient.Create(testCtx, im)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(testCtx, im) }()
+
+			im.Status.Phase = PhaseDetected
+			im.Status.OccurrenceCount = 51
+			Expect(k8sClient.Status().Update(testCtx, im)).To(Succeed())
+
+			reconciler := &HealthCheckReconciler{
+				Client:       k8sClient,
+				Detection:    detection.NewEngine(testLogger, &stubCollector{name: "test-collector"}),
+				Diagnosis:    diagnosis.NewEngine(testLogger, diagnosis.NewRuleBasedProvider(testLogger)),
+				EventStore:   &noopEventStore{},
+				EventEmitter: &noopEmitter{},
+				Logger:       testLogger,
+			}
+			reconciler.reconcile(testCtx)
+
+			var after dorguv1.IncidentMemory
+			Expect(k8sClient.Get(testCtx, types.NamespacedName{
+				Name: im.Name, Namespace: im.Namespace,
+			}, &after)).To(Succeed())
+			Expect(after.Status.Phase).To(Equal(PhaseDetected),
+				"the pod is still in CrashLoopBackOff, so the incident must stay open")
+			Expect(after.Spec.Resolution).To(BeNil())
 		})
 
 		It("should create separate incidents for different issues", func() {

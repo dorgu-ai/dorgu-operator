@@ -71,8 +71,20 @@ type RemediationReference struct {
 
 // IncidentMemorySpec defines the desired state of IncidentMemory.
 type IncidentMemorySpec struct {
-	// PersonaRef references the affected Persona.
+	// PersonaRef references the affected Persona. On an incident whose
+	// attribution is "unattributed" it names the workload the signals came
+	// from, and no Persona of that name need exist.
 	PersonaRef PersonaReference `json:"personaRef"`
+
+	// Attribution records how confidently this incident was tied to an
+	// application. "persona" means personaRef names a Persona that exists.
+	// "unattributed" means no single Persona claimed the signals, so the
+	// incident is recorded against the workload itself rather than being
+	// folded into a neighbouring application's incident. An unattributed
+	// incident is a real outage Dorgu can see but cannot diagnose or remediate.
+	// +kubebuilder:validation:Enum=persona;unattributed
+	// +optional
+	Attribution string `json:"attribution,omitempty"`
 
 	// Category classifies the incident type.
 	// +kubebuilder:validation:Enum=resource;scaling;health;security;deployment;dependency;node;controlplane
