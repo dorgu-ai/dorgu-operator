@@ -21,12 +21,13 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-logr/logr"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
@@ -60,6 +61,16 @@ const (
 	LabelSignal           = "dorgu.io/signal"
 	LabelPhase            = "dorgu.io/phase"
 
+	// LabelAttribution records whether an incident could be tied to a persona,
+	// so "what does Dorgu not understand about this cluster?" is one query.
+	LabelAttribution = "dorgu.io/attribution"
+
+	// Attribution values. AttributionUnattributed means the signals were real
+	// but no single persona claimed them, so personaRef names the workload
+	// rather than a persona that exists.
+	AttributionPersona      = "persona"
+	AttributionUnattributed = "unattributed"
+
 	// IncidentMemory phase constants.
 	PhaseDetected      = "Detected"
 	PhaseInvestigating = "Investigating"
@@ -84,6 +95,7 @@ const (
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=replicasets,verbs=get;list;watch
+// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch
 // +kubebuilder:rbac:groups=metrics.k8s.io,resources=pods,verbs=get;list
 
 // HealthCheckReconciler runs detection and diagnosis on a fixed interval,
@@ -138,37 +150,26 @@ func (r *HealthCheckReconciler) reconcile(ctx context.Context) {
 		return
 	}
 
-	// 2. Run diagnosis on signals.
-	diagnoses, err := r.Diagnosis.Analyze(ctx, signals)
-	if err != nil {
-		r.Logger.Error(err, "failed to analyze signals")
-		return
+	// 2. Split the signals by application before diagnosing anything. Diagnosis
+	// used to run once across the whole cluster, which let a single rule
+	// describe four unrelated apps in three namespaces as one incident and led
+	// the planner to invent a node-level memory pressure event (F-02).
+	groups := detection.GroupSignals(signals)
+
+	// 3. Diagnose and record each application on its own.
+	activeSignalKeys := make(map[string]bool)
+	attempted, discarded := 0, 0
+	for i := range groups {
+		groupAttempted, groupDiscarded := r.processGroup(ctx, &groups[i], activeSignalKeys)
+		attempted += groupAttempted
+		discarded += groupDiscarded
 	}
 
 	r.Logger.V(1).Info("reconciliation cycle results",
 		"signals", len(signals),
-		"diagnoses", len(diagnoses),
+		"groups", len(groups),
+		"diagnoses", attempted,
 	)
-
-	// 3. Process each diagnosis: create/update IncidentMemory + store events.
-	activeSignalKeys := make(map[string]bool)
-	attempted, discarded := 0, 0
-	for i := range diagnoses {
-		diag := &diagnoses[i]
-		// Only track diagnoses with a PersonaRef for resolution detection.
-		// Diagnoses without a PersonaRef are skipped by createIncident anyway.
-		if diag.PersonaRef == nil {
-			continue
-		}
-		attempted++
-		if err := r.processDiagnosis(ctx, diag, activeSignalKeys); err != nil {
-			discarded++
-			r.Logger.Error(err, "failed to process diagnosis",
-				"summary", diag.Summary,
-				"category", diag.Category,
-			)
-		}
-	}
 	r.logCycleSummary(attempted, discarded)
 
 	// 4. Check for resolved incidents.
@@ -180,6 +181,117 @@ func (r *HealthCheckReconciler) reconcile(ctx context.Context) {
 	if r.WebSocket != nil {
 		r.broadcastHealthSummary(ctx)
 	}
+}
+
+// processGroup diagnoses one application's signals in isolation and records the
+// result, returning how many diagnoses it tried to persist and how many it
+// lost. A rule handed only one application's signals can only ever produce one
+// application's diagnosis, which is the whole reason grouping happens first.
+func (r *HealthCheckReconciler) processGroup(
+	ctx context.Context,
+	group *detection.SignalGroup,
+	activeSignalKeys map[string]bool,
+) (attempted, discarded int) {
+	diagnoses, err := r.Diagnosis.Analyze(ctx, group.Signals)
+	if err != nil {
+		r.Logger.Error(err, "failed to analyze signals", "group", group.Key)
+		return 0, 0
+	}
+
+	subject, ok := incidentSubjectFor(group)
+	if !ok {
+		// Cluster-scoped findings (nodes, control plane) belong to no
+		// application. They are diagnosed and logged, but giving them an owner
+		// they do not have is the mistake this change exists to undo.
+		r.Logger.V(1).Info("skipping cluster-scoped diagnoses: no application to file them against",
+			"group", group.Key, "diagnoses", len(diagnoses))
+		return 0, 0
+	}
+
+	for i := range diagnoses {
+		diag := &diagnoses[i]
+		attempted++
+		if err := r.processDiagnosis(ctx, subject, diag, activeSignalKeys); err != nil {
+			discarded++
+			r.Logger.Error(err, "failed to process diagnosis",
+				"summary", diag.Summary,
+				"category", diag.Category,
+			)
+		}
+	}
+
+	return attempted, discarded
+}
+
+// incidentSubject is the application an incident is filed against.
+type incidentSubject struct {
+	// personaRef is written to the incident. On an unattributed subject it
+	// names the workload rather than a persona that exists, which is why the
+	// unattributed flag is recorded next to it instead of inferred from it.
+	personaRef dorguv1.PersonaReference
+
+	// unattributed marks a subject no single persona claimed.
+	unattributed bool
+
+	// namespace is where the incident lives.
+	namespace string
+}
+
+// personaSubject builds the subject for an application Dorgu knows by persona.
+func personaSubject(ref dorguv1.PersonaReference) incidentSubject {
+	return incidentSubject{personaRef: ref, namespace: ref.Namespace}
+}
+
+// incidentSubjectFor derives the subject of a signal group, reporting false
+// when the group is about no application at all.
+func incidentSubjectFor(group *detection.SignalGroup) (incidentSubject, bool) {
+	switch group.Scope {
+	case detection.ScopePersona:
+		if group.PersonaRef == nil {
+			return incidentSubject{}, false
+		}
+		subject := personaSubject(*group.PersonaRef)
+		if subject.namespace == "" {
+			subject.namespace = group.Namespace
+		}
+		return subject, true
+
+	case detection.ScopeUnattributed:
+		// Recorded against the workload, and honest about it. An incident
+		// Dorgu cannot attribute is still an outage the user needs to see;
+		// folding it into a neighbouring app to give it an owner is what
+		// poisoned every plan in the clean-room run.
+		return incidentSubject{
+			personaRef: dorguv1.PersonaReference{
+				Kind:      "ApplicationPersona",
+				Name:      group.Workload,
+				Namespace: group.Namespace,
+			},
+			unattributed: true,
+			namespace:    group.Namespace,
+		}, true
+
+	default:
+		return incidentSubject{}, false
+	}
+}
+
+// attribution names the subject's attribution for a label and for the spec.
+func (s incidentSubject) attribution() string {
+	if s.unattributed {
+		return AttributionUnattributed
+	}
+	return AttributionPersona
+}
+
+// incidentNameKey is the persona segment of the generated incident name. An
+// unattributed incident says so in its own name, so it can never collide with
+// the incident raised once a persona does claim the workload.
+func (s incidentSubject) incidentNameKey() string {
+	if s.unattributed {
+		return s.personaRef.Name + "-unattributed"
+	}
+	return s.personaRef.Name
 }
 
 // logCycleSummary closes each cycle with a count of the diagnoses it could not
@@ -204,17 +316,18 @@ func (r *HealthCheckReconciler) logCycleSummary(attempted, discarded int) {
 // stores events, emits K8s events for high-severity signals, and proposes remediation.
 func (r *HealthCheckReconciler) processDiagnosis(
 	ctx context.Context,
+	subject incidentSubject,
 	diag *diagnosis.Diagnosis,
 	activeSignalKeys map[string]bool,
 ) error {
 	// Track the signal key for resolution detection.
-	signalKey := r.signalKey(diag)
+	signalKey := r.signalKey(subject, diag)
 	activeSignalKeys[signalKey] = true
 
 	now := metav1.Now()
 
 	// Check if matching IncidentMemory already exists.
-	existing, err := r.findMatchingIncident(ctx, diag)
+	existing, err := r.findMatchingIncident(ctx, subject, diag)
 	if err != nil {
 		return fmt.Errorf("finding matching incident: %w", err)
 	}
@@ -222,17 +335,26 @@ func (r *HealthCheckReconciler) processDiagnosis(
 	var incident *dorguv1.IncidentMemory
 	if existing != nil {
 		// Update existing incident.
-		if err := r.updateExistingIncident(ctx, existing, diag, now); err != nil {
+		if err := r.updateExistingIncident(ctx, existing, subject, diag, now); err != nil {
 			return err
 		}
 		incident = existing
 	} else {
 		// Create new IncidentMemory.
-		if err := r.createIncident(ctx, diag, now); err != nil {
+		if err := r.createIncident(ctx, subject, diag, now); err != nil {
 			return err
 		}
 		// Re-fetch the incident for proposer.
-		incident, _ = r.findMatchingIncident(ctx, diag)
+		incident, _ = r.findMatchingIncident(ctx, subject, diag)
+	}
+
+	// An unattributed incident has no persona to remediate against, and a plan
+	// written against a persona that does not exist is worse than no plan.
+	// Report the outage, say what is missing, and stop there.
+	if subject.unattributed {
+		r.Logger.V(1).Info("remediation not proposed: the workload has no persona",
+			"namespace", subject.namespace, "workload", subject.personaRef.Name)
+		return nil
 	}
 
 	// Propose remediation if proposer is configured and incident is not resolved.
@@ -279,20 +401,20 @@ func (r *HealthCheckReconciler) processDiagnosis(
 	return nil
 }
 
-// findMatchingIncident searches for an active IncidentMemory matching a diagnosis.
+// findMatchingIncident searches for an active IncidentMemory matching a
+// diagnosis about a subject. Attribution is part of the match: an unattributed
+// incident and the incident raised once a persona claims the same workload are
+// two different records, and neither may be mistaken for the other.
 func (r *HealthCheckReconciler) findMatchingIncident(
 	ctx context.Context,
+	subject incidentSubject,
 	diag *diagnosis.Diagnosis,
 ) (*dorguv1.IncidentMemory, error) {
-	if diag.PersonaRef == nil {
-		return nil, nil
-	}
-
 	primarySignal := primarySignalType(diag)
 
 	labelSelector := labels.SelectorFromSet(labels.Set{
-		LabelPersonaKind: diag.PersonaRef.Kind,
-		LabelPersonaName: diag.PersonaRef.Name,
+		LabelPersonaKind: subject.personaRef.Kind,
+		LabelPersonaName: subject.personaRef.Name,
 		LabelCategory:    diag.Category,
 		LabelSignal:      string(primarySignal),
 	})
@@ -301,8 +423,8 @@ func (r *HealthCheckReconciler) findMatchingIncident(
 	opts := []client.ListOption{
 		client.MatchingLabelsSelector{Selector: labelSelector},
 	}
-	if diag.PersonaRef.Namespace != "" {
-		opts = append(opts, client.InNamespace(diag.PersonaRef.Namespace))
+	if subject.namespace != "" {
+		opts = append(opts, client.InNamespace(subject.namespace))
 	}
 
 	if err := r.Client.List(ctx, &list, opts...); err != nil {
@@ -311,36 +433,54 @@ func (r *HealthCheckReconciler) findMatchingIncident(
 
 	for i := range list.Items {
 		im := &list.Items[i]
-		if im.Status.Phase != PhaseResolved {
-			return im, nil
+		if im.Status.Phase == PhaseResolved || !subject.matchesIncident(im) {
+			continue
 		}
+		return im, nil
 	}
 
 	return nil, nil
 }
 
+// matchesIncident reports whether an existing incident is the same record this
+// subject would write.
+//
+// Attribution has to agree: an unattributed incident and the incident raised
+// once a persona claims the same workload are two different records. An
+// incident written before the field existed states nothing, and adopting it is
+// better than raising a duplicate beside it, so it is treated as the
+// persona-attributed record it was; applyDiagnosisToSpec backfills the field on
+// the way through.
+func (s incidentSubject) matchesIncident(im *dorguv1.IncidentMemory) bool {
+	if im.Spec.Attribution == "" {
+		return !s.unattributed
+	}
+	return im.Spec.Attribution == s.attribution()
+}
+
 // updateExistingIncident updates an active IncidentMemory with new diagnosis data.
 //
-// Both writes are wrapped in retry-on-conflict with a re-fetch. The object
-// handed in comes from a List, so its ResourceVersion is a snapshot: any
-// concurrent write (the incident controller stamping conditions, the remediation
-// controller resolving) invalidates it and the bare Update that used to sit here
-// failed with "the object has been modified". That error was returned, the
-// diagnosis behind it was dropped, and nobody was told. 176 diagnoses went that
-// way in one 4h20m window, and because AI enhancement lands via this path, the
-// discarded ones were the better ones (F-01).
+// Both writes retry with a re-fetch, on Conflict and on NotFound alike. The
+// object handed in comes from a List, so its ResourceVersion is a snapshot: any
+// concurrent write (the incident controller stamping conditions, the
+// remediation controller resolving) invalidates it and a bare Update fails with
+// "the object has been modified". NotFound is the second half, and the half
+// CF4-2 missed: reads come from the manager's cache, which can lag a write the
+// API server has already accepted, and a Get that lands in that gap used to end
+// the diagnosis then and there (F-05).
 func (r *HealthCheckReconciler) updateExistingIncident(
 	ctx context.Context,
 	im *dorguv1.IncidentMemory,
+	subject incidentSubject,
 	diag *diagnosis.Diagnosis,
 	now metav1.Time,
 ) error {
-	specErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	specErr := retryIncidentWrite(func(int) error {
 		var fresh dorguv1.IncidentMemory
 		if err := r.Client.Get(ctx, client.ObjectKeyFromObject(im), &fresh); err != nil {
 			return err
 		}
-		applyDiagnosisToSpec(&fresh, diag, now)
+		applyDiagnosisToSpec(&fresh, subject, diag, now)
 		if err := r.Client.Update(ctx, &fresh); err != nil {
 			return err
 		}
@@ -351,10 +491,10 @@ func (r *HealthCheckReconciler) updateExistingIncident(
 		return r.reportDiscardedDiagnosis(ctx, im, diag, "recording the root cause", specErr)
 	}
 
-	// Update status subresource with retry-on-conflict. Re-fetching inside
-	// the loop ensures we always carry the latest ResourceVersion even if a
-	// concurrent controller wrote to the object between attempts.
-	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	// Update the status subresource the same way. Re-fetching inside the loop
+	// ensures we always carry the latest ResourceVersion even if a concurrent
+	// controller wrote to the object between attempts.
+	err := retryIncidentWrite(func(int) error {
 		if err := r.Client.Get(ctx, client.ObjectKeyFromObject(im), im); err != nil {
 			return err
 		}
@@ -397,38 +537,36 @@ func (r *HealthCheckReconciler) updateExistingIncident(
 // createIncident creates a new IncidentMemory CRD from a diagnosis.
 func (r *HealthCheckReconciler) createIncident(
 	ctx context.Context,
+	subject incidentSubject,
 	diag *diagnosis.Diagnosis,
 	now metav1.Time,
 ) error {
-	if diag.PersonaRef == nil {
-		r.Logger.V(1).Info("skipping diagnosis without persona ref", "summary", diag.Summary)
-		return nil
-	}
-
 	primarySignal := primarySignalType(diag)
-	namespace := diag.PersonaRef.Namespace
+	namespace := subject.namespace
 	if namespace == "" {
 		namespace = "default"
 	}
 
 	im := &dorguv1.IncidentMemory{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      generateIncidentName(namespace, diag.PersonaRef.Name, string(primarySignal)),
+			Name:      generateIncidentName(namespace, subject.incidentNameKey(), string(primarySignal)),
 			Namespace: namespace,
 			Labels: map[string]string{
-				LabelPersonaKind:      diag.PersonaRef.Kind,
-				LabelPersonaName:      diag.PersonaRef.Name,
+				LabelPersonaKind:      subject.personaRef.Kind,
+				LabelPersonaName:      subject.personaRef.Name,
 				LabelPersonaNamespace: namespace,
 				LabelCategory:         diag.Category,
 				LabelSeverity:         string(diag.Severity),
 				LabelSignal:           string(primarySignal),
 				LabelPhase:            PhaseDetected,
+				LabelAttribution:      subject.attribution(),
 			},
 		},
 		Spec: dorguv1.IncidentMemorySpec{
-			PersonaRef: *diag.PersonaRef,
-			Category:   diag.Category,
-			Severity:   string(diag.Severity),
+			PersonaRef:  subject.personaRef,
+			Attribution: subject.attribution(),
+			Category:    diag.Category,
+			Severity:    string(diag.Severity),
 			Detection: dorguv1.DetectionInfo{
 				Signal:            string(primarySignal),
 				Source:            diag.Provider,
@@ -436,20 +574,44 @@ func (r *HealthCheckReconciler) createIncident(
 				LastSeen:          now,
 				AffectedResources: toResourceRefs(diag.AffectedResources),
 			},
-			RootCause: buildRootCause(diag),
+			RootCause: annotateUnattributed(buildRootCause(diag), subject),
 		},
 	}
 
-	if err := r.Client.Create(ctx, im); err != nil {
-		return fmt.Errorf("creating IncidentMemory: %w", err)
+	switch createErr := r.Client.Create(ctx, im); {
+	case createErr == nil:
+	case apierrors.IsAlreadyExists(createErr):
+		// The incident is already there and our cached List did not see it yet.
+		// Fold this diagnosis into the object that really exists rather than
+		// treating a stale read as a reason to throw away a paid-for analysis
+		// (F-05).
+		var existing dorguv1.IncidentMemory
+		getErr := retryIncidentWrite(func(int) error {
+			return r.Client.Get(ctx, client.ObjectKeyFromObject(im), &existing)
+		})
+		if getErr != nil {
+			return r.reportDiscardedDiagnosis(ctx, im, diag,
+				"adopting the incident that already existed", getErr)
+		}
+		r.Logger.V(1).Info("adopted an incident the cache had not caught up with", "name", im.Name)
+		return r.updateExistingIncident(ctx, &existing, subject, diag, now)
+	default:
+		return fmt.Errorf("creating IncidentMemory: %w", createErr)
 	}
 
-	// Set initial status, retrying on conflict with a re-fetch. Without the
-	// retry a single concurrent write left the incident created but statusless,
-	// and took the diagnosis down with it (F-01).
-	statusErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		if err := r.Client.Get(ctx, client.ObjectKeyFromObject(im), im); err != nil {
-			return err
+	// Set the initial status, retrying on Conflict and on NotFound. The first
+	// attempt writes through the object Create just returned, which already
+	// carries a valid ResourceVersion, so the common path never reads at all.
+	// Re-reading unconditionally is what exposed the write to a cache that had
+	// not caught up: the Get returned "not found" for an object the API server
+	// had just accepted, retry.RetryOnConflict did not consider that worth
+	// another try, and the diagnosis died there. Five of the first six
+	// diagnoses in a fresh install were lost this way (F-05).
+	statusErr := retryIncidentWrite(func(attempt int) error {
+		if attempt > 0 {
+			if err := r.Client.Get(ctx, client.ObjectKeyFromObject(im), im); err != nil {
+				return err
+			}
 		}
 		im.Status.Phase = PhaseDetected
 		im.Status.OccurrenceCount = 1
@@ -468,6 +630,7 @@ func (r *HealthCheckReconciler) createIncident(
 		"category", diag.Category,
 		"severity", diag.Severity,
 		"signal", primarySignal,
+		"attribution", subject.attribution(),
 	)
 
 	// Broadcast incident creation via WebSocket.
@@ -484,8 +647,8 @@ func (r *HealthCheckReconciler) createIncident(
 			Category:    diag.Category,
 			Signal:      string(primarySignal),
 			Phase:       PhaseDetected,
-			PersonaName: diag.PersonaRef.Name,
-			PersonaKind: diag.PersonaRef.Kind,
+			PersonaName: subject.personaRef.Name,
+			PersonaKind: subject.personaRef.Kind,
 			Summary:     summary,
 		})
 	}
@@ -501,8 +664,21 @@ func (r *HealthCheckReconciler) createIncident(
 	return nil
 }
 
-// resolveCleared checks active incidents and resolves those whose signals have cleared.
-// Only queries non-resolved incidents using label selectors for efficiency.
+// resolveCleared closes the incidents whose applications can be shown to have
+// recovered, and leaves every other incident open.
+//
+// The old rule was two absences: no matching signal this cycle, and a grace
+// period since the last one. Neither is evidence of anything. A crash loop
+// backs off in lengthening intervals up to five minutes, so a pod that is
+// completely dead falls silent inside the grace period and reads as fixed. That
+// is how platform/checkout reached 51 occurrences, went Resolved, and stayed in
+// CrashLoopBackOff, while dorgu health reported one active incident with three
+// applications down (F-01).
+//
+// Silence now only opens the question. verifyRecovery has to answer it with
+// something observed: pods that exist, are Ready, and have stayed Ready without
+// restarting for RecoveryStabilityWindow. Anything else, including any error
+// reading the cluster, leaves the incident open.
 func (r *HealthCheckReconciler) resolveCleared(ctx context.Context, activeSignalKeys map[string]bool) error {
 	// Use label selector to only fetch non-resolved incidents.
 	var list dorguv1.IncidentMemoryList
@@ -521,6 +697,7 @@ func (r *HealthCheckReconciler) resolveCleared(ctx context.Context, activeSignal
 	}
 	list.Items = append(list.Items, investigatingList.Items...)
 
+	now := time.Now()
 	for i := range list.Items {
 		im := &list.Items[i]
 
@@ -531,34 +708,22 @@ func (r *HealthCheckReconciler) resolveCleared(ctx context.Context, activeSignal
 		}
 
 		// Check grace period: signal must be absent for ResolutionGracePeriod.
-		if time.Since(im.Spec.Detection.LastSeen.Time) < ResolutionGracePeriod {
+		if now.Sub(im.Spec.Detection.LastSeen.Time) < ResolutionGracePeriod {
 			continue
 		}
 
-		// Resolve the incident: update spec (resolution + labels) first.
-		im.Labels[LabelPhase] = PhaseResolved
-		im.Spec.Resolution = &dorguv1.ResolutionInfo{
-			Action:  "auto-resolved",
-			Outcome: "resolved",
+		evidence := r.resolutionEvidence(ctx, im, now)
+		if !evidence.Recovered() {
+			r.Logger.V(1).Info("incident stays open: recovery could not be established",
+				"name", im.Name,
+				"signal", im.Spec.Detection.Signal,
+				"reason", evidence.Reason,
+			)
+			continue
 		}
 
-		if err := r.Client.Update(ctx, im); err != nil {
+		if err := r.markResolved(ctx, im, evidence); err != nil {
 			r.Logger.Error(err, "failed to resolve incident", "name", im.Name)
-			continue
-		}
-
-		// Update status with retry-on-conflict. Re-fetching inside the loop picks
-		// up any concurrent ResourceVersion bump from another controller racing
-		// on this incident's status (quiets "object has been modified" noise).
-		statusErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-			if err := r.Client.Get(ctx, client.ObjectKeyFromObject(im), im); err != nil {
-				return err
-			}
-			im.Status.Phase = PhaseResolved
-			return r.Client.Status().Update(ctx, im)
-		})
-		if statusErr != nil {
-			r.Logger.Error(statusErr, "failed to update resolved incident status", "name", im.Name)
 			continue
 		}
 
@@ -567,6 +732,7 @@ func (r *HealthCheckReconciler) resolveCleared(ctx context.Context, activeSignal
 			"category", im.Spec.Category,
 			"signal", im.Spec.Detection.Signal,
 			"lastSeen", im.Spec.Detection.LastSeen.Time,
+			"evidence", evidence.Reason,
 		)
 
 		// Broadcast incident resolution via WebSocket.
@@ -583,6 +749,119 @@ func (r *HealthCheckReconciler) resolveCleared(ctx context.Context, activeSignal
 				PersonaKind: im.Spec.PersonaRef.Kind,
 			})
 		}
+	}
+
+	return nil
+}
+
+// resolutionEvidence is the full test an incident must pass to close: either its
+// workload has been observed healthy, or the incident has been superseded by
+// one filed against a persona that now claims the same workload.
+func (r *HealthCheckReconciler) resolutionEvidence(
+	ctx context.Context,
+	im *dorguv1.IncidentMemory,
+	now time.Time,
+) recoveryEvidence {
+	if evidence, superseded := r.supersededByPersona(ctx, im); superseded {
+		return evidence
+	}
+	return r.verifyRecovery(ctx, im, now)
+}
+
+// supersededByPersona closes an unattributed incident once an attributed one is
+// already tracking the same workload, so that onboarding an app mid-outage does
+// not leave it counted twice.
+//
+// The test is the replacement incident, not the persona. A persona existing
+// only means the workload could be attributed from now on; it says nothing
+// about whether the outage is still recorded anywhere. Closing on that alone
+// would hand back exactly the failure this round exists to remove: a broken
+// application with no open incident. So this hands over only when there is
+// something to hand over to, and the resolution it writes says handover rather
+// than recovery, because nothing here observed the workload at all.
+func (r *HealthCheckReconciler) supersededByPersona(
+	ctx context.Context,
+	im *dorguv1.IncidentMemory,
+) (recoveryEvidence, bool) {
+	if im.Spec.Attribution != AttributionUnattributed {
+		return recoveryEvidence{}, false
+	}
+
+	namespace := incidentNamespace(im)
+	if namespace == "" {
+		return recoveryEvidence{}, false
+	}
+	workloadName := incidentWorkloadName(im)
+
+	var attributed dorguv1.IncidentMemoryList
+	if err := r.Client.List(ctx, &attributed,
+		client.InNamespace(namespace),
+		client.MatchingLabels{
+			LabelPersonaKind: "ApplicationPersona",
+			LabelPersonaName: workloadName,
+			LabelAttribution: AttributionPersona,
+		},
+	); err != nil {
+		r.Logger.V(1).Info("could not check whether an attributed incident now covers the workload",
+			"incident", im.Name, "error", err)
+		return recoveryEvidence{}, false
+	}
+
+	for i := range attributed.Items {
+		other := &attributed.Items[i]
+		if other.Name == im.Name || other.Status.Phase == PhaseResolved {
+			continue
+		}
+		return healthy(fmt.Sprintf(
+			"superseded: workload %s is now tracked by incident %s, which is open against its persona",
+			workloadName, other.Name)), true
+	}
+
+	return recoveryEvidence{}, false
+}
+
+// markResolved writes the resolution and the phase, recording on the object
+// itself what was observed. Both writes retry on Conflict and on NotFound: this
+// runs alongside the incident and remediation controllers, and a resolution
+// dropped on a stale ResourceVersion leaves an incident that reads as open for
+// an application that is fine.
+func (r *HealthCheckReconciler) markResolved(
+	ctx context.Context,
+	im *dorguv1.IncidentMemory,
+	evidence recoveryEvidence,
+) error {
+	specErr := retryIncidentWrite(func(int) error {
+		var fresh dorguv1.IncidentMemory
+		if err := r.Client.Get(ctx, client.ObjectKeyFromObject(im), &fresh); err != nil {
+			return err
+		}
+		if fresh.Labels == nil {
+			fresh.Labels = map[string]string{}
+		}
+		fresh.Labels[LabelPhase] = PhaseResolved
+		fresh.Spec.Resolution = &dorguv1.ResolutionInfo{
+			Action:  resolutionAction(evidence),
+			Outcome: "resolved",
+		}
+		if err := r.Client.Update(ctx, &fresh); err != nil {
+			return err
+		}
+		fresh.DeepCopyInto(im)
+		return nil
+	})
+	if specErr != nil {
+		return fmt.Errorf("recording the resolution: %w", specErr)
+	}
+
+	statusErr := retryIncidentWrite(func(int) error {
+		if err := r.Client.Get(ctx, client.ObjectKeyFromObject(im), im); err != nil {
+			return err
+		}
+		im.Status.Phase = PhaseResolved
+		return r.Client.Status().Update(ctx, im)
+	})
+	if statusErr != nil {
+		return fmt.Errorf("recording the resolved phase: %w", statusErr)
 	}
 
 	return nil
@@ -676,13 +955,15 @@ func (r *HealthCheckReconciler) emitK8sEvents(ctx context.Context, diag *diagnos
 	}
 }
 
-// signalKey creates a unique key for a diagnosis to track active signals.
-// Only called for diagnoses with non-nil PersonaRef.
-func (r *HealthCheckReconciler) signalKey(diag *diagnosis.Diagnosis) string {
+// signalKey creates a unique key for a diagnosis to track active signals. It is
+// keyed on the subject rather than the diagnosis, so it matches whatever was
+// written to the incident, including for an unattributed subject where the
+// diagnosis itself carries no persona.
+func (r *HealthCheckReconciler) signalKey(subject incidentSubject, diag *diagnosis.Diagnosis) string {
 	return fmt.Sprintf("%s/%s/%s/%s/%s",
-		diag.PersonaRef.Kind,
-		diag.PersonaRef.Namespace,
-		diag.PersonaRef.Name,
+		subject.personaRef.Kind,
+		subject.personaRef.Namespace,
+		subject.personaRef.Name,
 		diag.Category,
 		primarySignalType(diag),
 	)
@@ -755,8 +1036,26 @@ func sanitizeName(s string) string {
 // applyDiagnosisToSpec folds a diagnosis into an IncidentMemory spec. It is
 // separate from the write so the retry loop can re-apply it to a freshly fetched
 // object instead of replaying a stale one.
-func applyDiagnosisToSpec(im *dorguv1.IncidentMemory, diag *diagnosis.Diagnosis, now metav1.Time) {
+func applyDiagnosisToSpec(
+	im *dorguv1.IncidentMemory,
+	subject incidentSubject,
+	diag *diagnosis.Diagnosis,
+	now metav1.Time,
+) {
 	im.Spec.Detection.LastSeen = now
+
+	// Backfill attribution on incidents raised before it existed, and on any
+	// incident adopted after an AlreadyExists. Without it findMatchingIncident
+	// would stop recognising the record and raise a duplicate every cycle.
+	if im.Spec.Attribution == "" {
+		im.Spec.Attribution = subject.attribution()
+	}
+	if im.Labels == nil {
+		im.Labels = map[string]string{}
+	}
+	if im.Labels[LabelAttribution] == "" {
+		im.Labels[LabelAttribution] = im.Spec.Attribution
+	}
 
 	// Refresh the root cause when the new diagnosis is at least as confident as
 	// the recorded one. The tie matters: an AI-enhanced diagnosis carries the
@@ -772,11 +1071,29 @@ func applyDiagnosisToSpec(im *dorguv1.IncidentMemory, diag *diagnosis.Diagnosis,
 			}
 		}
 		if diag.Confidence >= existingConfidence {
-			im.Spec.RootCause = buildRootCause(diag)
+			im.Spec.RootCause = annotateUnattributed(buildRootCause(diag), subject)
 		}
 	}
 
 	im.Spec.Detection.AffectedResources = toResourceRefs(diag.AffectedResources)
+}
+
+// annotateUnattributed adds, to the field a user actually reads, the reason an
+// incident names a workload instead of an application. Dorgu can see the
+// workload is broken and can say nothing more useful than that, so it says
+// exactly that rather than presenting a persona-shaped record with no persona
+// behind it.
+func annotateUnattributed(rc *dorguv1.RootCauseInfo, subject incidentSubject) *dorguv1.RootCauseInfo {
+	if rc == nil || !subject.unattributed {
+		return rc
+	}
+
+	rc.Summary = strings.TrimSpace(rc.Summary) + fmt.Sprintf(
+		" No ApplicationPersona in namespace %s claims workload %s, so this incident is recorded against the workload"+
+			" and Dorgu will not propose a remediation for it. Run \"dorgu persona import -n %s\" to onboard it.",
+		subject.namespace, subject.personaRef.Name, subject.namespace)
+
+	return rc
 }
 
 // reportDiscardedDiagnosis makes a lost diagnosis loud, then returns the error

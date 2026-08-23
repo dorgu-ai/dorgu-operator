@@ -126,7 +126,7 @@ func TestUpdateExistingIncident_RetriesOnConflict(t *testing.T) {
 	}
 
 	now := metav1.Now()
-	err := r.updateExistingIncident(context.Background(), im, diag, now)
+	err := r.updateExistingIncident(context.Background(), im, personaSubject(*diag.PersonaRef), diag, now)
 	require.NoError(t, err, "retry-on-conflict loop should recover")
 
 	// Verify the occurrence count was incremented exactly once despite the

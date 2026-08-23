@@ -272,3 +272,119 @@ func TestMatchesPersona_SpecNameDiffersFromMetadataName(t *testing.T) {
 		t.Error("expected signal NOT to match persona")
 	}
 }
+
+// appsPersona is a minimal ApplicationPersona in the "apps" namespace.
+func appsPersona(name string) *dorguv1.ApplicationPersona {
+	return &dorguv1.ApplicationPersona{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "apps"},
+		Spec:       dorguv1.ApplicationPersonaSpec{Name: name, Type: "api"},
+	}
+}
+
+// podSignal is one unattributed pod signal awaiting correlation.
+func podSignal(namespace, pod string) Signal {
+	return Signal{
+		Type:       SignalCrashLoopBackOff,
+		Severity:   SeverityCritical,
+		Resource:   dorguv1.ResourceReference{Kind: "Pod", Name: pod, Namespace: namespace},
+		DetectedAt: time.Now(),
+	}
+}
+
+// TestPersonaCorrelator_PrefersTheMoreSpecificClaim covers the case the old
+// first-match-wins loop decided by list order: personas "api" and "api-server"
+// both claim pod "api-server-7f9d-x2q" under the prefix rule, and only one of
+// them is the pod's application.
+func TestPersonaCorrelator_PrefersTheMoreSpecificClaim(t *testing.T) {
+	c := fake.NewClientBuilder().
+		WithScheme(newTestScheme()).
+		WithObjects(appsPersona("api"), appsPersona("api-server")).
+		Build()
+
+	signals := []Signal{podSignal("apps", "api-server-7f9d-x2q")}
+	NewPersonaCorrelator(c, logf.Log).Correlate(context.Background(), signals)
+
+	if signals[0].PersonaRef == nil {
+		t.Fatal("expected the specific persona to claim the pod, got nil")
+	}
+	if signals[0].PersonaRef.Name != "api-server" {
+		t.Errorf("expected persona 'api-server', got %q", signals[0].PersonaRef.Name)
+	}
+}
+
+// TestPersonaCorrelator_AmbiguousClaimStaysUnattributed is the "prefer
+// unattributed over wrong" rule (F-02). Two personas claim the pod with equal
+// specificity, one via metadata.name and one via spec.name, so neither gets it.
+func TestPersonaCorrelator_AmbiguousClaimStaysUnattributed(t *testing.T) {
+	aliased := appsPersona("checkout-legacy")
+	aliased.Spec.Name = "checkout"
+
+	c := fake.NewClientBuilder().
+		WithScheme(newTestScheme()).
+		WithObjects(appsPersona("checkout"), aliased).
+		Build()
+
+	signals := []Signal{podSignal("apps", "checkout-57c95bf9b8-47vp9")}
+	NewPersonaCorrelator(c, logf.Log).Correlate(context.Background(), signals)
+
+	if signals[0].PersonaRef != nil {
+		t.Fatalf("an ambiguous signal must stay unattributed, got persona %q",
+			signals[0].PersonaRef.Name)
+	}
+}
+
+// TestPersonaCorrelator_NeverCrossesNamespaces pins the namespace half of the
+// documented rule. The pod is in "web"; the only persona that could claim it by
+// name lives in "apps".
+func TestPersonaCorrelator_NeverCrossesNamespaces(t *testing.T) {
+	c := fake.NewClientBuilder().
+		WithScheme(newTestScheme()).
+		WithObjects(appsPersona("edge-nginx")).
+		Build()
+
+	signals := []Signal{podSignal("web", "edge-nginx-7b98cd89d4-rk8hf")}
+	NewPersonaCorrelator(c, logf.Log).Correlate(context.Background(), signals)
+
+	if signals[0].PersonaRef != nil {
+		t.Fatalf("a persona must never claim another namespace's pod, got %q/%s",
+			signals[0].PersonaRef.Namespace, signals[0].PersonaRef.Name)
+	}
+}
+
+// TestPersonaCorrelator_UnrelatedNamePrefixDoesNotMatch keeps the documented
+// guarantee that persona "api" never picks up "apiserver-..." pods: the rule
+// needs the hyphen.
+func TestPersonaCorrelator_UnrelatedNamePrefixDoesNotMatch(t *testing.T) {
+	c := fake.NewClientBuilder().
+		WithScheme(newTestScheme()).
+		WithObjects(appsPersona("api")).
+		Build()
+
+	signals := []Signal{podSignal("apps", "apiserver-7f9d-x2q")}
+	NewPersonaCorrelator(c, logf.Log).Correlate(context.Background(), signals)
+
+	if signals[0].PersonaRef != nil {
+		t.Fatalf("expected no match, got %q", signals[0].PersonaRef.Name)
+	}
+}
+
+func TestNameClaimedByPersona(t *testing.T) {
+	tests := []struct {
+		resource string
+		persona  string
+		want     bool
+	}{
+		{"api", "api", true},
+		{"api-7f9d-x2q", "api", true},
+		{"apiserver-7f9d", "api", false},
+		{"api", "", false},
+		{"", "api", false},
+	}
+
+	for _, tt := range tests {
+		if got := NameClaimedByPersona(tt.resource, tt.persona); got != tt.want {
+			t.Errorf("NameClaimedByPersona(%q, %q) = %v, want %v",
+				tt.resource, tt.persona, got, tt.want)
+		}
+	}
+}

@@ -259,7 +259,7 @@ func TestUpdateExistingIncident_RetriesConflictedSpecWrite(t *testing.T) {
 	r := &HealthCheckReconciler{Client: c, Logger: logger}
 
 	diag := aiDiagnosis()
-	require.NoError(t, r.updateExistingIncident(context.Background(), im, diag, metav1.Now()),
+	require.NoError(t, r.updateExistingIncident(context.Background(), im, personaSubject(*diag.PersonaRef), diag, metav1.Now()),
 		"a conflicted spec write must be retried, not returned")
 
 	var got dorguv1.IncidentMemory
@@ -298,7 +298,7 @@ func TestUpdateExistingIncident_SurfacesUnrecoverableDiscard(t *testing.T) {
 	}
 
 	diag := aiDiagnosis()
-	err := r.updateExistingIncident(context.Background(), im, diag, metav1.Now())
+	err := r.updateExistingIncident(context.Background(), im, personaSubject(*diag.PersonaRef), diag, metav1.Now())
 	require.Error(t, err, "an unrecoverable conflict must still be reported to the caller")
 
 	assert.True(t, sink.hasError("discard"),
@@ -336,7 +336,7 @@ func TestCreateIncident_RetriesConflictedStatusWrite(t *testing.T) {
 	}
 
 	diag := aiDiagnosis()
-	require.NoError(t, r.createIncident(context.Background(), diag, metav1.Now()),
+	require.NoError(t, r.createIncident(context.Background(), personaSubject(*diag.PersonaRef), diag, metav1.Now()),
 		"a conflicted initial status write must be retried")
 	assert.GreaterOrEqual(t, counter.calls, 2)
 
@@ -370,7 +370,7 @@ func TestProcessDiagnosis_ReportsDiscardToCycleTally(t *testing.T) {
 		EventEmitter: &noopEmitter{},
 	}
 
-	require.Error(t, r.processDiagnosis(context.Background(), aiDiagnosis(), map[string]bool{}),
+	require.Error(t, r.processDiagnosis(context.Background(), personaSubject(*aiDiagnosis().PersonaRef), aiDiagnosis(), map[string]bool{}),
 		"a diagnosis that cannot be persisted must be reported to the cycle")
 
 	r.logCycleSummary(1, 1)

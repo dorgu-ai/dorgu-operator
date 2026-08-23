@@ -90,8 +90,10 @@ func (r *IncidentController) Reconcile(ctx context.Context, req ctrl.Request) (c
 		}
 	}
 
-	// 4. Sync ApplicationPersona status.
-	if im.Spec.PersonaRef.Kind == "ApplicationPersona" {
+	// 4. Sync ApplicationPersona status. An unattributed incident's personaRef
+	// names a workload rather than a persona, so there is nothing to sync and
+	// looking would only produce a NotFound on every reconcile.
+	if im.Spec.PersonaRef.Kind == "ApplicationPersona" && im.Spec.Attribution != AttributionUnattributed {
 		if err := r.syncPersonaStatus(ctx, &im); err != nil {
 			logger.Error(err, "failed to sync persona status")
 		}
@@ -114,6 +116,13 @@ func (r *IncidentController) ensureLabels(im *dorguv1.IncidentMemory) bool {
 		LabelCategory:         im.Spec.Category,
 		LabelSeverity:         im.Spec.Severity,
 		LabelSignal:           im.Spec.Detection.Signal,
+	}
+
+	// Only mirror attribution once the spec states it, so an incident written
+	// before the field existed is not silently relabelled as something it never
+	// claimed to be.
+	if im.Spec.Attribution != "" {
+		expected[LabelAttribution] = im.Spec.Attribution
 	}
 
 	// Only set phase label if phase is non-empty to avoid blank label values.
