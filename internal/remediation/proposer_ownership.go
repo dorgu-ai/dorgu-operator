@@ -303,6 +303,13 @@ func ownerSourceOfTruth(ref *dorguv1.WorkloadRef) (where, how string) {
 		if !resolved(ref) {
 			return "whatever manages this application (Dorgu could not resolve its Deployment)", ""
 		}
+		// An unknown owner is often still a named one: detection records the
+		// field manager it refused on behalf of even when it cannot say what
+		// that manager belongs to. Passing the name on is the difference
+		// between a lead and a dead end.
+		if detail := strings.TrimSpace(ref.ManagedByDetail); detail != "" {
+			return fmt.Sprintf("whatever manages Deployment %s (%s)", ref.Name, detail), ""
+		}
 		return fmt.Sprintf("whatever manages Deployment %s (Dorgu could not identify it)", ref.Name), ""
 	}
 }
@@ -343,6 +350,11 @@ func whyDorguWillNotPatch(ref *dorguv1.WorkloadRef) string {
 	default:
 		if !resolved(ref) {
 			return "Dorgu could not resolve the Deployment for this application, so it cannot tell what owns it and will not suggest a command that writes to it. Unresolved is treated as owned."
+		}
+		if detail := strings.TrimSpace(ref.ManagedByDetail); detail != "" {
+			return fmt.Sprintf(
+				"Dorgu will not patch this Deployment. What it can see: %s. It cannot tell what that manager belongs to, and unknown is treated as owned, because a patch that collides with an unseen owner breaks their next deploy.",
+				detail)
 		}
 		return "Dorgu could not identify what manages this Deployment, so it will not patch it. Unknown is treated as owned, because a patch that collides with an unseen owner breaks their next deploy."
 	}

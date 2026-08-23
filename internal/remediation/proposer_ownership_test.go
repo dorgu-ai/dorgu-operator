@@ -372,3 +372,44 @@ func TestWritesWorkload(t *testing.T) {
 		})
 	}
 }
+
+// TestUnknownOwnerNamesTheFieldManager is the reporting half of F-03. Once
+// detection refuses on behalf of a specific field manager, the plan has to say
+// which one. "Dorgu could not identify what manages this Deployment" is a dead
+// end; the manager's name is a lead the reader can follow.
+func TestUnknownOwnerNamesTheFieldManager(t *testing.T) {
+	ref := &dorguv1.WorkloadRef{
+		Kind:            "Deployment",
+		Name:            "report-worker",
+		Namespace:       "apps",
+		ManagedBy:       dorguv1.ManagedByUnknown,
+		ManagedByDetail: `field manager "acme-platform-operator" already owns this container's resources`,
+	}
+
+	why := whyDorguWillNotPatch(ref)
+	assert.Contains(t, why, "acme-platform-operator")
+	assert.Contains(t, why, "unknown is treated as owned")
+
+	where, _ := ownerSourceOfTruth(ref)
+	assert.Contains(t, where, "report-worker")
+	assert.Contains(t, where, "acme-platform-operator")
+}
+
+// TestUnknownOwnerWithoutADetailStillExplains keeps the older shape working:
+// an unknown owner with nothing to name still gets the full explanation rather
+// than a truncated one.
+func TestUnknownOwnerWithoutADetailStillExplains(t *testing.T) {
+	ref := &dorguv1.WorkloadRef{
+		Kind:      "Deployment",
+		Name:      "report-worker",
+		Namespace: "apps",
+		ManagedBy: dorguv1.ManagedByUnknown,
+	}
+
+	why := whyDorguWillNotPatch(ref)
+	assert.Contains(t, why, "Dorgu could not identify what manages this Deployment")
+	assert.Contains(t, why, "Unknown is treated as owned")
+
+	where, _ := ownerSourceOfTruth(ref)
+	assert.Contains(t, where, "Dorgu could not identify it")
+}
