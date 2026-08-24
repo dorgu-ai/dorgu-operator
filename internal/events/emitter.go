@@ -31,6 +31,12 @@ import (
 // cluster. It is the default for any event that does not name its own reason.
 const ReasonDorguDetected = "DorguDetected"
 
+// OperatorEventSource is the component name the operator records its own
+// Kubernetes Events under. cmd/main.go builds the event recorder with it and the
+// classifier drops anything carrying it, so the two ends cannot drift and the
+// pipeline observes the cluster rather than its own output.
+const OperatorEventSource = "dorgu-operator"
+
 // Emitter emits standard K8s Events from the operator so that
 // dorgu detections are visible via `kubectl describe`.
 type Emitter interface {

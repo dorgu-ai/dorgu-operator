@@ -85,6 +85,17 @@ healthCheck:
 metricsServer:
   enabled: true
 
+# DorguEvent records: dorgu's own log of what it saw, queryable with
+# `kubectl get dorguevent -A`. They live in etcd, so they are bounded twice over.
+# A record is removed once it is older than `retention`, and the oldest are
+# removed early if the count exceeds `maxRecords`. The cap is the bound that
+# holds on a large cluster, where records arrive faster than any time window
+# retires them: a five-app cluster produced roughly 2,700 a day.
+# Set maxRecords: 0 to drop the cap and keep retention as the only bound.
+dorguEvents:
+  retention: 24h
+  maxRecords: 2000
+
 # AI provider config (Anthropic only for v1). Bedrock/IRSA is a future workstream.
 # The API key is injected as the ANTHROPIC_API_KEY env var from a Kubernetes Secret —
 # never as an inline pod-spec arg.

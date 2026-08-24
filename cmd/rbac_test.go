@@ -83,6 +83,60 @@ func TestGeneratedRole_CoversReplicaSets(t *testing.T) {
 		"apps/replicasets need get/list/watch for the ReplicaSet correlator")
 }
 
+// TestGeneratedRole_CanPruneItsOwnEvents locks the CF5-2 F-10 RBAC addition. The
+// cleaner had no delete permission, so 187 DorguEvent records piled up in etcd
+// with nothing able to remove them. The grant covers dorgu.io/dorguevents only.
+func TestGeneratedRole_CanPruneItsOwnEvents(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "config", "rbac", "role.yaml"))
+	require.NoError(t, err, "generated role.yaml must exist (run make manifests)")
+
+	var role rbacv1.ClusterRole
+	require.NoError(t, yaml.Unmarshal(data, &role))
+
+	assert.True(t, hasRule(role, "dorgu.io", "dorguevents", "create", "get", "list", "watch", "delete"),
+		"dorguevents need delete so the retention and cap cleaner can prune them")
+}
+
+// TestGeneratedRole_CannotDeleteWorkloads is the other half of the trust claim
+// the ClusterRole carries: gaining delete on dorgu's own CRD must not have
+// widened anything a user's workloads live in. This test is the reason the F-10
+// grant can be named in the release notes without qualification.
+func TestGeneratedRole_CannotDeleteWorkloads(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "config", "rbac", "role.yaml"))
+	require.NoError(t, err, "generated role.yaml must exist (run make manifests)")
+
+	var role rbacv1.ClusterRole
+	require.NoError(t, yaml.Unmarshal(data, &role))
+
+	workloads := []struct{ apiGroup, resource string }{
+		{"apps", "deployments"},
+		{"apps", "replicasets"},
+		{"", "pods"},
+		{"", "nodes"},
+		{"", "namespaces"},
+	}
+
+	for _, w := range workloads {
+		for _, verb := range []string{"create", "update", "patch", "delete"} {
+			assert.False(t, hasRule(role, w.apiGroup, w.resource, verb),
+				"the operator must not be able to %s %s/%s", verb, w.apiGroup, w.resource)
+		}
+	}
+}
+
+// TestChartRBAC_MatchesDorguEventDelete ensures the hand-maintained Helm
+// ClusterRole mirrors the generated role's delete grant, so a Helm-installed
+// release can prune its own records rather than logging a permission error every
+// cleanup cycle.
+func TestChartRBAC_MatchesDorguEventDelete(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "charts", "dorgu-operator", "templates", "rbac.yaml"))
+	require.NoError(t, err, "chart rbac.yaml must exist")
+
+	assert.Contains(t, string(data), `resources: ["dorguevents"]
+    verbs: ["create", "get", "list", "watch", "delete"]`,
+		"chart dorguevents rule must grant delete for the cleaner")
+}
+
 // TestChartRBAC_MatchesReplicaSets ensures the hand-maintained Helm ClusterRole
 // mirrors the generated role's WS9 replicasets grant, so an installed release
 // carries the same permission as `make deploy`.

@@ -50,6 +50,10 @@ func TestHelmChartRBACIncludesLifecycleCRDs(t *testing.T) {
 		`resources: ["remediationactions"]`,
 		`resources: ["remediationactions/status"]`,
 		`resources: ["dorguevents"]`,
+		// The DorguEvent cleaner needs delete or the records grow without bound
+		// (F-10). Asserted on the rendered chart, not just the template, because
+		// this is the ClusterRole a real install actually gets.
+		`verbs: ["create", "get", "list", "watch", "delete"]`,
 	}
 
 	for _, line := range required {
