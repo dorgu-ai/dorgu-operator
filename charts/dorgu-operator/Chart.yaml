@@ -6,8 +6,8 @@ type: application
 # current in-repo so `helm install ./charts/dorgu-operator` from a clone deploys
 # the matching operator image (templates/deployment.yaml defaults the image tag to
 # appVersion). Bump both as part of /release; test/chart guards against rot.
-version: 0.9.0
-appVersion: "0.9.0"
+version: 0.10.0
+appVersion: "0.10.0"
 keywords:
   - kubernetes
   - operator
