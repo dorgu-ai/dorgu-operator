@@ -78,6 +78,7 @@ rules:
   - dorguevents
   verbs:
   - create
+  - delete
   - get
   - list
   - watch

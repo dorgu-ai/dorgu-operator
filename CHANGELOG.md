@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **`DorguEvent` records are now bounded by count as well as age.** `dorguEvents.maxRecords` (default **2000**, `--dorgu-event-max-records`) prunes oldest first once the cap is exceeded, and `dorguEvents.retention` (default **24h**, `--dorgu-event-retention`) is the age bound, plumbed into both the writer and the cleaner so a record states the retention the operator is actually running with. A TTL alone bounded nothing: records arrive in proportion to cluster size, so five apps producing 187 records in 100 minutes were all inside the 24-hour window and all in etcd. Set `maxRecords: 0` to keep retention as the only bound. The cleaner also runs one pass at startup rather than waiting a full interval, since a restarted operator inherits the largest backlog it will ever see.
+- **`delete` on `dorguevents.dorgu.io` in the manager ClusterRole.** The cleaner existed but had no permission to act, so every cycle logged a failure and nothing was ever removed. The grant is scoped to Dorgu's own CRD and to no workload kind, so the published claim that the operator never writes workloads is unchanged; two tests now hold that line, one asserting the new verb and one asserting the operator still cannot create, update, patch or delete Deployments, ReplicaSets, Pods, Nodes or Namespaces. Verify it yourself rather than take it on trust: `kubectl auth can-i delete dorguevents.dorgu.io --as=system:serviceaccount:dorgu-system:dorgu-operator -A` says yes, the same question about `deployments` says no.
+
+### Fixed
+
+- **171 of 188 ERROR lines in a 20-minute window came from a write that had already succeeded.** `DorguEvent` names are content-addressed, the event informer re-lists everything it holds on each resync, and the resync period was the same 5 minutes as the store's dedup window, so a settled event came back round just as its dedup entry expired and the `Create` returned `AlreadyExists`. That is idempotent and is now handled as such, at `V(1)`. The store also stopped logging the error it returns: every caller already logged it, so each real failure was printed twice, at two layers.
+- **A duplicate record aborted the pipeline before the emit step.** Because the benign `AlreadyExists` came back as an error, `processEvent` returned on it and the Kubernetes Event was never emitted. Nine ERROR lines a minute on a five-app cluster is enough to make log-based alerting useless on day one, and the docs point that alerting at `DorguDiagnosisDiscarded`, so the noise was breaking the mechanism it was reported through.
+- **An event's reason is now part of what identifies it.** Neither the dedup key nor the record name included the Kubernetes Event reason, so two unrelated things happening to one object inside one category were the same event and the second was dropped. On an `IncidentMemory` that meant an ordinary health event could swallow the `DorguDiagnosisDiscarded` record users are told to alert on. Event times have second granularity, so same-second collisions between distinct reasons were losing real records too.
+- **The event pipeline no longer observes its own output.** The emitter writes a Kubernetes Event for every record it stores, the watcher then saw that Event and stored a second `DorguEvent` saying Dorgu had said something. `DorguDetected` and `DorguDiagnosisDiscarded` accounted for 24 of the duplicate-key errors and every one of those records was an echo. Nothing is lost by dropping them: the Kubernetes Event alerting selects on is still emitted, and the reconciler writes its own `DorguEvent` directly.
+
 ## [0.9.0] - 2026-08-23
 
 ### Upgrade notes

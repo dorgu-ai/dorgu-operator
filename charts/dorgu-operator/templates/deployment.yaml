@@ -64,6 +64,10 @@ spec:
             {{- if not .Values.metricsServer.enabled }}
             - --enable-metrics-server=false
             {{- end }}
+            {{- /* Rendered unconditionally so the pod spec states what bounds the
+                   DorguEvent count, including maxRecords: 0 meaning "no cap". */}}
+            - --dorgu-event-retention={{ .Values.dorguEvents.retention }}
+            - --dorgu-event-max-records={{ .Values.dorguEvents.maxRecords }}
             {{- if .Values.llm.provider }}
             - --llm-provider={{ .Values.llm.provider }}
             {{- end }}

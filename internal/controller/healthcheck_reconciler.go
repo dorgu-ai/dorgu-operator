@@ -90,7 +90,14 @@ const (
 // +kubebuilder:rbac:groups=dorgu.io,resources=remediationactions,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups=dorgu.io,resources=remediationactions/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=dorgu.io,resources=clusterpersonas,verbs=get;list;watch
-// +kubebuilder:rbac:groups=dorgu.io,resources=dorguevents,verbs=get;list;watch;create
+// `delete` on dorguevents is the retention and cap cleaner pruning dorgu's own
+// records. It is scoped to dorgu.io/dorguevents and to no workload kind, so the
+// published claim that the operator never writes workloads is untouched. Verify
+// it rather than take it on trust:
+//
+//	kubectl auth can-i delete dorguevents.dorgu.io --as=system:serviceaccount:dorgu-system:dorgu-operator -A
+//	kubectl auth can-i delete deployments --as=system:serviceaccount:dorgu-system:dorgu-operator -A
+// +kubebuilder:rbac:groups=dorgu.io,resources=dorguevents,verbs=get;list;watch;create;delete
 // +kubebuilder:rbac:groups="",resources=events,verbs=get;list;watch;create;patch
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch

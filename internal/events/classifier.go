@@ -59,6 +59,17 @@ func (c *RuleBasedClassifier) Classify(event *corev1.Event) *InternalEvent {
 		return nil
 	}
 
+	// Never re-ingest an event dorgu recorded itself. The emitter writes a
+	// Kubernetes Event for every record it stores, so the watcher saw that Event
+	// and stored a second DorguEvent saying dorgu had said something. DorguDetected
+	// and DorguDiagnosisDiscarded together accounted for 24 of F-06's duplicate-key
+	// errors, and every one of those records was an echo of a record dorgu already
+	// held. Nothing is lost by dropping them: the Kubernetes Event alerting selects
+	// on is still emitted, and the reconciler writes its own DorguEvent directly.
+	if isSelfRecorded(event) {
+		return nil
+	}
+
 	for _, rule := range c.rules {
 		if rule.match(event) {
 			return c.toInternalEvent(event, rule.sev, rule.category)
@@ -88,6 +99,7 @@ func (c *RuleBasedClassifier) toInternalEvent(event *corev1.Event, severity Seve
 		Severity: severity,
 		Category: category,
 		Source:   event.Source.Component,
+		Reason:   event.Reason,
 		Message:  event.Message,
 		InvolvedObject: dorguv1.ResourceReference{
 			Kind:      event.InvolvedObject.Kind,
@@ -194,6 +206,14 @@ func (c *RuleBasedClassifier) defaultRules() []classificationRule {
 			match:    reasonEquals("SuccessfulCreate"),
 		},
 	}
+}
+
+// isSelfRecorded reports whether the operator recorded this Kubernetes Event.
+// record.EventRecorder fills Source.Component; the newer events API fills
+// ReportingController instead, so both are checked and either one is enough.
+func isSelfRecorded(event *corev1.Event) bool {
+	return event.Source.Component == OperatorEventSource ||
+		event.ReportingController == OperatorEventSource
 }
 
 // reasonEquals returns a match function that checks the event reason.

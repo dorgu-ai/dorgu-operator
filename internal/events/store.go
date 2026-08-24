@@ -25,6 +25,7 @@ import (
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/go-logr/logr"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -61,6 +62,7 @@ type HybridEventStore struct {
 	logger      logr.Logger
 	cacheSize   int
 	dedupWindow time.Duration
+	ttl         time.Duration
 
 	mu       sync.RWMutex
 	cache    []InternalEvent
@@ -80,6 +82,13 @@ func WithDedupWindow(d time.Duration) StoreOption {
 	return func(s *HybridEventStore) { s.dedupWindow = d }
 }
 
+// WithTTL sets the retention stamped on every DorguEvent the store writes, so
+// the record states the retention the operator is actually running with rather
+// than a compiled-in default the cleaner may not be using.
+func WithTTL(d time.Duration) StoreOption {
+	return func(s *HybridEventStore) { s.ttl = d }
+}
+
 // NewEventStore creates a new HybridEventStore.
 func NewEventStore(c client.Client, logger logr.Logger, opts ...StoreOption) *HybridEventStore {
 	s := &HybridEventStore{
@@ -87,6 +96,7 @@ func NewEventStore(c client.Client, logger logr.Logger, opts ...StoreOption) *Hy
 		logger:      logger,
 		cacheSize:   DefaultCacheSize,
 		dedupWindow: DefaultDedupWindow,
+		ttl:         DefaultTTL,
 		cache:       make([]InternalEvent, 0, DefaultCacheSize),
 		dedupMap:    make(map[string]time.Time),
 	}
@@ -112,9 +122,10 @@ func (s *HybridEventStore) Store(ctx context.Context, event *InternalEvent) erro
 	// Write to in-memory cache.
 	s.addToCache(*event)
 
-	// Persist as DorguEvent CRD.
+	// Persist as DorguEvent CRD. The error is returned, not logged: every caller
+	// already logs it, and logging here as well printed each failure twice, at
+	// two layers, which is half of what made F-06's 171 ERROR lines unreadable.
 	if err := s.persistCRD(ctx, event); err != nil {
-		s.logger.Error(err, "failed to persist DorguEvent CRD", "id", event.ID)
 		return fmt.Errorf("persisting DorguEvent CRD: %w", err)
 	}
 
@@ -142,12 +153,18 @@ func (s *HybridEventStore) Count(ctx context.Context, filter EventFilter) (int, 
 	return len(events), nil
 }
 
+// dedupKey identifies what a record is about. The reason is part of that
+// identity: without it, two unrelated things happening to one object inside one
+// category were the same event, so whichever arrived second was suppressed. On
+// an IncidentMemory that meant an ordinary health event could swallow the
+// DorguDiagnosisDiscarded record the docs tell users to alert on (F-06).
 func (s *HybridEventStore) dedupKey(event *InternalEvent) string {
-	return fmt.Sprintf("%s/%s/%s/%s",
+	return fmt.Sprintf("%s/%s/%s/%s/%s",
 		event.Source,
 		event.InvolvedObject.Namespace,
 		event.InvolvedObject.Name,
 		event.Category,
+		event.Reason,
 	)
 }
 
@@ -255,7 +272,7 @@ func (s *HybridEventStore) persistCRD(ctx context.Context, event *InternalEvent)
 		namespace = "default"
 	}
 
-	ttl := metav1.Duration{Duration: DefaultTTL}
+	ttl := metav1.Duration{Duration: s.ttl}
 
 	de := &dorguv1.DorguEvent{
 		ObjectMeta: metav1.ObjectMeta{
@@ -280,6 +297,20 @@ func (s *HybridEventStore) persistCRD(ctx context.Context, event *InternalEvent)
 	}
 
 	if err := s.client.Create(ctx, de); err != nil {
+		// AlreadyExists is the expected steady state, not a failure. Names are
+		// content-addressed over the involved object, category, reason and event
+		// time, so an object already under this name is this same record from an
+		// earlier delivery: the write being reported has already succeeded. The
+		// informer re-lists everything it holds on each resync, and the resync
+		// period is the same 5 minutes as the dedup window, so a settled event
+		// comes back round just as its dedup entry expires. Returning that as an
+		// error cost 171 ERROR lines in 20 minutes and, worse, aborted the
+		// pipeline before the emit step (F-06).
+		if apierrors.IsAlreadyExists(err) {
+			s.logger.V(1).Info("DorguEvent already recorded, skipping duplicate write",
+				"name", name, "namespace", namespace)
+			return nil
+		}
 		return fmt.Errorf("creating DorguEvent %s/%s: %w", namespace, name, err)
 	}
 
@@ -288,9 +319,14 @@ func (s *HybridEventStore) persistCRD(ctx context.Context, event *InternalEvent)
 }
 
 // generateCRDName creates a deterministic CRD name for deduplication.
-// Format: de-{namespace}-{kind}-{name}-{hash(reason+eventTime)}
+// Format: de-{namespace}-{kind}-{name}-{hash(category+reason+eventTime)}
+//
+// The reason is in the hash because event times have second granularity: two
+// different things happening to one object in one category within the same
+// second produced the same name, and the second one was lost.
 func generateCRDName(event *InternalEvent) string {
-	hashInput := fmt.Sprintf("%s/%s", event.Category, event.EventTime.Format(time.RFC3339Nano))
+	hashInput := fmt.Sprintf("%s/%s/%s",
+		event.Category, event.Reason, event.EventTime.Format(time.RFC3339Nano))
 	hash := sha256.Sum256([]byte(hashInput))
 	hashStr := fmt.Sprintf("%x", hash[:6])
 

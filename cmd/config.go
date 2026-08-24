@@ -21,6 +21,8 @@ import (
 	"time"
 
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+
+	"github.com/dorgu-ai/dorgu-operator/internal/events"
 )
 
 // operatorConfig holds all operator configuration parsed from command-line flags.
@@ -73,6 +75,10 @@ type operatorConfig struct {
 	// AI remediation planning (independent of AI diagnosis).
 	enableAIRemediation bool // default: on when an LLM provider+key is configured
 
+	// DorguEvent record retention
+	dorguEventRetention  time.Duration
+	dorguEventMaxRecords int
+
 	// Bootstrap
 	autoCreateClusterPersona     bool
 	clusterPersonaEnsureInterval time.Duration
@@ -121,6 +127,16 @@ func parseFlags() operatorConfig {
 		"Health check reconciler interval.")
 	flag.BoolVar(&cfg.enableMetricsServer, "enable-metrics-server", true,
 		"Enable metrics-server integration for detection.")
+
+	// DorguEvent retention. Both bounds are enforced by the same cleaner: a
+	// record is removed once it is older than the retention, and the oldest are
+	// removed early if the count is over the cap. The cap is what holds on a
+	// large cluster, where the arrival rate alone outgrows any time window.
+	flag.DurationVar(&cfg.dorguEventRetention, "dorgu-event-retention", events.DefaultTTL,
+		"How long a DorguEvent record is kept before the cleaner removes it.")
+	flag.IntVar(&cfg.dorguEventMaxRecords, "dorgu-event-max-records", events.DefaultMaxRecords,
+		"Maximum DorguEvent records to keep regardless of age; the oldest are removed first. "+
+			"Set to 0 to drop the cap and rely on --dorgu-event-retention alone.")
 
 	// LLM flags
 	flag.StringVar(&cfg.llmProvider, "llm-provider", "",

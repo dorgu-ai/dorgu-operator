@@ -43,10 +43,16 @@ rules:
   - apiGroups: ["dorgu.io"]
     resources: ["remediationactions/status"]
     verbs: ["get", "update", "patch"]
-  # DorguEvent CRD (event pipeline)
+  # DorguEvent CRD (event pipeline). `delete` is the retention and cap cleaner
+  # pruning dorgu's own records, which without it grew without bound in etcd. It
+  # is scoped to dorgu.io/dorguevents and to no workload kind, so the published
+  # claim that the operator never writes workloads is unchanged. Verify both
+  # halves rather than take them on trust:
+  #   kubectl auth can-i delete dorguevents.dorgu.io --as=system:serviceaccount:dorgu-system:dorgu-operator -A
+  #   kubectl auth can-i delete deployments --as=system:serviceaccount:dorgu-system:dorgu-operator -A
   - apiGroups: ["dorgu.io"]
     resources: ["dorguevents"]
-    verbs: ["create", "get", "list", "watch"]
+    verbs: ["create", "get", "list", "watch", "delete"]
   # Deployments + ReplicaSets (read-only; ApplicationPersona validation and
   # pod->ReplicaSet->Deployment ownership correlation)
   - apiGroups: ["apps"]

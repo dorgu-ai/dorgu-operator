@@ -368,7 +368,8 @@ func main() {
 		// 4. Create event pipeline components.
 		classifier := events.NewClassifier()
 		correlator := events.NewCorrelator(mgr.GetClient())
-		eventStore := events.NewEventStore(mgr.GetClient(), setupLog)
+		eventStore := events.NewEventStore(mgr.GetClient(), setupLog,
+			events.WithTTL(cfg.dorguEventRetention))
 		// GetEventRecorderFor is deprecated in favour of GetEventRecorder, but the
 		// two return different types: the new events API hands back an
 		// events.EventRecorder whose Eventf takes regarding and related objects,
@@ -377,7 +378,7 @@ func main() {
 		// pipeline, not a rename, and that pipeline was only just made to emit
 		// anything at all. Left for its own change.
 		//nolint:staticcheck // SA1019: migrating to the new events API is a separate change
-		emitter := events.NewEmitter(mgr.GetEventRecorderFor("dorgu-operator"), setupLog)
+		emitter := events.NewEmitter(mgr.GetEventRecorderFor(events.OperatorEventSource), setupLog)
 
 		// 5. Start event watcher.
 		eventWatcher := events.NewWatcher(clientset, classifier, correlator, eventStore, emitter, setupLog)
@@ -386,8 +387,10 @@ func main() {
 			os.Exit(1)
 		}
 
-		// 6. Start TTL cleanup.
-		cleaner := events.NewCleaner(mgr.GetClient(), setupLog)
+		// 6. Start DorguEvent cleanup, bounded by both age and count.
+		cleaner := events.NewCleaner(mgr.GetClient(), setupLog,
+			events.WithRetention(cfg.dorguEventRetention),
+			events.WithMaxRecords(cfg.dorguEventMaxRecords))
 		if err := mgr.Add(cleaner); err != nil {
 			setupLog.Error(err, "unable to start event cleaner")
 			os.Exit(1)
