@@ -59,6 +59,12 @@ G5. Never assert a version, tag or release you have not read in the context
    as "latest" or "stable" unless the context says so.
 G6. Do not claim to have queried anything you were not given. You did not query
    an image registry, a metrics backend, or an external API.
+G7. Never say whether a change is within, under, or outside any cap, ceiling,
+   guardrail or budget, and never cite a multiplier as evidence that it complies.
+   Dorgu computes that ratio itself and prints its own verdict beside your text,
+   so a claim like "well within a 2x ceiling" beside a 16x change is simply
+   contradicted in the next line. State the values you propose and why they are
+   right for the workload. Say nothing about limits on your own proposal.
 
 OWNERSHIP (what you may tell the reader to run):
 O1. The live workload section states managedBy. When it is anything other than
@@ -85,6 +91,18 @@ Rules you MUST follow:
    "patch": a JSON merge patch against the ApplicationPersona spec, e.g.
    {"spec":{"resources":{"limits":{"memory":"512Mi"}}}}. Never put a workload
    (Deployment/Pod) patch here — the operator never writes workloads directly.
+   A persona-update step with no patch applies nothing. It is not a plan, it is a
+   sentence, and Dorgu will overwrite it with its own computed patch.
+3a. A change to the container's CPU or memory requests or limits is ALWAYS a
+   persona-update step carrying a patch. Never express a resource change as
+   workload-apply: Dorgu applies resource changes by patching the
+   ApplicationPersona, and the CLI takes it from there with the user's own
+   credentials. workload-apply is for changes the persona cannot carry, such as
+   an image tag.
+3b. Emit at most ONE persona-update step, and put every persona-spec field the
+   fix changes in its single patch. Do not restate the same resource change as a
+   second advisory step: the reader would be told to make by hand a change that
+   is already being applied for them.
 4. All other step types are ADVISORY: they describe an action for a human, CLI,
    or platform to apply. Do not include a patch on them.
 4a. When an advisory step can be carried out by ONE kubectl command AND the
@@ -96,8 +114,9 @@ Rules you MUST follow:
    and containing none of ; & | < > $ or backticks. If no single command does
    the job, the workload is owned, or you would have to guess at a name, omit
    "command" and say what to do in the description instead. Never guess.
-5. Respect the cluster's self-healing policy and trust level. Keep resource
-   changes conservative (no more than ~2x the LIVE limit, per G3).
+5. Respect the cluster's self-healing policy and trust level. Size resource
+   changes conservatively: no more than about twice the LIVE value (per G3).
+   Size it and move on; per G7, do not comment on whether it complies.
 6. PREFER approaches that succeeded in past remediations for this app; AVOID
    approaches that previously failed or were rolled back.
 7. Give a concise rootCause and a confidence between 0 and 1.
@@ -158,7 +177,7 @@ func planToolSchema() map[string]any {
 						},
 						"patch": map[string]any{
 							"type":        "string",
-							"description": "For persona-update steps only: a JSON merge patch (as a JSON-encoded string) against the ApplicationPersona spec, e.g. {\"spec\":{\"resources\":{\"limits\":{\"memory\":\"512Mi\"}}}}. Omit for advisory steps.",
+							"description": "REQUIRED on every persona-update step: a JSON merge patch (as a JSON-encoded string) against the ApplicationPersona spec, e.g. {\"spec\":{\"resources\":{\"limits\":{\"memory\":\"512Mi\"}}}}. A persona-update step without this applies nothing and will be replaced by Dorgu's own computed patch. Any change to container requests or limits belongs here, never on a workload-apply step. Omit for advisory steps.",
 						},
 						"command": map[string]any{
 							"type":        "string",

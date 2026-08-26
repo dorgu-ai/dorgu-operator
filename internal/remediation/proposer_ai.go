@@ -69,22 +69,36 @@ func (p *Proposer) proposeWithPlanner(
 
 	action := p.buildPlanAction(diag, incident, plan, steps, workloadRef)
 
-	// Shape the advisory half of the plan for whoever owns the Deployment, and
-	// make sure no step hands the reader a command that writes to an owned
-	// workload. Persona-update steps are untouched: the operator patches the
-	// persona, which is safe whoever owns the workload.
-	applyOwnershipShaping(action, workloadRef)
-	stripWorkloadWriteCommands(action, workloadRef)
-
 	// Validate persona-update steps through the existing safety guardrails.
-	// Per-step blast-radius violations flag that step advisory; persona-wide
-	// violations (rate-limit, concurrent, deny-list) skip the whole proposal.
+	// Per-step blast-radius violations strip the offending field and record the
+	// verdict as structured data; persona-wide violations (rate-limit,
+	// concurrent, deny-list) skip the whole proposal.
 	skip, err := p.applyStepSafety(ctx, action, workloadRef)
 	if err != nil {
 		return nil, fmt.Errorf("safety check: %w", err)
 	}
 	if skip != "" {
 		return &ProposalResult{SkipReason: skip}, nil
+	}
+
+	// CR-01: a plan that diagnoses a resource change and then applies nothing is
+	// not a fix, however well it reads. Give the plan the deterministic patch the
+	// rule engine would have produced, or refuse the plan and let the caller fall
+	// back to the rule-based proposal.
+	ruleEngineDeclined, err := p.ensureAppliableResourcePlan(action, diag, rc.AppPersona, workloadRef)
+	if err != nil {
+		return nil, err
+	}
+
+	// A persona-update step with no patch applies nothing and instructs nobody.
+	// Whatever could be filled in has been by now, so anything still empty is
+	// noise that reads as a fix.
+	if dropped := dropPatchlessPersonaUpdates(action); dropped > 0 {
+		p.logger.V(1).Info("dropped persona-update steps that carried no patch",
+			"action", action.Name, "dropped", dropped)
+		if len(action.Spec.Steps) == 0 {
+			return nil, fmt.Errorf("AI plan had nothing left after removing persona-update steps with no patch")
+		}
 	}
 
 	// Recompute the back-compat Action from the first still-auto-executable
@@ -94,6 +108,20 @@ func (p *Proposer) proposeWithPlanner(
 	// Defensive invariant guard: never persist an auto-executable non-persona
 	// step (the operator must never write workloads).
 	enforceAutoExecutableInvariant(action)
+
+	// Shape the advisory half of the plan for whoever owns the Deployment, and
+	// make sure no step hands the reader a command that writes to an owned
+	// workload. Persona-update steps are untouched: the operator patches the
+	// persona, which is safe whoever owns the workload.
+	//
+	// This runs AFTER the guardrails and after the back-compat Action is
+	// recomputed, not before, because the owner instruction quotes the concrete
+	// values out of the plan's patches. Shaping first told a Helm user to put
+	// 128Mi in their values file while the guardrail was in the middle of
+	// refusing 128Mi, which is CR-04's "the headline still advertised the
+	// rejected value" one screen further down.
+	applyOwnershipShaping(action, workloadRef)
+	stripWorkloadWriteCommands(action, workloadRef)
 
 	// Safety and the invariant guard can both demote a step to advisory, so the
 	// explanation's auto/advisory split is only true once every gate has run.
@@ -108,6 +136,14 @@ func (p *Proposer) proposeWithPlanner(
 	if discloseGroundedBlastRadiusClamp(action, workloadRef) {
 		p.logger.Info("plan sits at the blast-radius cap; disclosing the clamp in the plan summary",
 			"action", action.Name, "confidence", action.Spec.Confidence)
+	}
+
+	// The invariant CR-01 is about, asserted on the object that is about to be
+	// written rather than trusted to the code above. Nothing reaches the API
+	// server presenting itself as a fix for a resource problem while being
+	// incapable of changing a resource.
+	if err := assertAppliableWhenResourceDiagnosed(action, diag, ruleEngineDeclined); err != nil {
+		return nil, err
 	}
 
 	if err := p.client.Create(ctx, action); err != nil {
@@ -154,9 +190,11 @@ func mapPlannedSteps(
 		}
 
 		if ps.Type == dorguv1.StepTypePersonaUpdate && len(ps.Patch) > 0 && json.Valid(ps.Patch) {
-			patch, dropped := dropAbsentResourceKeys(&apiextensionsv1.JSON{Raw: append([]byte(nil), ps.Patch...)}, ref)
+			requested := &apiextensionsv1.JSON{Raw: append([]byte(nil), ps.Patch...)}
+			patch, dropped := dropAbsentResourceKeys(requested, ref)
 			if len(dropped) > 0 {
 				step.Rationale = appendNote(step.Rationale, absentKeyNote(ref, dropped))
+				recordAbsentFields(&step, requested, dropped, ref)
 			}
 			step.Patch = patch
 			if patch != nil {
@@ -255,9 +293,10 @@ func (p *Proposer) buildPlanAction(
 }
 
 // applyStepSafety validates each persona-update step against the safety
-// guardrails. Blast-radius violations flag the offending step advisory
-// (AutoExecutable=false, annotated). Persona-wide violations (rate-limit,
-// concurrent, deny-list) return a non-empty skip reason for the whole proposal.
+// guardrails. Blast-radius violations remove the offending field from the step's
+// patch and record the verdict on the step as structured data. Persona-wide
+// violations (rate-limit, concurrent, deny-list) return a non-empty skip reason
+// for the whole proposal.
 func (p *Proposer) applyStepSafety(ctx context.Context, action *dorguv1.RemediationAction, ref *dorguv1.WorkloadRef) (string, error) {
 	globalSeen := make(map[string]struct{})
 	var globalReasons []string
@@ -275,9 +314,11 @@ func (p *Proposer) applyStepSafety(ctx context.Context, action *dorguv1.Remediat
 		if err != nil {
 			return "", err
 		}
+
+		var refusals []SafetyViolation
 		for _, v := range result.Violations {
 			if v.Rule == "blast-radius" {
-				flagStepAdvisory(step, v.Message)
+				refusals = append(refusals, v)
 				continue
 			}
 			key := v.Rule + "|" + v.Message
@@ -286,6 +327,7 @@ func (p *Proposer) applyStepSafety(ctx context.Context, action *dorguv1.Remediat
 				globalReasons = append(globalReasons, fmt.Sprintf("[%s] %s", v.Rule, v.Message))
 			}
 		}
+		refuseStepFields(step, refusals)
 	}
 
 	// All-advisory plans still consume the rate limit / deny-list gate.
@@ -340,18 +382,6 @@ func probeAdvisoryAction(action *dorguv1.RemediationAction) *dorguv1.Remediation
 	probe.Spec.Steps = nil
 	probe.Spec.Action = dorguv1.RemediationActionDetail{Type: dorguv1.ActionTypeNotification}
 	return probe
-}
-
-// flagStepAdvisory demotes a persona-update step to advisory after a safety
-// violation, recording why in the rationale.
-func flagStepAdvisory(step *dorguv1.RemediationStep, reason string) {
-	step.AutoExecutable = false
-	note := fmt.Sprintf("[safety:blast-radius] %s", reason)
-	if step.Rationale == "" {
-		step.Rationale = note
-	} else {
-		step.Rationale = note + " — " + step.Rationale
-	}
 }
 
 // setBackCompatAction points the legacy single Action at the first

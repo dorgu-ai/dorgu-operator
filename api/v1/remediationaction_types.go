@@ -274,6 +274,98 @@ type RemediationStep struct {
 	// PrePatchState is the snapshot of fields before the patch, for rollback.
 	// +optional
 	PrePatchState *apiextensionsv1.JSON `json:"prePatchState,omitempty"`
+
+	// Safety records what Dorgu's guardrails decided about this step, one entry
+	// per field they ruled on. It is structured so a client can render the
+	// verdict, filter on it, or alert on it.
+	//
+	// It exists because the verdict used to be a string prefix on Rationale, next
+	// to the model's own account of the same change. A reader then saw the
+	// guardrail's arithmetic presented as part of the model's reasoning, and in
+	// clean-room run #4 saw it directly beside the model's claim that a 16x
+	// change was "well within a 2x ceiling". A guardrail's verdict is Dorgu's
+	// alone.
+	// +optional
+	// +listType=atomic
+	Safety []StepSafety `json:"safety,omitempty"`
+}
+
+// StepSafety rules: which guardrail produced the verdict.
+const (
+	// SafetyRuleBlastRadius is the S2 cap on how far one remediation may move a
+	// resource value in a single step.
+	SafetyRuleBlastRadius = "blast-radius"
+
+	// SafetyRulePlanValidation is the check that a plan diagnosing a resource
+	// change actually carries a patch that can be applied.
+	SafetyRulePlanValidation = "plan-validation"
+
+	// SafetyRuleAbsentField is the rule that a remediation may move a resource
+	// key the workload already sets but may never introduce one it does not.
+	SafetyRuleAbsentField = "absent-field"
+)
+
+// StepSafety verdicts: what happened to the value the plan asked for.
+const (
+	// SafetyVerdictClamped means the guardrail refused the requested value and
+	// Dorgu substituted one it permits. The step's patch carries the permitted
+	// value, so the diff shows what will actually happen.
+	SafetyVerdictClamped = "clamped"
+
+	// SafetyVerdictRejected means the guardrail refused the requested value and
+	// nothing replaces it. The field is gone from the step's patch: this step
+	// will not change it, and no diff may advertise that it will.
+	SafetyVerdictRejected = "rejected"
+
+	// SafetyVerdictDerived means the plan named a change but carried no patch
+	// Dorgu could apply, so Dorgu computed the value itself from the live
+	// workload rather than persisting a fix that applies nothing.
+	SafetyVerdictDerived = "derived"
+)
+
+// StepSafety is one guardrail verdict on one field of a step.
+//
+// Every string in it is written by Dorgu from its own arithmetic. No part of it
+// comes from a model, and no model is asked to characterise it.
+type StepSafety struct {
+	// Rule identifies the guardrail that ruled.
+	// +kubebuilder:validation:Enum=blast-radius;plan-validation;absent-field
+	Rule string `json:"rule"`
+
+	// Verdict is what happened to the requested value.
+	// +kubebuilder:validation:Enum=clamped;rejected;derived
+	Verdict string `json:"verdict"`
+
+	// Field is the persona-spec path ruled on, e.g. "spec.resources.limits.memory".
+	Field string `json:"field"`
+
+	// Baseline is the value the guardrail measured against: the live workload's
+	// value when it could be read, the persona's otherwise. Empty when the rule
+	// did not measure a change (a derived patch has nothing to compare).
+	// +optional
+	Baseline string `json:"baseline,omitempty"`
+
+	// Requested is the value the plan asked for. Empty when the plan named a
+	// change without giving a value.
+	// +optional
+	Requested string `json:"requested,omitempty"`
+
+	// Permitted is the value that will actually be applied for this field, and
+	// is exactly what the step's patch carries. Empty means nothing will be
+	// applied for this field.
+	// +optional
+	Permitted string `json:"permitted,omitempty"`
+
+	// Ratio is the requested change as a multiple of Baseline, e.g. "16.0x".
+	// +optional
+	Ratio string `json:"ratio,omitempty"`
+
+	// MaxRatio is the largest multiple the guardrail allows, e.g. "2.0x".
+	// +optional
+	MaxRatio string `json:"maxRatio,omitempty"`
+
+	// Message is Dorgu's one-line rendering of the verdict, ready to print.
+	Message string `json:"message"`
 }
 
 // ApprovalSpec configures the approval requirements.

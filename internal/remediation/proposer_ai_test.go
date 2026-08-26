@@ -119,7 +119,13 @@ func TestProposer_AIPath_MapsPlanToSteps(t *testing.T) {
 	require.NoError(t, a.ValidateAutoExecutable())
 }
 
-func TestProposer_AIPath_BlastRadiusFlagsStep(t *testing.T) {
+// TestProposer_AIPath_BlastRadiusClampsStep is the over-cap case. The guardrail
+// refuses the model's number, and because a resource change was diagnosed the
+// step is then given the rule engine's own in-cap value rather than being left
+// advisory: CR-01's rule that a diagnosed resource change always yields
+// something appliable, and CR-04's rule that the diff shows what will actually
+// happen. The refused value survives only as structured data.
+func TestProposer_AIPath_BlastRadiusClampsStep(t *testing.T) {
 	scheme := newTestScheme()
 	persona := newTestPersona(defaultNamespace, "my-app")
 	incident := newTestIncident(defaultNamespace, "oom", "my-app", "OOMKilled")
@@ -148,14 +154,27 @@ func TestProposer_AIPath_BlastRadiusFlagsStep(t *testing.T) {
 
 	a := result.Action
 	require.Len(t, a.Spec.Steps, 2)
-	// The over-cap persona-update step is flagged advisory.
-	assert.False(t, a.Spec.Steps[0].AutoExecutable, "blast-radius step flagged advisory")
-	assert.Contains(t, a.Spec.Steps[0].Rationale, "blast-radius")
+
+	// The over-cap value is replaced by 2x the 256Mi baseline, and the step stays
+	// appliable so the plan can still heal.
+	step := a.Spec.Steps[0]
+	assert.True(t, step.AutoExecutable, "the clamped step is what will be applied")
+	require.NotNil(t, step.Patch)
+	assert.JSONEq(t, `{"spec":{"resources":{"limits":{"memory":"512Mi"}}}}`, string(step.Patch.Raw))
+
+	require.Len(t, step.Safety, 1)
+	assert.Equal(t, dorguv1.SafetyRuleBlastRadius, step.Safety[0].Rule)
+	assert.Equal(t, dorguv1.SafetyVerdictClamped, step.Safety[0].Verdict)
+	assert.Equal(t, "1Gi", step.Safety[0].Requested, "quantities are reported in their canonical form")
+	assert.Equal(t, "512Mi", step.Safety[0].Permitted)
+	assert.NotContains(t, step.Rationale, "[safety:blast-radius]",
+		"the verdict is structured data, not a prefix on the model's prose")
+
 	// The advisory manual step is untouched.
 	assert.False(t, a.Spec.Steps[1].AutoExecutable)
 	assert.Equal(t, "untouched", a.Spec.Steps[1].Rationale, "advisory step rationale untouched")
-	// No safe auto step remains -> back-compat Action is advisory (notification).
-	assert.Equal(t, dorguv1.ActionTypeNotification, a.Spec.Action.Type)
+
+	assert.Equal(t, dorguv1.ActionTypePersonaUpdate, a.Spec.Action.Type)
 	require.NoError(t, a.ValidateAutoExecutable())
 }
 
@@ -235,17 +254,18 @@ func TestProposer_NoPlanner_UsesRules(t *testing.T) {
 	assert.Equal(t, "persona-update", result.Action.Spec.Action.Type)
 }
 
+// TestProposer_AIPath_AllAdvisoryPlanPersists covers a diagnosis whose fix is
+// not a resource change. Nothing is auto-executable, the all-advisory plan is
+// still persisted, and the persona-wide guardrails are still evaluated.
 func TestProposer_AIPath_AllAdvisoryPlanPersists(t *testing.T) {
 	scheme := newTestScheme()
 	persona := newTestPersona(defaultNamespace, "my-app")
-	incident := newTestIncident(defaultNamespace, "oom", "my-app", "OOMKilled")
+	incident := newTestIncident(defaultNamespace, "imagepull", "my-app", "ImagePullBackOff")
 
 	c := fake.NewClientBuilder().WithScheme(scheme).
 		WithRuntimeObjects(persona).
 		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
 
-	// No persona-update step -> nothing auto-executable; the all-advisory plan is
-	// still persisted, and the persona-wide guardrails are still evaluated.
 	plan := &planner.RemediationPlan{
 		RootCause:  "needs human investigation",
 		Confidence: 0.6,
@@ -258,7 +278,10 @@ func TestProposer_AIPath_AllAdvisoryPlanPersists(t *testing.T) {
 	safety := NewSafetyChecker(c, testLogger())
 	p := NewProposer(c, safety, testLogger(), WithPlanner(&stubPlanner{plan: plan}))
 
-	result, err := p.Propose(context.Background(), newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical), incident)
+	diag := newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical)
+	diag.Contributing[0].Signal.Type = detection.SignalImagePullBackOff
+
+	result, err := p.Propose(context.Background(), diag, incident)
 	require.NoError(t, err)
 	require.True(t, result.Proposed)
 	require.Len(t, result.Action.Spec.Steps, 2)
@@ -266,6 +289,42 @@ func TestProposer_AIPath_AllAdvisoryPlanPersists(t *testing.T) {
 		assert.False(t, s.AutoExecutable)
 	}
 	assert.Equal(t, dorguv1.ActionTypeNotification, result.Action.Spec.Action.Type)
+}
+
+// TestProposer_AIPath_AllAdvisoryPlanForResourceChangeFallsBack is the same
+// shape against a diagnosis that DOES call for a resource change. Dorgu fills in
+// a step the plan already has; it does not graft one into a plan that proposed
+// no persona change at all. That plan is refused and the rule-based proposal
+// takes over, which is the configuration the clean-room tester proved heals.
+func TestProposer_AIPath_AllAdvisoryPlanForResourceChangeFallsBack(t *testing.T) {
+	scheme := newTestScheme()
+	persona := newTestPersona(defaultNamespace, "my-app")
+	incident := newTestIncident(defaultNamespace, "oom", "my-app", "OOMKilled")
+
+	c := fake.NewClientBuilder().WithScheme(scheme).
+		WithRuntimeObjects(persona).
+		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+
+	plan := &planner.RemediationPlan{
+		RootCause:  "needs human investigation",
+		Confidence: 0.6,
+		Steps: []planner.PlannedStep{
+			{Order: 1, Type: "manual", Description: "page on-call", Rationale: "r", Risk: "high"},
+		},
+	}
+
+	p := NewProposer(c, NewSafetyChecker(c, testLogger()), testLogger(),
+		WithPlanner(&stubPlanner{plan: plan}))
+
+	diag := newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical)
+	result, err := p.Propose(context.Background(), diag, incident)
+	require.NoError(t, err)
+	require.True(t, result.Proposed)
+
+	assert.Equal(t, dorguv1.ActionTypePersonaUpdate, result.Action.Spec.Action.Type)
+	assert.NotEqual(t, dorguv1.PlanSourceAIAnthropic, result.Action.Spec.PlanSource,
+		"the fallback records itself as rule-based, so what happened is auditable")
+	assert.True(t, result.Action.HasAutoApplicableChange())
 }
 
 func TestFormatConfidence_Clamps(t *testing.T) {
