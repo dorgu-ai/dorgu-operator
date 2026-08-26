@@ -1,5 +1,12 @@
-# Build the manager binary
-FROM golang:1.25 AS builder
+# Build the manager binary.
+#
+# Pinned to BUILDPLATFORM so the toolchain always runs natively on the builder
+# and cross-compiles to TARGETPLATFORM via GOOS/GOARCH. Without it, a
+# multi-platform build runs this whole stage under QEMU for every non-native
+# arch: same output, but an emulated Go compile that takes minutes instead of
+# seconds. Go cross-compiles a CGO_ENABLED=0 binary natively, so there is no
+# reason to pay for emulation.
+FROM --platform=${BUILDPLATFORM} golang:1.25 AS builder
 ARG TARGETOS
 ARG TARGETARCH
 
@@ -14,11 +21,12 @@ RUN go mod download
 # Copy the Go source (relies on .dockerignore to filter)
 COPY . .
 
-# Build
-# the GOARCH has no default value to allow the binary to be built according to the host where the command
-# was called. For example, if we call make docker-build in a local env which has the Apple Silicon M1 SO
-# the docker BUILDPLATFORM arg will be linux/arm64 when for Apple x86 it will be linux/amd64. Therefore,
-# by leaving it empty we can ensure that the container and binary shipped on it will have the same platform.
+# Build.
+# TARGETOS/TARGETARCH are set by BuildKit from the platform being built, and are
+# what makes this a real cross-compile rather than a host-arch build: for
+# `--platform linux/amd64,linux/arm64` this stage runs twice on the native
+# builder, emitting one binary per target. They are left without a default on
+# purpose so a plain `docker build` still gets the host arch from BuildKit.
 RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o manager ./cmd/
 
 # Use distroless as minimal base image to package the manager binary
