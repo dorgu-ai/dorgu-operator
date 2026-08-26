@@ -4,22 +4,11 @@ All notable changes to the Dorgu Operator are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+
 ## [Unreleased]
 
-### Fixed
+## [0.11.0] - 2026-08-27
 
-- **Resource saturation no longer counts pods no node has accepted.** `ClusterPersona.status.resourceSummary.cpuUtilization` read **1689%** on a cluster where 25% was requested and 1% was in use. `setClaimedResources` skipped terminal pods and nothing else, so pods sitting in the scheduling queue had their requests summed against node allocatable. That is not an over-estimate to be tightened: an unscheduled pod holds no allocation on any node, and because such a pod can request more than the cluster owns, the error has no upper bound.
-
-  Only pods a node has actually accepted are counted now. `podHoldsAllocation` makes both exclusions explicit and says why they differ: a Succeeded or Failed pod ran to completion and released its allocation, while a pod with an empty `spec.nodeName` never had one, whether nothing can fit it, it is waiting on a node that has not joined, or it is gated.
-
-  ```
-  before: usedCPU 63965m / allocatable 3860m  ->  cpuUtilization 1657%
-  after:  usedCPU   965m / allocatable 3860m  ->  cpuUtilization   25%
-  ```
-
-  A Pending pod that *has* been bound to a node still counts, because a reservation held while an image pulls is a real reservation. This field feeds the dashboard's cluster view, where a wrong number reads as authoritative in a way terminal output does not; the CLI stopped depending on it in the same fix set (the paired CLI release computes saturation itself from nodes and pods), so the two are corrected from both ends.
-
-  Worth noting: the CRD's own description of `usedCPU` already said "the CPU claimed by the resource requests of **scheduled** pods". The schema was right and the code did not match it.
 ### Upgrade notes
 
 > **With `aiRemediation.enabled=true`, remediations become appliable again. Before this change they were not, and following the quickstart verbatim could not heal anything.** Clean-room run #4 measured it: 9 AI-planned remediations, 0 that could change a workload. The planner described the memory fix as `workload-apply` steps, which the CRD's CEL rule forbids from ever being `autoExecutable`, and gave the one `persona-update` step no patch at all. `spec.action.type` therefore came out `notification`, `dorgu remediation approve` printed "No resource change to apply", and the pod was still in CrashLoopBackOff 42 minutes later. Turning the planner off healed the identical app on the first try.
@@ -27,6 +16,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 > **A number the model asked for may now be replaced by one Dorgu computed.** When a plan's persona-update step carries no usable patch, or carries one the blast-radius guardrail refuses, Dorgu fills in the value from the same deterministic calculation the rule-based path uses. The plan keeps the model's root cause; the number that reaches your cluster is the rule engine's. Every substitution is recorded on the step, so nothing about it has to be inferred from prose.
 >
 > **New optional CRD field: `spec.steps[].safety`.** A list of guardrail verdicts, each naming the field, what was requested, what is permitted, the ratio, the ceiling, and a ready-to-print message. Existing objects need no migration: the field is optional and absent means no guardrail ruled. CRD regenerated in `config/crd/bases` and mirrored into `charts/dorgu-operator/crds`. A CLI that does not know the field yet renders exactly as it does today.
+
+### Added
+
+- **`spec.steps[].safety`, a list of guardrail verdicts on a step.** Each entry carries `rule` (`blast-radius`, `plan-validation` or `absent-field`), `verdict` (`clamped`, `rejected` or `derived`), the `field`, the `baseline` it was measured against, what was `requested`, what is `permitted`, the `ratio` and `maxRatio`, and a Dorgu-authored `message`. Every string in it comes from Dorgu's own arithmetic, so a client can render it, filter on it or alert on it without parsing a sentence a model wrote.
+- **F-05's "Dorgu will not introduce a field the workload lacks" is recorded structurally too,** as an `absent-field` entry beside the prose it already produced.
+- **A guard test asserting the invariant across six adversarial plan shapes,** including the exact three-step plan the clean room recorded, and covering the case that must stay quiet: a diagnosis whose fix is not a resource change may be answered with advice alone.
 
 ### Fixed
 
@@ -40,11 +35,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **The owner instruction is built after the guardrails, not before.** It quotes concrete values out of the plan's patches, so building it first told a Helm user to put the refused value in their values file. This was the same defect as the one above, one screen further down, and was caught by moving the code.
 - **`checkBlastRadius` reports every field that breaches the cap, in a stable order.** It returned the first breach it happened across while ranging over a map, so a plan moving two fields too far had one named at random and the other silently ignored.
 
-### Added
+- **Resource saturation no longer counts pods no node has accepted.** `ClusterPersona.status.resourceSummary.cpuUtilization` read **1689%** on a cluster where 25% was requested and 1% was in use. `setClaimedResources` skipped terminal pods and nothing else, so pods sitting in the scheduling queue had their requests summed against node allocatable. That is not an over-estimate to be tightened: an unscheduled pod holds no allocation on any node, and because such a pod can request more than the cluster owns, the error has no upper bound.
 
-- **`spec.steps[].safety`, a list of guardrail verdicts on a step.** Each entry carries `rule` (`blast-radius`, `plan-validation` or `absent-field`), `verdict` (`clamped`, `rejected` or `derived`), the `field`, the `baseline` it was measured against, what was `requested`, what is `permitted`, the `ratio` and `maxRatio`, and a Dorgu-authored `message`. Every string in it comes from Dorgu's own arithmetic, so a client can render it, filter on it or alert on it without parsing a sentence a model wrote.
-- **F-05's "Dorgu will not introduce a field the workload lacks" is recorded structurally too,** as an `absent-field` entry beside the prose it already produced.
-- **A guard test asserting the invariant across six adversarial plan shapes,** including the exact three-step plan the clean room recorded, and covering the case that must stay quiet: a diagnosis whose fix is not a resource change may be answered with advice alone.
+  Only pods a node has actually accepted are counted now. `podHoldsAllocation` makes both exclusions explicit and says why they differ: a Succeeded or Failed pod ran to completion and released its allocation, while a pod with an empty `spec.nodeName` never had one, whether nothing can fit it, it is waiting on a node that has not joined, or it is gated.
+
+  ```
+  before: usedCPU 63965m / allocatable 3860m  ->  cpuUtilization 1657%
+  after:  usedCPU   965m / allocatable 3860m  ->  cpuUtilization   25%
+  ```
+
+  A Pending pod that *has* been bound to a node still counts, because a reservation held while an image pulls is a real reservation. This field feeds the dashboard's cluster view, where a wrong number reads as authoritative in a way terminal output does not; the CLI stopped depending on it in the same fix set (the paired CLI release computes saturation itself from nodes and pods), so the two are corrected from both ends.
+
+  Worth noting: the CRD's own description of `usedCPU` already said "the CPU claimed by the resource requests of **scheduled** pods". The schema was right and the code did not match it.
 
 ### Known limitation
 
