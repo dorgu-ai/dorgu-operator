@@ -278,21 +278,7 @@ func dropAbsentResourceKeys(patch *apiextensionsv1.JSON, ref *dorguv1.WorkloadRe
 	}
 	sort.Strings(dropped)
 
-	var root map[string]any
-	if err := json.Unmarshal(patch.Raw, &root); err != nil {
-		return patch, nil
-	}
-	for _, path := range dropped {
-		deleteNestedPath(root, strings.Split(path, "."))
-	}
-	if len(root) == 0 {
-		return nil, dropped
-	}
-	raw, err := json.Marshal(root)
-	if err != nil {
-		return patch, nil
-	}
-	return &apiextensionsv1.JSON{Raw: raw}, dropped
+	return prunePatchPaths(patch, dropped), dropped
 }
 
 // deleteNestedPath removes a leaf at the given dot-path and prunes any map left

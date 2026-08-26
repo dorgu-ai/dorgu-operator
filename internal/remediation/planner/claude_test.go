@@ -204,3 +204,77 @@ func TestNewClaudePlanner_RequiresKey(t *testing.T) {
 	p.SetModel("") // empty is ignored
 	assert.Equal(t, "claude-custom", p.model)
 }
+
+// TestPlanRemediation_ObjectPatchAccepted covers the shape the tool schema does
+// not ask for but the model sometimes returns: the merge patch as a bare JSON
+// object rather than a JSON-encoded string.
+//
+// This used to fail the decode of the whole tool input, not just the one field,
+// so a perfectly good plan was retried once, failed identically, and degraded to
+// the rule-based path with its diagnosis thrown away.
+func TestPlanRemediation_ObjectPatchAccepted(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, toolUseResponse(map[string]any{
+			"rootCause":  "oom",
+			"confidence": 0.8,
+			"steps": []map[string]any{{
+				"order": 1, "type": "persona-update", "description": "d", "rationale": "r", "risk": "low",
+				"patch": map[string]any{"spec": map[string]any{
+					"resources": map[string]any{"limits": map[string]any{"memory": "512Mi"}},
+				}},
+			}},
+		}))
+	}))
+	defer server.Close()
+
+	p := &ClaudePlanner{apiKey: "test-key", model: defaultClaudeModel, client: server.Client(), baseURL: server.URL}
+
+	plan, err := p.PlanRemediation(context.Background(), RemediationContext{})
+	require.NoError(t, err)
+	require.Len(t, plan.Steps, 1)
+	assert.JSONEq(t, `{"spec":{"resources":{"limits":{"memory":"512Mi"}}}}`, string(plan.Steps[0].Patch))
+}
+
+// TestPlanPatch_UnmarshalJSON covers the decoder directly, including the values
+// that must leave the patch empty rather than fail the surrounding step.
+func TestPlanPatch_UnmarshalJSON(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "encoded string", in: `"{\"spec\":{\"a\":1}}"`, want: `{"spec":{"a":1}}`},
+		{name: "bare object", in: `{"spec":{"a":1}}`, want: `{"spec":{"a":1}}`},
+		{name: "null", in: `null`, want: ""},
+		{name: "empty string", in: `""`, want: ""},
+		{name: "string that is not JSON", in: `"not-json{"`, want: ""},
+		{name: "number", in: `42`, want: ""},
+		{name: "array", in: `[1,2]`, want: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var p planPatch
+			require.NoError(t, json.Unmarshal([]byte(tt.in), &p), "a bad patch never fails the step around it")
+			assert.Equal(t, tt.want, string(p.raw))
+		})
+	}
+}
+
+// TestPlanSystemPrompt_ForbidsCharacterisingTheGuardrail is CR-04's first
+// defect, where the model asserted a 16x change was "well within a 2x ceiling"
+// and the guardrail contradicted it in the next line. The guardrail's verdict is
+// Dorgu's, and the prompt has to say so.
+func TestPlanSystemPrompt_ForbidsCharacterisingTheGuardrail(t *testing.T) {
+	assert.Contains(t, planSystemPrompt, "Never say whether a change is within, under, or outside any cap")
+	assert.Contains(t, planSystemPrompt, "Say nothing about limits on your own proposal.")
+}
+
+// TestPlanSystemPrompt_RoutesResourceChangesThroughThePersona is CR-04's sibling
+// in CR-01: the planner described the memory fix as workload-apply steps, which
+// the CRD forbids from ever being auto-executable, so nothing could be applied.
+func TestPlanSystemPrompt_RoutesResourceChangesThroughThePersona(t *testing.T) {
+	assert.Contains(t, planSystemPrompt, "ALWAYS a\n   persona-update step carrying a patch")
+	assert.Contains(t, planSystemPrompt, "Never express a resource change as\n   workload-apply")
+	assert.Contains(t, planSystemPrompt, "A persona-update step with no patch applies nothing.")
+}

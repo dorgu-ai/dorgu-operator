@@ -101,9 +101,7 @@ func (s *SafetyCheckerImpl) Check(ctx context.Context, action *dorguv1.Remediati
 	}
 
 	// S2: Blast radius caps.
-	if v := s.checkBlastRadius(action); v != nil {
-		violations = append(violations, *v)
-	}
+	violations = append(violations, s.checkBlastRadius(action)...)
 
 	// S4: Namespace deny list.
 	if v := s.checkDenyList(ctx, action); v != nil {
@@ -207,7 +205,12 @@ func rejectedBeforeApply(action *dorguv1.RemediationAction) bool {
 }
 
 // checkBlastRadius validates resource change magnitude (S2).
-func (s *SafetyCheckerImpl) checkBlastRadius(action *dorguv1.RemediationAction) *SafetyViolation {
+//
+// It reports EVERY field that breaches the cap, in a stable field order. It used
+// to return the first breach it happened across while ranging over a map, so a
+// plan that moved two fields too far had one of them named at random and the
+// other silently ignored by whatever the caller did with the verdict.
+func (s *SafetyCheckerImpl) checkBlastRadius(action *dorguv1.RemediationAction) []SafetyViolation {
 	if action.Spec.Action.Type != "persona-update" {
 		return nil
 	}
@@ -228,7 +231,15 @@ func (s *SafetyCheckerImpl) checkBlastRadius(action *dorguv1.RemediationAction) 
 		return nil
 	}
 
-	for field, newVal := range patchValues {
+	fields := make([]string, 0, len(patchValues))
+	for field := range patchValues {
+		fields = append(fields, field)
+	}
+	slices.Sort(fields)
+
+	var violations []SafetyViolation
+	for _, field := range fields {
+		newVal := patchValues[field]
 		oldVal, ok := prePatchValues[field]
 		if !ok || oldVal.IsZero() {
 			continue
@@ -242,33 +253,42 @@ func (s *SafetyCheckerImpl) checkBlastRadius(action *dorguv1.RemediationAction) 
 		}
 
 		ratio := newQty / oldQty
-
-		// Check increase cap: max 2x.
-		if ratio > MaxBlastRadiusMultiplier {
-			return &SafetyViolation{
-				Rule:    "blast-radius",
-				Message: fmt.Sprintf("resource change for %s exceeds maximum: %.1fx increase (max %.1fx)", field, ratio, MaxBlastRadiusMultiplier),
-			}
+		detail := &BlastRadiusViolation{
+			Field:     field,
+			Baseline:  oldVal.String(),
+			Requested: newVal.String(),
+			Ratio:     ratio,
+			MaxRatio:  MaxBlastRadiusMultiplier,
 		}
+
+		switch {
+		// Check increase cap: max 2x.
+		case ratio > MaxBlastRadiusMultiplier:
+			violations = append(violations, SafetyViolation{
+				Rule:        "blast-radius",
+				Message:     fmt.Sprintf("resource change for %s exceeds maximum: %.1fx increase (max %.1fx)", field, ratio, MaxBlastRadiusMultiplier),
+				BlastRadius: detail,
+			})
 
 		// Check decrease cap: max 50% reduction.
-		if ratio < MaxResourceDecrease {
-			return &SafetyViolation{
-				Rule:    "blast-radius",
-				Message: fmt.Sprintf("resource change for %s exceeds maximum: %.0f%% decrease (max %.0f%%)", field, (1-ratio)*100, MaxResourceDecrease*100),
-			}
-		}
+		case ratio < MaxResourceDecrease:
+			violations = append(violations, SafetyViolation{
+				Rule:        "blast-radius",
+				Message:     fmt.Sprintf("resource change for %s exceeds maximum: %.0f%% decrease (max %.0f%%)", field, (1-ratio)*100, MaxResourceDecrease*100),
+				BlastRadius: detail,
+			})
 
 		// Validation: new value must be > 0.
-		if newQty <= 0 {
-			return &SafetyViolation{
-				Rule:    "blast-radius",
-				Message: fmt.Sprintf("resource value for %s must be positive, got %s", field, newVal.String()),
-			}
+		case newQty <= 0:
+			violations = append(violations, SafetyViolation{
+				Rule:        "blast-radius",
+				Message:     fmt.Sprintf("resource value for %s must be positive, got %s", field, newVal.String()),
+				BlastRadius: detail,
+			})
 		}
 	}
 
-	return nil
+	return violations
 }
 
 // checkDenyList checks if the target namespace is in the deny list (S4).

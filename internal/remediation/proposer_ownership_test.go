@@ -224,7 +224,9 @@ func TestProposer_OwnershipDoesNotTouchPersonaSteps(t *testing.T) {
 
 // TestProposer_AIPath_CapIsRelativeToLiveWorkload is F-04 on the AI path: a
 // plan sized against a stale persona is measured against the running container,
-// so a 6x jump is demoted to advisory instead of being applied as "within 2x".
+// so a 6x jump is caught instead of being applied as "within 2x". Since CR-01
+// the caught value is replaced by the largest in-cap value rather than leaving
+// the plan with nothing to apply.
 func TestProposer_AIPath_CapIsRelativeToLiveWorkload(t *testing.T) {
 	persona := personaWithLimits("my-app", "", "96Mi")
 	deploy := liveDeployment("my-app",
@@ -255,11 +257,18 @@ func TestProposer_AIPath_CapIsRelativeToLiveWorkload(t *testing.T) {
 	require.True(t, result.Proposed)
 
 	step := result.Action.Spec.Steps[0]
-	assert.False(t, step.AutoExecutable,
+	require.Len(t, step.Safety, 1,
 		"192Mi is 6x the live 32Mi, so the blast-radius guardrail must catch it")
-	assert.Contains(t, step.Rationale, "blast-radius")
-	assert.Equal(t, dorguv1.ActionTypeNotification, result.Action.Spec.Action.Type,
-		"nothing auto-applicable survives, so the legacy action is advisory")
+	assert.Equal(t, dorguv1.SafetyVerdictClamped, step.Safety[0].Verdict)
+	assert.Equal(t, "32Mi", step.Safety[0].Baseline,
+		"the cap is measured against the live container, not the persona's 96Mi")
+	assert.Equal(t, "6.0x", step.Safety[0].Ratio)
+	assert.Equal(t, "192Mi", step.Safety[0].Requested)
+
+	assert.True(t, step.AutoExecutable)
+	assert.JSONEq(t, `{"spec":{"resources":{"limits":{"memory":"64Mi"}}}}`, string(step.Patch.Raw),
+		"64Mi is 2x the live value, which is as far as the guardrail goes")
+	assert.Equal(t, dorguv1.ActionTypePersonaUpdate, result.Action.Spec.Action.Type)
 }
 
 // TestProposer_AIPath_DropsPatchKeysTheWorkloadLacks is F-05 on the AI path: the
@@ -412,4 +421,48 @@ func TestUnknownOwnerWithoutADetailStillExplains(t *testing.T) {
 
 	where, _ := ownerSourceOfTruth(ref)
 	assert.Contains(t, where, "Dorgu could not identify it")
+}
+
+// TestProposer_OwnerInstructionQuotesThePermittedValue is CR-04 read one screen
+// further down. The instruction handed to a Helm user names the concrete values
+// out of the plan's patches, so it has to be built after the guardrails have
+// ruled. Built before them, it told the reader to put the refused value in their
+// values file while Dorgu was refusing that exact value above.
+func TestProposer_OwnerInstructionQuotesThePermittedValue(t *testing.T) {
+	persona := personaWithLimits("my-app", "", "128Mi")
+	deploy := ownedBy(liveDeployment("my-app",
+		map[corev1.ResourceName]string{corev1.ResourceMemory: "8Mi"}, nil), dorguv1.ManagedByHelm)
+	incident := newTestIncident(defaultNamespace, "oom-clamp-owned", "my-app", "OOMKilled")
+
+	plan := &planner.RemediationPlan{
+		RootCause:  "the memory limit drifted down to 8Mi",
+		Confidence: 0.9,
+		Steps: []planner.PlannedStep{
+			{Order: 1, Type: "persona-update", Description: "Restore the recorded 128Mi",
+				Rationale: "the persona's intent", Risk: "low",
+				Patch: json.RawMessage(`{"spec":{"resources":{"limits":{"memory":"128Mi"}}}}`)},
+			{Order: 2, Type: "workload-apply", Description: "Raise the memory limit to 128Mi",
+				Rationale: "the pod cannot start", Risk: "medium",
+				Command: "kubectl patch deployment my-app -n default --type=merge -p {}"},
+		},
+	}
+
+	c := fake.NewClientBuilder().WithScheme(newWorkloadScheme()).
+		WithRuntimeObjects(persona, deploy).
+		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+
+	p := NewProposer(c, NewSafetyChecker(c, testLogger()), testLogger(),
+		WithPlanner(&stubPlanner{plan: plan}))
+
+	result, err := p.Propose(context.Background(),
+		newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical), incident)
+	require.NoError(t, err)
+	require.True(t, result.Proposed)
+
+	owned := result.Action.Spec.Steps[1]
+	assert.Empty(t, owned.Command, "a Helm-owned Deployment never gets a write command")
+	assert.Contains(t, owned.Description, "resources.limits.memory: 16Mi",
+		"the owner instruction names what the guardrail permits")
+	assert.NotContains(t, owned.Description, "128Mi",
+		"and never the value the guardrail refused")
 }
