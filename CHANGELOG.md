@@ -7,6 +7,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-08-27
+
+### Upgrade notes
+
+> **Every operator image published before 0.11.1 was amd64-only.** `ghcr.io/dorgu-ai/dorgu-operator` up to and including `0.11.0` was pushed as a single-platform manifest rather than a manifest list, so no arm64 node could pull it. That covers AWS Graviton nodegroups and any local kind or k3d cluster on an Apple Silicon Mac, where the pod stays in `ImagePullBackOff` with `no matching manifest for linux/arm64`. There is no workaround on an affected cluster other than upgrading: the arm64 image did not exist to be pulled.
+>
+> **0.11.1 is that image and nothing else.** No API, CRD, controller or chart-template change, so the upgrade is a tag bump. If you pin the image by digest, repin to the manifest list digest rather than to either platform's manifest, otherwise a mixed-arch nodegroup will still fail on half its nodes.
+
+### Fixed
+
+- **The release workflow now publishes `linux/amd64` and `linux/arm64` as a manifest list.** The `docker/build-push-action` step carried no `platforms:` key, so it built one image for the runner's own architecture and pushed it as a plain `application/vnd.docker.distribution.manifest.v2+json`. Because `ubuntu-latest` is amd64, so was every image the project has ever shipped. The step now names both platforms, and `docker/setup-buildx-action` provides the docker-container driver, without which buildx cannot build more than one platform in a single invocation. `docker/setup-qemu-action` registers the binfmt handlers.
+
+- **The Dockerfile cross-compiles instead of emulating.** The builder stage was `FROM golang:1.25` with no build platform pinned, which means a multi-platform build resolves the Go toolchain itself to the *target* architecture and runs it under QEMU. Measured on an arm64 host targeting amd64, the old stage reported `GOHOSTARCH=amd64`: an emulated compiler, correct in its output and needlessly slow in getting there. Pinning the stage to `--platform=${BUILDPLATFORM}` reports `GOHOSTARCH=arm64` with `GOARCH=amd64`, which is what cross-compilation looks like, and is available for free because the binary is already `CGO_ENABLED=0`. This was latent rather than harmful while only one platform was built, since build platform and target platform were the same one.
+
+- **`make docker-buildx` builds the committed Dockerfile.** The kubebuilder scaffold `sed`-ed `--platform=${BUILDPLATFORM}` into a throwaway `Dockerfile.cross` at build time, precisely because the real Dockerfile lacked it. That made the local multi-arch target and release CI build different inputs, which is how the gap survived: the target that worked was not the one that shipped. The Dockerfile carries the pin now, so the generated copy is gone and both paths build the same file. `PLATFORMS` also drops `linux/s390x` and `linux/ppc64le`, which CI does not publish and nothing Dorgu targets runs on.
+
 ## [0.11.0] - 2026-08-27
 
 ### Upgrade notes
