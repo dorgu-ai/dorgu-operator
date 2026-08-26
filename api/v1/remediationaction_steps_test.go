@@ -381,3 +381,43 @@ func TestSanitizeStepCommand(t *testing.T) {
 		require.Equal(t, at, SanitizeStepCommand(at))
 	})
 }
+
+// TestRemediationStepCRD_CarriesStructuredSafety pins the field the CLI renders
+// the guardrail verdict from. Before it existed the verdict was a string prefix
+// on the model-authored rationale, which meant it could not be filtered, alerted
+// on, or told apart from the model's own opinion of the same change.
+func TestRemediationStepCRD_CarriesStructuredSafety(t *testing.T) {
+	path := filepath.Join("..", "..", "config", "crd", "bases", "dorgu.io_remediationactions.yaml")
+	data, err := os.ReadFile(path)
+	require.NoError(t, err, "run `make manifests` to generate the CRD")
+
+	var crd apiextensionsv1.CustomResourceDefinition
+	require.NoError(t, yaml.Unmarshal(data, &crd))
+
+	steps := crd.Spec.Versions[0].Schema.OpenAPIV3Schema.
+		Properties["spec"].Properties["steps"]
+	safety, ok := steps.Items.Schema.Properties["safety"]
+	require.True(t, ok, "spec.steps[].safety missing from CRD schema")
+	require.NotContains(t, steps.Items.Schema.Required, "safety", "safety must stay optional")
+
+	entry := safety.Items.Schema
+	require.ElementsMatch(t, []string{"rule", "verdict", "field", "message"}, entry.Required,
+		"the verdict, the field it is about and Dorgu's rendering of it are all mandatory")
+
+	readEnum := func(prop string) []string {
+		out := make([]string, 0, len(entry.Properties[prop].Enum))
+		for _, e := range entry.Properties[prop].Enum {
+			var s string
+			require.NoError(t, json.Unmarshal(e.Raw, &s))
+			out = append(out, s)
+		}
+		return out
+	}
+
+	require.ElementsMatch(t,
+		[]string{SafetyRuleBlastRadius, SafetyRulePlanValidation, SafetyRuleAbsentField},
+		readEnum("rule"))
+	require.ElementsMatch(t,
+		[]string{SafetyVerdictClamped, SafetyVerdictRejected, SafetyVerdictDerived},
+		readEnum("verdict"))
+}

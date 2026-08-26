@@ -196,13 +196,56 @@ type rawPlan struct {
 }
 
 type rawStep struct {
-	Order       int32  `json:"order"`
-	Type        string `json:"type"`
-	Description string `json:"description"`
-	Rationale   string `json:"rationale"`
-	Risk        string `json:"risk"`
-	Patch       string `json:"patch"`
-	Command     string `json:"command"`
+	Order       int32     `json:"order"`
+	Type        string    `json:"type"`
+	Description string    `json:"description"`
+	Rationale   string    `json:"rationale"`
+	Risk        string    `json:"risk"`
+	Patch       planPatch `json:"patch"`
+	Command     string    `json:"command"`
+}
+
+// planPatch decodes a step's patch from either shape the model produces.
+//
+// The tool schema asks for a JSON-encoded string, because that is what stays
+// strictly validatable. A model that has just been instructed to emit a merge
+// patch will sometimes emit the object itself instead, and decoding an object
+// into a string field fails the whole response, not the one field: the plan is
+// retried once, fails identically, and the entire AI path degrades to rules for
+// a plan that was otherwise fine. Both shapes are accepted here.
+//
+// An unusable value leaves the patch empty rather than erroring. A step with no
+// patch is handled downstream, where the proposer either supplies a
+// deterministic one or refuses the plan; failing the decode would instead throw
+// away the model's diagnosis along with its bad field.
+type planPatch struct {
+	raw json.RawMessage
+}
+
+// UnmarshalJSON implements json.Unmarshaler for the string-or-object patch.
+func (p *planPatch) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || string(trimmed) == "null" {
+		return nil
+	}
+
+	if trimmed[0] == '"' {
+		var encoded string
+		if err := json.Unmarshal(trimmed, &encoded); err != nil {
+			return nil
+		}
+		if encoded == "" || !json.Valid([]byte(encoded)) {
+			return nil
+		}
+		p.raw = json.RawMessage(encoded)
+		return nil
+	}
+
+	if trimmed[0] != '{' || !json.Valid(trimmed) {
+		return nil
+	}
+	p.raw = append(json.RawMessage(nil), trimmed...)
+	return nil
 }
 
 func (r rawPlan) toPlan() *RemediationPlan {
@@ -212,18 +255,15 @@ func (r rawPlan) toPlan() *RemediationPlan {
 		Steps:      make([]PlannedStep, 0, len(r.Steps)),
 	}
 	for _, s := range r.Steps {
-		step := PlannedStep{
+		plan.Steps = append(plan.Steps, PlannedStep{
 			Order:       s.Order,
 			Type:        s.Type,
 			Description: s.Description,
 			Rationale:   s.Rationale,
 			Risk:        s.Risk,
 			Command:     s.Command,
-		}
-		if s.Patch != "" && json.Valid([]byte(s.Patch)) {
-			step.Patch = json.RawMessage(s.Patch)
-		}
-		plan.Steps = append(plan.Steps, step)
+			Patch:       s.Patch.raw,
+		})
 	}
 	return plan
 }

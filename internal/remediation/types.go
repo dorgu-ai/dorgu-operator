@@ -51,6 +51,32 @@ type SafetyViolation struct {
 
 	// Message is a human-readable explanation of the violation.
 	Message string
+
+	// BlastRadius carries the violation as numbers rather than as a sentence,
+	// and is set only for the "blast-radius" rule. Callers record the verdict on
+	// the step as structured data (dorguv1.StepSafety); parsing it back out of
+	// Message is what made the verdict unfilterable in the first place.
+	BlastRadius *BlastRadiusViolation
+}
+
+// BlastRadiusViolation is a blast-radius refusal expressed as its inputs, so a
+// caller can state the requested value, the value it measured against, and the
+// ceiling without re-deriving any of them from prose.
+type BlastRadiusViolation struct {
+	// Field is the persona-spec path, e.g. "spec.resources.limits.memory".
+	Field string
+
+	// Baseline is the value the change was measured against.
+	Baseline string
+
+	// Requested is the value the plan asked for.
+	Requested string
+
+	// Ratio is Requested over Baseline.
+	Ratio float64
+
+	// MaxRatio is the largest increase the guardrail allows.
+	MaxRatio float64
 }
 
 // RemediationProposer generates RemediationAction CRDs from diagnoses.
