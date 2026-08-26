@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- **Resource saturation no longer counts pods no node has accepted.** `ClusterPersona.status.resourceSummary.cpuUtilization` read **1689%** on a cluster where 25% was requested and 1% was in use. `setClaimedResources` skipped terminal pods and nothing else, so pods sitting in the scheduling queue had their requests summed against node allocatable. That is not an over-estimate to be tightened: an unscheduled pod holds no allocation on any node, and because such a pod can request more than the cluster owns, the error has no upper bound.
+
+  Only pods a node has actually accepted are counted now. `podHoldsAllocation` makes both exclusions explicit and says why they differ: a Succeeded or Failed pod ran to completion and released its allocation, while a pod with an empty `spec.nodeName` never had one, whether nothing can fit it, it is waiting on a node that has not joined, or it is gated.
+
+  ```
+  before: usedCPU 63965m / allocatable 3860m  ->  cpuUtilization 1657%
+  after:  usedCPU   965m / allocatable 3860m  ->  cpuUtilization   25%
+  ```
+
+  A Pending pod that *has* been bound to a node still counts, because a reservation held while an image pulls is a real reservation. This field feeds the dashboard's cluster view, where a wrong number reads as authoritative in a way terminal output does not; the CLI stopped depending on it in the same fix set (the paired CLI release computes saturation itself from nodes and pods), so the two are corrected from both ends.
+
+  Worth noting: the CRD's own description of `usedCPU` already said "the CPU claimed by the resource requests of **scheduled** pods". The schema was right and the code did not match it.
 ### Upgrade notes
 
 > **With `aiRemediation.enabled=true`, remediations become appliable again. Before this change they were not, and following the quickstart verbatim could not heal anything.** Clean-room run #4 measured it: 9 AI-planned remediations, 0 that could change a workload. The planner described the memory fix as `workload-apply` steps, which the CRD's CEL rule forbids from ever being `autoExecutable`, and gave the one `persona-update` step no patch at all. `spec.action.type` therefore came out `notification`, `dorgu remediation approve` printed "No resource change to apply", and the pod was still in CrashLoopBackOff 42 minutes later. Turning the planner off healed the identical app on the first try.

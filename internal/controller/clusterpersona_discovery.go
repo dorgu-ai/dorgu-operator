@@ -129,13 +129,23 @@ func (r *ClusterPersonaReconciler) calculateResourceSummary(ctx context.Context,
 
 // setClaimedResources fills in the used/utilization half of the summary from the
 // resource requests of scheduled pods, which is what the scheduler treats as
-// consumed and what `dorgu health` renders as "requests / allocatable".
+// consumed and what `dorgu health` renders against allocatable.
 //
 // These four fields were declared on the CRD and never written by anything, so
 // every reader saw empty strings. `dorgu health` then printed
 // "CPU: n/a requests / allocatable ( / 3860m)" on every cluster (F-09). Requests
 // are used rather than live metrics deliberately: they need no metrics-server, so
 // the number is there on a default install instead of being permanently blank.
+//
+// CF6-2 / CR-03: only pods a node has actually accepted are counted. This used to
+// skip terminal pods and nothing else, so pods sitting in the scheduling queue
+// had their requests summed against node allocatable, and a clean-room cluster
+// with a handful of unschedulable pods reported **1689% CPU** where 25% was
+// requested. That is not an over-estimate to be tightened; an unscheduled pod
+// holds no allocation on any node, so counting one against the allocatable pool
+// is a category error, and because such a pod can request more than the cluster
+// owns the error has no upper bound. The percentage feeds a dashboard card, where
+// a wrong number reads as authoritative in a way terminal output does not.
 func (r *ClusterPersonaReconciler) setClaimedResources(
 	summary *dorguv1.ClusterResourceSummary,
 	pods []corev1.Pod,
@@ -145,8 +155,7 @@ func (r *ClusterPersonaReconciler) setClaimedResources(
 
 	for i := range pods {
 		pod := &pods[i]
-		// Terminal pods hold no allocation.
-		if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
+		if !podHoldsAllocation(pod) {
 			continue
 		}
 		cpu, memory := podRequests(pod)
@@ -158,6 +167,23 @@ func (r *ClusterPersonaReconciler) setClaimedResources(
 	summary.UsedMemory = requestedMemory.String()
 	summary.CPUUtilization = utilizationPercent(requestedCPU.MilliValue(), allocatableCPU.MilliValue())
 	summary.MemoryUtilization = utilizationPercent(requestedMemory.Value(), allocatableMemory.Value())
+}
+
+// podHoldsAllocation reports whether a pod is currently holding capacity on a
+// node, which is the only thing that may be counted against allocatable.
+//
+// Two exclusions, for two different reasons. A Succeeded or Failed pod ran to
+// completion and its allocation was released. And a pod with no spec.nodeName has
+// never had one: spec.nodeName is the scheduler's decision written onto the
+// object, so an empty one means the pod is still in the queue, whether because
+// nothing can fit it, because it is waiting on a node that has not joined yet, or
+// because it is gated. In every one of those cases it is consuming nothing
+// anywhere.
+func podHoldsAllocation(pod *corev1.Pod) bool {
+	if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
+		return false
+	}
+	return pod.Spec.NodeName != ""
 }
 
 // podRequests returns what a single pod claims from its node: the sum of its app
