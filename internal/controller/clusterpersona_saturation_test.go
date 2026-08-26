@@ -31,11 +31,14 @@ import (
 )
 
 var _ = Describe("ClusterPersona resource saturation", func() {
-	// requestingPod builds a running pod requesting the given CPU and memory.
+	// requestingPod builds a running pod, scheduled onto a node, requesting the
+	// given CPU and memory. The nodeName is load-bearing rather than decoration:
+	// it is what makes the pod hold an allocation at all (CR-03).
 	requestingPod := func(name, cpu, memory string) corev1.Pod {
 		return corev1.Pod{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
 			Spec: corev1.PodSpec{
+				NodeName: "node-1",
 				Containers: []corev1.Container{{
 					Name:  "app",
 					Image: "app:1",
@@ -107,6 +110,85 @@ var _ = Describe("ClusterPersona resource saturation", func() {
 			Expect(summary.UsedCPU).To(Equal("500m"))
 			Expect(summary.CPUUtilization).To(BeEmpty())
 			Expect(summary.MemoryUtilization).To(BeEmpty())
+		})
+	})
+
+	// CF6-2 / CR-03. The clean-room cluster reported 1689% CPU where 25% was
+	// requested, because pods no node had accepted were summed against node
+	// allocatable. A pod that cannot be placed can request more than the cluster
+	// owns, so the error had no ceiling.
+	Context("unschedulable pods", func() {
+		// queuedPod builds a Pending pod the scheduler has not placed: no
+		// nodeName, and a request larger than the whole cluster.
+		queuedPod := func(name, cpu string) corev1.Pod {
+			pod := requestingPod(name, cpu, "64Gi")
+			pod.Spec.NodeName = ""
+			pod.Status.Phase = corev1.PodPending
+			return pod
+		}
+
+		It("excludes them from allocatable-based math", func() {
+			summary := &dorguv1.ClusterResourceSummary{}
+			pods := []corev1.Pod{
+				requestingPod("web", "965m", "512Mi"),
+				queuedPod("big-1", "21"),
+				queuedPod("big-2", "21"),
+				queuedPod("big-3", "21"),
+			}
+
+			r := &ClusterPersonaReconciler{}
+			r.setClaimedResources(summary, pods,
+				resource.MustParse("3860m"), resource.MustParse("8Gi"))
+
+			Expect(summary.UsedCPU).To(Equal("965m"))
+			Expect(summary.CPUUtilization).To(Equal("25%"))
+		})
+
+		It("never reports more than 100% from requests alone on a healthy cluster", func() {
+			summary := &dorguv1.ClusterResourceSummary{}
+			pods := []corev1.Pod{queuedPod("enormous", "1000")}
+
+			r := &ClusterPersonaReconciler{}
+			r.setClaimedResources(summary, pods,
+				resource.MustParse("4"), resource.MustParse("8Gi"))
+
+			// Nothing is placed, so nothing is claimed.
+			Expect(summary.UsedCPU).To(Equal("0"))
+			Expect(summary.CPUUtilization).To(Equal("0%"))
+		})
+
+		It("counts a Pending pod that has been bound to a node", func() {
+			// Bound but not yet started (pulling an image, for instance) still
+			// holds its reservation on that node.
+			summary := &dorguv1.ClusterResourceSummary{}
+			binding := requestingPod("starting", "1", "512Mi")
+			binding.Status.Phase = corev1.PodPending
+
+			r := &ClusterPersonaReconciler{}
+			r.setClaimedResources(summary, []corev1.Pod{binding},
+				resource.MustParse("4"), resource.MustParse("8Gi"))
+
+			Expect(summary.UsedCPU).To(Equal("1"))
+			Expect(summary.CPUUtilization).To(Equal("25%"))
+		})
+	})
+
+	Context("podHoldsAllocation", func() {
+		It("distinguishes released from never-granted", func() {
+			scheduled := requestingPod("live", "100m", "64Mi")
+			Expect(podHoldsAllocation(&scheduled)).To(BeTrue())
+
+			done := requestingPod("done", "100m", "64Mi")
+			done.Status.Phase = corev1.PodSucceeded
+			Expect(podHoldsAllocation(&done)).To(BeFalse())
+
+			dead := requestingPod("dead", "100m", "64Mi")
+			dead.Status.Phase = corev1.PodFailed
+			Expect(podHoldsAllocation(&dead)).To(BeFalse())
+
+			queued := requestingPod("queued", "100m", "64Mi")
+			queued.Spec.NodeName = ""
+			Expect(podHoldsAllocation(&queued)).To(BeFalse())
 		})
 	})
 
