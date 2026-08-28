@@ -514,8 +514,9 @@ func TestPlanExplanation(t *testing.T) {
 	}
 }
 
-// clampedPlan proposes exactly 2x the current memory limit, which lands on the
-// blast-radius cap: the guardrail, not the diagnosis, chose the number.
+// clampedPlan proposes 512Mi. Against a live 128Mi container that is 4x, so the
+// blast-radius guardrail refuses it, records a verdict, and Dorgu applies the
+// 256Mi the ceiling permits instead.
 func clampedPlan() *planner.RemediationPlan {
 	return &planner.RemediationPlan{
 		RootCause:  "memory limit too low; container OOMKilled at peak load",
@@ -546,13 +547,22 @@ func clampedPlan() *planner.RemediationPlan {
 // caveat to that same field. Recomputing after the disclosure would silently
 // erase it, turning a clamped fix back into a confident-looking one, and both
 // features' own unit tests would still pass.
+//
+// CR5-03 added a second thing this ordering has to survive: the scrub that
+// deletes guardrail claims no recorded verdict supports. So the plan here earns
+// one — 512Mi against a live 128Mi container is 4x, the guardrail refuses it and
+// Dorgu applies 256Mi — and the caveat has to come through both gates. The case
+// where nothing was refused is TestProposer_CR503_NoClampIsAnnouncedWhenNothingWasClamped,
+// and there the caveat is correctly gone.
 func TestProposer_AIPath_ClampNoticeSurvivesExplanationRecompute(t *testing.T) {
-	scheme := newTestScheme()
 	persona := newTestPersona(defaultNamespace, "my-app")
+	deploy := liveDeployment("my-app",
+		map[corev1.ResourceName]string{corev1.ResourceMemory: "128Mi"},
+		map[corev1.ResourceName]string{corev1.ResourceMemory: "128Mi"})
 	incident := newTestIncident(defaultNamespace, "oom", "my-app", "OOMKilled")
 
-	c := fake.NewClientBuilder().WithScheme(scheme).
-		WithRuntimeObjects(persona).
+	c := fake.NewClientBuilder().WithScheme(newWorkloadScheme()).
+		WithRuntimeObjects(persona, deploy).
 		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
 
 	p := NewProposer(c, NewSafetyChecker(c, testLogger()), testLogger(),
@@ -565,6 +575,7 @@ func TestProposer_AIPath_ClampNoticeSurvivesExplanationRecompute(t *testing.T) {
 
 	spec := result.Action.Spec
 
+	require.NotEmpty(t, spec.Steps[0].Safety, "the guardrail really did refuse this plan's value")
 	assert.Contains(t, spec.Explanation, "Clamped by the 2x blast-radius guardrail",
 		"the clamp caveat must not be erased by the explanation recompute")
 	assert.Contains(t, spec.Explanation, "AI remediation plan:",
