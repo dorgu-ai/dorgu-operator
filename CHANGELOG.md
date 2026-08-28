@@ -33,7 +33,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Upgrade notes
 
-> **Every operator image published before 0.11.1 was amd64-only.** `ghcr.io/dorgu-ai/dorgu-operator` up to and including `0.11.0` was pushed as a single-platform manifest rather than a manifest list, so no arm64 node could pull it. That covers AWS Graviton nodegroups and any local kind or k3d cluster on an Apple Silicon Mac, where the pod stays in `ImagePullBackOff` with `no matching manifest for linux/arm64`. There is no workaround on an affected cluster other than upgrading: the arm64 image did not exist to be pulled.
+> **Every operator image published before 0.11.1 was amd64-only.** `ghcr.io/dorgu-ai/dorgu-operator` up to and including `0.11.0` was pushed as a single-platform manifest rather than a manifest list. That covers AWS Graviton nodegroups and any local kind or k3d cluster on an Apple Silicon Mac. There is no workaround on an affected cluster other than upgrading: the arm64 image did not exist to be pulled.
+>
+> **The symptom on containerd is `exec format error`, not `ImagePullBackOff`.** This note originally said the pod stays in `ImagePullBackOff` with `no matching manifest for linux/arm64`, and clean-room run #5 measured otherwise on EKS 1.35 with containerd 2.2.5. With no manifest list to select from, containerd has nothing to reject: the pull **succeeds**, the amd64 binary is started on an arm64 kernel, and the container terminates immediately.
+>
+> ```
+> Pulled   Successfully pulled image "ghcr.io/dorgu-ai/dorgu-operator:0.11.0" in 2.771s
+> Started  Container started
+> $ kubectl logs arch-probe-0110
+> exec /manager: exec format error
+> $ state: {"terminated":{"exitCode":255,"reason":"Error"}}
+> ```
+>
+> So the pod reads `CrashLoopBackOff` with exit code 255. `ImagePullBackOff` with `no matching manifest for linux/arm64` is the Docker-daemon variant, which is what a `docker run` on a developer's machine produces and what this note described. The distinction matters because someone debugging on Graviton searches for the error they can see: "no matching manifest" returns nothing, and they never connect `exec format error` to the architecture of the image.
 >
 > **0.11.1 is that image and nothing else.** No API, CRD, controller or chart-template change, so the upgrade is a tag bump. If you pin the image by digest, repin to the manifest list digest rather than to either platform's manifest, otherwise a mixed-arch nodegroup will still fail on half its nodes.
 
