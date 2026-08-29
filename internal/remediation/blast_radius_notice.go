@@ -21,6 +21,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 
@@ -154,6 +155,13 @@ func dampConfidence(confidence string) string {
 
 // appendNote joins a note onto existing prose without doubling separators or
 // repeating a note that is already there.
+//
+// A missing full stop is supplied. Without one the two runs together into a
+// single sentence — "…1 applied on approval and 1 advisory Clamped by the 2x
+// blast-radius guardrail…" is what the clean room read — and a reader is not
+// the only casualty: scrubRefusedValues redacts by sentence, so a model
+// sentence fused to a Dorgu-authored note cannot be removed without taking the
+// note with it.
 func appendNote(existing, note string) string {
 	if existing == "" {
 		return note
@@ -161,7 +169,21 @@ func appendNote(existing, note string) string {
 	if strings.Contains(existing, note) {
 		return existing
 	}
-	return strings.TrimRight(existing, " ") + " " + note
+	return endSentence(existing) + " " + note
+}
+
+// endSentence terminates prose that does not terminate itself. Text already
+// ending in punctuation is left exactly as it is.
+func endSentence(text string) string {
+	trimmed := strings.TrimRight(text, " ")
+	if trimmed == "" {
+		return trimmed
+	}
+	last := []rune(trimmed)[len([]rune(trimmed))-1]
+	if unicode.IsLetter(last) || unicode.IsDigit(last) {
+		return trimmed + "."
+	}
+	return trimmed
 }
 
 // sortedKeys returns a set's keys in a stable order.

@@ -7,11 +7,45 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- **A value a guardrail refused can no longer appear on any surface a client renders (CR5-01).** Clean-room run #5 approved a plan whose blast-radius verdicts had just refused `512Mi` and `256Mi` against a live `8Mi` baseline, and three lines below the refusal, on the final confirmation screen before `[y/N]`, Dorgu printed `kubectl set resources deployment/drifted --containers=drifted --limits=memory=512Mi --requests=memory=256Mi -n drift` as a copy-paste command. The workload was unmanaged, so the paste actually lands, and the plan's own rationale called the write "safe". One paste defeats the product's central safety claim, performed by a user doing exactly what the plan told them to do.
+
+  This is the second instance of the same defect. 0.11.0 fixed it for owner instructions by moving `applyOwnershipShaping` below the guardrails; `workload-apply` steps on unmanaged workloads were the one path that fix did not cover, and they are the one path where the command is runnable. Two instances in two places is a pattern, so the fix is not a third local patch. `scrubRefusedValues` is a single chokepoint immediately before the `Create`: it reads the structured verdicts already recorded on the steps and removes those values from patches, commands, descriptions, rationale, the plan summary and the explanation alike. Refusals are collected across the whole action rather than per step, because CR5-01 was a value refused on step 1 being re-offered by step 2. Quantities are compared numerically as well as literally, so `268435456` is recognised as the `256Mi` that was refused, while `1256Mi` is not.
+
+  A command that carries a refused value is dropped rather than rewritten, and the step says why. Rebuilding an arbitrary `kubectl` invocation from a post-guardrail patch means parsing a grammar Dorgu does not own, and a half-corrected command that still looks runnable is worse than no command at all. Two things are deliberately left alone: `spec.steps[].safety[].message`, because a refusal that cannot name what it refused explains nothing, and `prePatchState`, because it records what the persona holds now. In the clean-room case it genuinely held `512Mi`, so pruning it would break rollback and turn an accurate `512Mi -> 16Mi` diff into a lie.
+
+- **No surface asserts a guardrail ruled unless one recorded a verdict (CR5-03).** On two plans that asked for exactly 2x, nothing was clamped, `spec.steps[].safety` was `null` on every step and no `GUARDRAIL` column appeared. And yet the sentence "Clamped by the 2x blast-radius guardrail: … could not be raised further in one step" appeared three times regardless, in `explanation`, in `planSummary` and in a step's `rationale`, two paragraphs from the model's own statement that it had chosen to double. The two claims contradict each other and nothing tells the reader which one was computed. Worse, `explanation` is copied verbatim into `IncidentMemory.spec.resolution.action`, so the fabricated verdict outlived the incident it was invented for.
+
+  `scrubFabricatedGuardrailClaims` runs alongside the CR5-01 chokepoint and removes guardrail assertions from the plan's prose whenever no step carries a `safety` entry. It is keyed on the recorded verdict rather than on who wrote the sentence, because there are two authors and neither can be trusted to police itself: prompt rule G7 already forbids the model from commenting on caps and does not prevent it, and the sentence the clean room actually read was Dorgu's own at-the-cap disclosure calling *sitting at* a ceiling *being clamped by* one. A prompt is a request, not an enforcement point. Both paths are covered, rule-based and AI.
+
+  **Consequence worth knowing about:** the F-11 disclosure now only appears when a guardrail genuinely refused a value. A plan that chose 2x for itself is still reported as less certain (confidence damping is untouched, `0.86` becomes `0.73`), but it no longer carries prose about the cap, because the guardrail did not constrain it. Restoring an honest version of that disclosure means recording "at cap" as structured data in `spec.steps[].safety`, which is a CRD enum change and a rendering change in the CLI, so it is deliberately not in this change.
+
+- **A rollback that could not reach the workload now says so (CR5-02).** Verification found the health degraded, the operator restored the `ApplicationPersona`, and wrote phase `RolledBack` with "Remediation rolled back due to degraded health". The live Deployment kept the `16Mi` the heal had put there. There was no condition, no event, no log line and no CLI hint. "RolledBack" is a strong word: a reader takes it to mean the workload returned to its prior state and does not then go and diff the Deployment. Meanwhile the persona and the cluster now disagree in a new direction, and the next proposal re-anchors its blast radius on the still-changed live value.
+
+  The operator is not given write access to Deployments to fix this. It holds `get`, `list` and `watch` on `apps/deployments` and nothing else, that restriction is the product's central promise, and `/security-and-permissions` documents it. What it can do is read. After a successful persona rollback it now compares the live container against `workloadRef.observedResources` — the values it recorded *before* the remediation, not `prePatchState`, which holds the persona's prior value and in the clean-room case was `512Mi`, a number the Deployment never had.
+
+- **New condition on RemediationAction: `WorkloadDiverged`.** `True` with reason `WorkloadDiverged` when the live workload still carries the change, `False` with `WorkloadRestored` when it does not, `Unknown` with `WorkloadUnreadable` when Dorgu could not read it — an unreadable workload is not a restored one. Its message names the Deployment, the container, each field, live versus pre-remediation, and what to do about it, and is written to be printed verbatim by a client. An unmanaged workload gets the `kubectl set resources` invocation; every other owner, including `unknown`, gets the same owner-shaped instruction the plan itself would have used, because a rollback advisory is not an exemption from the ownership rule. The divergence is also logged with the deployment, container, `managedBy` and every diverged field.
+
+- **A note appended to prose gets the full stop it was missing.** `appendNote` joined two sentences with a space, which is how "…1 applied on approval and 1 advisory Clamped by the 2x blast-radius guardrail…" reached the clean-room's screen. It also mattered mechanically: the CR5-01 scrub redacts by sentence, and a model sentence fused to a Dorgu-authored note could not be removed without taking the note with it.
+
 ## [0.11.1] - 2026-08-27
 
 ### Upgrade notes
 
-> **Every operator image published before 0.11.1 was amd64-only.** `ghcr.io/dorgu-ai/dorgu-operator` up to and including `0.11.0` was pushed as a single-platform manifest rather than a manifest list, so no arm64 node could pull it. That covers AWS Graviton nodegroups and any local kind or k3d cluster on an Apple Silicon Mac, where the pod stays in `ImagePullBackOff` with `no matching manifest for linux/arm64`. There is no workaround on an affected cluster other than upgrading: the arm64 image did not exist to be pulled.
+> **Every operator image published before 0.11.1 was amd64-only.** `ghcr.io/dorgu-ai/dorgu-operator` up to and including `0.11.0` was pushed as a single-platform manifest rather than a manifest list. That covers AWS Graviton nodegroups and any local kind or k3d cluster on an Apple Silicon Mac. There is no workaround on an affected cluster other than upgrading: the arm64 image did not exist to be pulled.
+>
+> **The symptom on containerd is `exec format error`, not `ImagePullBackOff`.** This note originally said the pod stays in `ImagePullBackOff` with `no matching manifest for linux/arm64`, and clean-room run #5 measured otherwise on EKS 1.35 with containerd 2.2.5. With no manifest list to select from, containerd has nothing to reject: the pull **succeeds**, the amd64 binary is started on an arm64 kernel, and the container terminates immediately.
+>
+> ```
+> Pulled   Successfully pulled image "ghcr.io/dorgu-ai/dorgu-operator:0.11.0" in 2.771s
+> Started  Container started
+> $ kubectl logs arch-probe-0110
+> exec /manager: exec format error
+> $ state: {"terminated":{"exitCode":255,"reason":"Error"}}
+> ```
+>
+> So the pod reads `CrashLoopBackOff` with exit code 255. `ImagePullBackOff` with `no matching manifest for linux/arm64` is the Docker-daemon variant, which is what a `docker run` on a developer's machine produces and what this note described. The distinction matters because someone debugging on Graviton searches for the error they can see: "no matching manifest" returns nothing, and they never connect `exec format error` to the architecture of the image.
 >
 > **0.11.1 is that image and nothing else.** No API, CRD, controller or chart-template change, so the upgrade is a tag bump. If you pin the image by digest, repin to the manifest list digest rather than to either platform's manifest, otherwise a mixed-arch nodegroup will still fail on half its nodes.
 

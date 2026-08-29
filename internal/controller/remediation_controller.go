@@ -54,6 +54,20 @@ const (
 	ConditionApplied    = "Applied"
 	ConditionVerified   = "Verified"
 	ConditionRolledBack = "RolledBack"
+
+	// ConditionWorkloadDiverged reports what a rollback could NOT reach.
+	//
+	// The operator restores the ApplicationPersona and has no write verbs on
+	// Deployments, so a workload the CLI already patched keeps the change. In
+	// clean-room run #5 the persona went back to 512Mi while the Deployment sat
+	// at the 16Mi the heal had applied, and the only thing the record said was
+	// "Remediation rolled back due to degraded health" (CR5-02). This condition
+	// is where that divergence is stated: True when the workload still carries
+	// the change, False when it does not, Unknown when Dorgu could not read it.
+	// Its message names the Deployment, the container, the field, live versus
+	// pre-remediation, and what to do about it, and is written to be printed
+	// verbatim by a client.
+	ConditionWorkloadDiverged = "WorkloadDiverged"
 )
 
 // Default verification wait and retry constants.
@@ -292,6 +306,12 @@ func (r *RemediationController) handleVerificationDegraded(ctx context.Context, 
 	action.Status.Phase = RemediationPhaseRolledBack
 	setCondition(&action.Status.Conditions, ConditionRolledBack, metav1.ConditionTrue, "HealthDegraded", "Remediation rolled back due to degraded health")
 
+	// CR5-02: say what the rollback did NOT reach. The operator restored the
+	// persona and cannot un-patch a Deployment, so a workload the CLI already
+	// changed keeps the change. Leaving that unsaid is what let a user read
+	// "RolledBack" and walk away from a cluster that had not rolled back.
+	r.recordRollbackScope(ctx, logger, action)
+
 	if err := r.Status().Update(ctx, action); err != nil {
 		return ctrl.Result{}, fmt.Errorf("updating status to RolledBack: %w", err)
 	}
@@ -305,6 +325,40 @@ func (r *RemediationController) handleVerificationDegraded(ctx context.Context, 
 
 	logger.Info("remediation rolled back")
 	return ctrl.Result{}, nil
+}
+
+// recordRollbackScope writes the WorkloadDiverged condition and logs the
+// divergence, so the fact is available to a client reading the CRD, to anyone
+// reading the operator log, and to `dorgu remediation` without either of them
+// having to diff the Deployment by hand.
+func (r *RemediationController) recordRollbackScope(ctx context.Context, logger logr.Logger, action *dorguv1.RemediationAction) {
+	outcome := r.Rollback.InspectRollback(ctx, action)
+
+	status := metav1.ConditionFalse
+	switch outcome.Reason() {
+	case remediation.ReasonWorkloadDiverged:
+		status = metav1.ConditionTrue
+	case remediation.ReasonWorkloadUnreadable:
+		status = metav1.ConditionUnknown
+	}
+
+	setCondition(&action.Status.Conditions, ConditionWorkloadDiverged, status,
+		outcome.Reason(), outcome.Message())
+
+	if !outcome.Diverged() {
+		logger.V(1).Info("rollback scope recorded", "reason", outcome.Reason())
+		return
+	}
+
+	fields := make([]string, 0, len(outcome.Divergences))
+	for _, d := range outcome.Divergences {
+		fields = append(fields, fmt.Sprintf("%s live=%s pre-remediation=%s", d.Field, d.Live, d.Intended))
+	}
+	logger.Info("rollback restored the persona but the live workload still carries the change; Dorgu has no write access to Deployments",
+		"deployment", fmt.Sprintf("%s/%s", outcome.Ref.Namespace, outcome.Ref.Name),
+		"container", outcome.Ref.Container,
+		"managedBy", outcome.Ref.ManagedBy,
+		"diverged", fields)
 }
 
 // handleVerificationUnknown retries verification or fails after max retries.

@@ -131,11 +131,35 @@ func (p *Proposer) proposeWithPlanner(
 	action.Spec.Explanation = planExplanation(action.Spec.Steps)
 
 	// The planner is told to keep changes within ~2x the live limit, so a plan
-	// can arrive already pressed against the cap. Say so rather than presenting a
-	// truncated fix as a confident one. Measured against the live workload.
+	// can arrive already pressed against the cap. Damp its confidence rather than
+	// presenting a truncated fix as a confident one. Measured against the live
+	// workload.
+	//
+	// The prose half of this disclosure only survives the CR5-03 scrub below when
+	// a guardrail actually recorded a verdict, so the log says what is always
+	// true rather than what used to be claimed.
 	if discloseGroundedBlastRadiusClamp(action, workloadRef) {
-		p.logger.Info("plan sits at the blast-radius cap; disclosing the clamp in the plan summary",
+		p.logger.Info("plan sits at the blast-radius cap; damping confidence",
 			"action", action.Name, "confidence", action.Spec.Confidence)
+	}
+
+	// CR5-01: the single chokepoint. Everything above has now had its say, so
+	// this is the last shape the plan takes before it is written, and no value a
+	// guardrail refused may survive into any surface a client renders. It is
+	// here rather than beside each producer because the same defect has already
+	// been found in two producers.
+	if scrubbed := scrubRefusedValues(action); scrubbed > 0 {
+		p.logger.Info("removed guardrail-refused values from the plan before persisting it",
+			"action", action.Name, "surfaces", scrubbed)
+	}
+
+	// CR5-03: and no surface may assert a guardrail ruled when none did. This is
+	// the enforcement point for prompt rule G7, which asks the model not to
+	// comment on caps and cannot make it so, and for Dorgu's own at-the-cap
+	// disclosure, which called sitting at a ceiling being clamped by one.
+	if scrubbed := scrubFabricatedGuardrailClaims(action); scrubbed > 0 {
+		p.logger.Info("removed guardrail claims no recorded verdict supports",
+			"action", action.Name, "surfaces", scrubbed)
 	}
 
 	// The invariant CR-01 is about, asserted on the object that is about to be

@@ -386,11 +386,11 @@ func (p *Proposer) proposeResourceAdjustment(
 		},
 	}
 
-	// Say so when the guardrail, not the diagnosis, picked the number. Measured
-	// against the live workload, so the disclosure describes the change the
-	// cluster will actually see.
+	// Damp confidence when the change lands on the cap rather than where the
+	// diagnosis wanted it. Measured against the live workload, so it describes
+	// the change the cluster will actually see.
 	if discloseGroundedBlastRadiusClamp(action, workloadRef) {
-		p.logger.Info("proposed change sits at the blast-radius cap; disclosing the clamp in the plan",
+		p.logger.Info("proposed change sits at the blast-radius cap; damping confidence",
 			"action", action.Name, "confidence", action.Spec.Confidence)
 	}
 
@@ -410,6 +410,15 @@ func (p *Proposer) proposeResourceAdjustment(
 		return &ProposalResult{
 			SkipReason: fmt.Sprintf("safety check failed: %v", reasons),
 		}, nil
+	}
+
+	// CR5-03, on this path too. A rule-based plan records no step verdicts, so
+	// its at-the-cap disclosure claims a clamp that never happened just as the
+	// AI path's did. The scrub is keyed on the recorded verdict rather than on
+	// who authored the sentence, which is why it applies to both.
+	if scrubbed := scrubFabricatedGuardrailClaims(action); scrubbed > 0 {
+		p.logger.Info("removed guardrail claims no recorded verdict supports",
+			"action", action.Name, "surfaces", scrubbed)
 	}
 
 	// Create the RemediationAction CRD.
