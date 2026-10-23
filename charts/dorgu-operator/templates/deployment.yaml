@@ -119,6 +119,11 @@ spec:
             - name: healthz
               containerPort: 8081
               protocol: TCP
+            {{- if .Values.metrics.enabled }}
+            - name: metrics
+              containerPort: {{ regexFind "[0-9]+$" .Values.metrics.bindAddress | int }}
+              protocol: TCP
+            {{- end }}
             {{- if .Values.websocket.enabled }}
             - name: websocket
               containerPort: {{ .Values.websocket.port }}

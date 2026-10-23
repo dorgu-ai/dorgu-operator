@@ -91,10 +91,16 @@ func TestGeneratedRoleCoversChartReads(t *testing.T) {
 	}
 }
 
+// The kustomize install also binds metrics-auth-role so the secure metrics
+// endpoint can authenticate scrapers; the chart has to grant the same.
 func TestChartCoversGeneratedRole(t *testing.T) {
-	generated, err := os.ReadFile("../../config/rbac/role.yaml")
-	if err != nil {
-		t.Fatalf("reading generated role: %v", err)
+	var generated []byte
+	for _, file := range []string{"../../config/rbac/role.yaml", "../../config/rbac/metrics_auth_role.yaml"} {
+		raw, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatalf("reading %s: %v", file, err)
+		}
+		generated = append(generated, append([]byte("\n---\n"), raw...)...)
 	}
 	chart := clusterRoleGrants(t, helmTemplate(t))
 	markers := clusterRoleGrants(t, string(generated))
