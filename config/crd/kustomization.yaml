@@ -4,6 +4,9 @@
 resources:
 - bases/dorgu.io_applicationpersonas.yaml
 - bases/dorgu.io_clusterpersonas.yaml
+- bases/dorgu.io_dorguevents.yaml
+- bases/dorgu.io_incidentmemories.yaml
+- bases/dorgu.io_remediationactions.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:
