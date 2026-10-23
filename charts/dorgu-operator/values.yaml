@@ -72,7 +72,9 @@ websocket:
 # Health check reconciler: detection, diagnosis, incident records, and remediation
 # proposals. On by default, because self-healing is the product and an operator
 # that detects nothing is indistinguishable from a broken install.
-# Turn it off with --set healthCheck.enabled=false.
+# Turn it off with --set healthCheck.enabled=false. Off means off: the operator
+# then records ApplicationPersona health only, and never opens an incident or
+# proposes a fix.
 #
 # This is local and free. AI diagnosis and AI remediation planning stay opt-in
 # (llm.provider + a key + aiRemediation.enabled below): inference costs money and

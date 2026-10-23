@@ -181,7 +181,7 @@ func main() {
 	}
 
 	// Create WebSocket server upfront (before health check) so it can be injected
-	// into all controllers that need to broadcast lifecycle events.
+	// into the health check and remediation controllers, which broadcast lifecycle events.
 	var wsServer *dorguws.Server
 	if cfg.enableWebSocket {
 		setupLog.Info("Starting WebSocket server", "addr", cfg.webSocketAddr)
@@ -189,11 +189,9 @@ func main() {
 	}
 
 	if err := (&controller.ApplicationPersonaReconciler{
-		Client:             mgr.GetClient(),
-		Scheme:             mgr.GetScheme(),
-		PrometheusURL:      cfg.prometheusURL,
-		WebSocket:          wsServer,
-		HealthCheckEnabled: cfg.enableHealthCheck,
+		Client:        mgr.GetClient(),
+		Scheme:        mgr.GetScheme(),
+		PrometheusURL: cfg.prometheusURL,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ApplicationPersona")
 		os.Exit(1)
@@ -248,7 +246,7 @@ func main() {
 	signalCtx := ctrl.SetupSignalHandler()
 
 	// Start the WebSocket server (already constructed above so it can be
-	// injected into the ApplicationPersonaReconciler before Setup).
+	// injected into the controllers before Setup).
 	if wsServer != nil {
 		go func() {
 			if err := wsServer.Start(signalCtx); err != nil {

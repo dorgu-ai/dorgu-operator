@@ -121,8 +121,9 @@ func parseFlags() operatorConfig {
 		"Enable WebSocket server for CLI real-time communication.")
 	flag.StringVar(&cfg.webSocketAddr, "websocket-addr", ":9090",
 		"Address for the WebSocket server to listen on.")
-	flag.BoolVar(&cfg.enableHealthCheck, "enable-health-check", false,
-		"Enable health check reconciler for Phase 2a detection and diagnosis.")
+	flag.BoolVar(&cfg.enableHealthCheck, "enable-health-check", true,
+		"Run detection, diagnosis and remediation proposals. When false, Dorgu records persona health only "+
+			"and never opens an incident or proposes a fix.")
 	flag.DurationVar(&cfg.healthCheckInterval, "health-check-interval", 60*time.Second,
 		"Health check reconciler interval.")
 	flag.BoolVar(&cfg.enableMetricsServer, "enable-metrics-server", true,

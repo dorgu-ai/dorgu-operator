@@ -11,6 +11,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - **Adversarial bypass suite (`test/adversarial/`, `make adversarial`).** One envtest test per attack in `test/adversarial/SCENARIOS.md` (OP-01 to OP-14, ID-01 to ID-04), each asserting the safe outcome against the real controllers. Holes not yet closed are listed once in `openScenarios` with the checkpoint that must close them and skip as `OPEN`; a listed scenario that starts passing, or an unlisted one that stops passing, fails the suite. `make adversarial` ends with the KPI I1 line, `adversarial: blocked N/18`.
 
+### Removed
+
+- **The legacy ApplicationPersona OOM proposer (OP-10).** With `--enable-health-check=false` (or `healthCheck.enabled=false`), the ApplicationPersona reconciler still opened OOMKilled incidents and wrote RemediationActions itself, with no safety check, ownership check or mode check, and with a patch the executor could not even apply (it lacked the `spec` wrapper). The documented promise that turning the health check off means Dorgu never opens an incident or proposes a fix is now true. The ApplicationPersona reconciler records health only; its unused `WebSocket` field is gone with it.
+
+### Changed
+
+- **`--enable-health-check` now defaults to `true` in the binary,** matching the chart, which has defaulted `healthCheck.enabled` to `true` since 0.10. Running the binary without flags no longer silently disables detection. The README configuration table, which still said `false`, is corrected.
+
 ### Fixed
 
 - **A value a guardrail refused can no longer appear on any surface a client renders (CR5-01).** Clean-room run #5 approved a plan whose blast-radius verdicts had just refused `512Mi` and `256Mi` against a live `8Mi` baseline, and three lines below the refusal, on the final confirmation screen before `[y/N]`, Dorgu printed `kubectl set resources deployment/drifted --containers=drifted --limits=memory=512Mi --requests=memory=256Mi -n drift` as a copy-paste command. The workload was unmanaged, so the paste actually lands, and the plan's own rationale called the write "safe". One paste defeats the product's central safety claim, performed by a user doing exactly what the plan told them to do.

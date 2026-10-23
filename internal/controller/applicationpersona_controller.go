@@ -35,7 +35,6 @@ import (
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/metrics"
-	"github.com/dorgu-ai/dorgu-operator/internal/websocket"
 	"github.com/dorgu-ai/dorgu-operator/internal/workload"
 )
 
@@ -64,13 +63,6 @@ type ApplicationPersonaReconciler struct {
 	client.Client
 	Scheme        *runtime.Scheme
 	PrometheusURL string // Optional Prometheus URL for metrics baseline
-	WebSocket     *websocket.Server
-
-	// HealthCheckEnabled reports whether the unified HealthCheckReconciler is
-	// running. When true it owns OOM detection→diagnosis→remediation (AI plan
-	// with a rule-based fallback), so this reconciler's legacy rule-based OOM
-	// path stands down to avoid double-proposing (WS8 F2: AI-xor-rule).
-	HealthCheckEnabled bool
 }
 
 // +kubebuilder:rbac:groups=dorgu.io,resources=applicationpersonas,verbs=get;list;watch;create;update;patch;delete
@@ -181,15 +173,9 @@ func (r *ApplicationPersonaReconciler) Reconcile(ctx context.Context, req ctrl.R
 		}
 	}
 
-	// 6.7. Detect OOM incidents and create IncidentMemory + RemediationAction.
-	// Skipped when the health-check reconciler is active: it owns unified
-	// detection→diagnosis→remediation, so running this legacy rule-based path
-	// too would double-propose (one OOM → many RemediationActions). See WS8 F2.
-	if !r.HealthCheckEnabled {
-		if err := r.detectAndRecordOOMIncidents(ctx, persona, &deploy); err != nil {
-			log.V(1).Info("OOM incident detection failed", "error", err.Error())
-		}
-	}
+	// This reconciler records health; it never opens incidents or proposes
+	// remediations. Those belong to the HealthCheckReconciler, where every
+	// guardrail lives (OP-10).
 
 	// 7. Update deployment tracking
 	image := ""

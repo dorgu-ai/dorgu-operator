@@ -63,7 +63,6 @@ var openScenarios = map[string]openScenario{
 	"OP-07": {"CP1", "the executor merges any persona path, including policies and null deletes"},
 	"OP-08": {"CP1", "healthCheckAfter and rollback.enabled are author-supplied and unbounded"},
 	"OP-09": {"CP1", "steps[].safety is a spec field the operator never recomputes"},
-	"OP-10": {"CP0", "the legacy ApplicationPersona OOM proposer writes RAs when the health check is off"},
 	"OP-11": {"CP1", "a substring match on model prose overwrites SuggestedAction and the dedup key"},
 	"OP-12": {"CP1", "final Unknown verification fails the RA without rolling back"},
 	"OP-13": {"CP1", "the verifier compares personaRef.namespace verbatim; empty never matches a signal"},

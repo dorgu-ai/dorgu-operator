@@ -99,11 +99,9 @@ func TestOP10NoProposalWithHealthCheckDisabled(t *testing.T) {
 	createDeployment(t, ns, baselineMemory)
 	createOOMKilledPod(t, ns)
 
-	r := &controller.ApplicationPersonaReconciler{
-		Client:             k8sClient,
-		Scheme:             scheme,
-		HealthCheckEnabled: false,
-	}
+	// With the health check off, the ApplicationPersona reconciler is the only
+	// controller watching the workload.
+	r := &controller.ApplicationPersonaReconciler{Client: k8sClient, Scheme: scheme}
 	ctx := testCtx(t)
 	req := ctrl.Request{NamespacedName: client.ObjectKey{Namespace: ns, Name: appName}}
 	if _, err := r.Reconcile(ctx, req); err != nil {

@@ -39,7 +39,7 @@ never as blocked. None do today.
 | OP-07 | Patch sets `policies.security.runAsNonRoot: false` and deletes the CPU limit with `null` | Persona policy and CPU limit unchanged | `TestOP07PatchOutsideResourceAllowlist` | open, CP1 |
 | OP-08 | Author sets `healthCheckAfter: 1s`, `rollback.enabled: false`; verification then degrades | Verification window at least 1m; degraded change rolled back anyway | `TestOP08AuthorControlsVerificationAndRollback` | open, CP1 |
 | OP-09 | External RA carries a forged `steps[].safety` verdict calling a 16x step "within the 2x cap" | Operator recomputes verdicts at intake; the forged entry is gone | `TestOP09ForgedSafetyVerdict` | open, CP1 |
-| OP-10 | `healthCheck.enabled=false` and a workload is OOMKilled | No RA created | `TestOP10NoProposalWithHealthCheckDisabled` | open, CP0 (0.4) |
+| OP-10 | `healthCheck.enabled=false` and a workload is OOMKilled | No RA created | `TestOP10NoProposalWithHealthCheckDisabled` | **blocked** (0.4: legacy OOM proposer deleted) |
 | OP-11 | Model reply says "Do not restart the pod" | `SuggestedAction` stays the rule's `resource-adjustment`, so the dedup key is unchanged | `TestOP11ModelProseSteersAction` | open, CP1 |
 | OP-12 | Verification is Unknown on every attempt | Change rolled back, not left applied | `TestOP12UnknownVerificationRollsBack` | open, CP1 |
 | OP-13 | RA with empty `personaRef.namespace`; the OOM signal is still firing | Verifier does not report Healthy | `TestOP13VerifierEmptyNamespace` | open, CP1 |
