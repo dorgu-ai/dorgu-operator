@@ -324,13 +324,17 @@ func (s *SafetyCheckerImpl) checkDenyList(ctx context.Context, action *dorguv1.R
 	if targetNamespace == "" {
 		targetNamespace = action.Namespace
 	}
+	return s.NamespaceDenied(ctx, targetNamespace)
+}
 
+// NamespaceDenied applies the deny list to a namespace on its own (S4).
+func (s *SafetyCheckerImpl) NamespaceDenied(ctx context.Context, namespace string) *SafetyViolation {
 	// Always deny kube-system, the operator's own namespace and any namespace
 	// the installer protected.
-	if slices.Contains(s.protected, targetNamespace) {
+	if slices.Contains(s.protected, namespace) {
 		return &SafetyViolation{
 			Rule:    RuleDenyList,
-			Message: fmt.Sprintf("namespace %s is in the protected deny list", targetNamespace),
+			Message: fmt.Sprintf("namespace %s is in the protected deny list", namespace),
 		}
 	}
 
@@ -342,10 +346,10 @@ func (s *SafetyCheckerImpl) checkDenyList(ctx context.Context, action *dorguv1.R
 		return nil
 	}
 
-	if slices.Contains(excludedNamespaces, targetNamespace) {
+	if slices.Contains(excludedNamespaces, namespace) {
 		return &SafetyViolation{
 			Rule:    RuleDenyList,
-			Message: fmt.Sprintf("namespace %s is excluded by ClusterPersona policy", targetNamespace),
+			Message: fmt.Sprintf("namespace %s is excluded by ClusterPersona policy", namespace),
 		}
 	}
 

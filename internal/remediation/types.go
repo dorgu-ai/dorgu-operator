@@ -87,4 +87,8 @@ type RemediationProposer interface {
 // SafetyChecker validates a proposed remediation against safety guardrails.
 type SafetyChecker interface {
 	Check(ctx context.Context, action *dorguv1.RemediationAction) (*SafetyResult, error)
+
+	// NamespaceDenied reports whether nothing may be proposed in namespace at
+	// all. It needs no action, so the proposer can ask before planning.
+	NamespaceDenied(ctx context.Context, namespace string) *SafetyViolation
 }
