@@ -232,7 +232,7 @@ kubectl get clusterpersona           # dorgu-cluster, auto-created
 | `operator.clusterPersonaEnsureInterval` | How often to re-ensure that persona exists (clamped to 30s minimum) | `2m` |
 | `validation.requeueInterval` | ApplicationPersona validation requeue interval | `60s` |
 | `leaderElection.enabled` | Leader election for the controller manager | `true` |
-| `metrics.enabled` / `metrics.bindAddress` / `metrics.secure` | Controller metrics endpoint | `true` / `:8443` / `true` |
+| `metrics.enabled` / `metrics.bindAddress` / `metrics.secure` | Controller metrics endpoint: controller-runtime defaults plus `dorgu_incidents_total{class,scope}`, `dorgu_proposals_total{source,action_type,result}` and `dorgu_remediation_transitions_total{from,to}` | `true` / `:8443` / `true` |
 | `healthProbe.bindAddress` | Liveness/readiness probe address | `:8081` |
 | `resources` | Manager container requests and limits | 10m/64Mi → 500m/128Mi |
 

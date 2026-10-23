@@ -34,6 +34,7 @@ import (
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
 	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
 	"github.com/dorgu-ai/dorgu-operator/internal/events"
+	"github.com/dorgu-ai/dorgu-operator/internal/metrics"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation"
 	"github.com/dorgu-ai/dorgu-operator/internal/websocket"
 )
@@ -378,11 +379,13 @@ func (r *HealthCheckReconciler) processDiagnosis(
 			return nil
 		}
 		if suppressed != "" {
+			metrics.RecordProposal(metrics.SourceDorgu, diag.SuggestedAction, metrics.ProposalSuppressed)
 			r.Logger.V(1).Info("remediation not proposed", "reason", suppressed, "incident", incident.Name)
 			return nil
 		}
 
 		result, proposeErr := r.Proposer.Propose(ctx, *diag, incident)
+		metrics.RecordProposal(metrics.SourceDorgu, diag.SuggestedAction, proposalOutcome(result, proposeErr))
 		if proposeErr != nil {
 			r.Logger.Error(proposeErr, "failed to propose remediation", "incident", incident.Name)
 		} else if result.Proposed {
@@ -406,6 +409,18 @@ func (r *HealthCheckReconciler) processDiagnosis(
 	}
 
 	return nil
+}
+
+// proposalOutcome classifies a Propose call for dorgu_proposals_total.
+func proposalOutcome(result *remediation.ProposalResult, err error) string {
+	switch {
+	case err != nil:
+		return metrics.ProposalError
+	case result != nil && result.Proposed:
+		return metrics.ProposalProposed
+	default:
+		return metrics.ProposalSkipped
+	}
 }
 
 // findMatchingIncident searches for an active IncidentMemory matching a
@@ -587,6 +602,7 @@ func (r *HealthCheckReconciler) createIncident(
 
 	switch createErr := r.Client.Create(ctx, im); {
 	case createErr == nil:
+		metrics.RecordIncident(diag.Category, subject.attribution())
 	case apierrors.IsAlreadyExists(createErr):
 		// The incident is already there and our cached List did not see it yet.
 		// Fold this diagnosis into the object that really exists rather than

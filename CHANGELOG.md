@@ -11,6 +11,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - **Adversarial bypass suite (`test/adversarial/`, `make adversarial`).** One envtest test per attack in `test/adversarial/SCENARIOS.md` (OP-01 to OP-14, ID-01 to ID-04), each asserting the safe outcome against the real controllers. Holes not yet closed are listed once in `openScenarios` with the checkpoint that must close them and skip as `OPEN`; a listed scenario that starts passing, or an unlisted one that stops passing, fails the suite. `make adversarial` ends with the KPI I1 line, `adversarial: blocked N/18`.
 
+- **Harness metrics on the existing metrics endpoint.** `dorgu_incidents_total{class,scope}` counts incidents opened, by diagnosis category and attribution; `dorgu_proposals_total{source,action_type,result}` counts every proposal attempt with its result (`proposed`, `skipped`, `suppressed` by a recent rejection, `error`), so refusals that were only logged at V(1) are now measurable; `dorgu_remediation_transitions_total{from,to}` counts every RemediationAction phase change the operator writes. They register on controller-runtime's registry, so no new port or ServiceMonitor is needed.
+
 ### Security
 
 - **The Gemini API key is sent in the `x-goog-api-key` header, never in the URL.** It used to travel as `?key=...` in the request URL, which ends up in proxy logs and in Go's `*url.Error` text; a network failure therefore wrote the key into the operator's error log. Error messages from both LLM clients also redact the key if a provider's error body echoes it back.
