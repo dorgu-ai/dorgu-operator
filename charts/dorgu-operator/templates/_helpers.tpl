@@ -49,3 +49,24 @@ Service account name
 {{- default "default" .Values.serviceAccount.name }}
 {{- end }}
 {{- end }}
+
+{{/*
+Name of the env var carrying the LLM API key, matching what the operator reads
+for llm.provider. Fails on a provider the operator does not support.
+*/}}
+{{- define "dorgu-operator.llmKeyEnv" -}}
+{{- $envs := dict "claude" "ANTHROPIC_API_KEY" "gemini" "GEMINI_API_KEY" -}}
+{{- $env := get $envs .Values.llm.provider -}}
+{{- if not $env -}}
+{{- fail (printf "llm.provider %q is not supported: use \"claude\" or \"gemini\", or leave it empty to disable AI" .Values.llm.provider) -}}
+{{- end -}}
+{{- $env -}}
+{{- end }}
+
+{{/*
+Key within the LLM Secret: llm.existingSecretKey when set, otherwise the
+provider's env var name.
+*/}}
+{{- define "dorgu-operator.llmSecretKey" -}}
+{{- .Values.llm.existingSecretKey | default (include "dorgu-operator.llmKeyEnv" .) -}}
+{{- end }}

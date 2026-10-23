@@ -216,10 +216,10 @@ kubectl get clusterpersona           # dorgu-cluster, auto-created
 | `healthCheck.interval` | Health check reconciliation interval | `60s` |
 | `safety.excludedNamespaces` | Namespaces Dorgu never remediates, on top of `kube-system` and its own namespace (maps to `--safety-excluded-namespaces`) | `[]` |
 | `metricsServer.enabled` | metrics-server integration for container-level CPU/memory detection | `true` |
-| `llm.provider` | AI provider; `claude` enables Anthropic, empty disables AI | `""` |
+| `llm.provider` | AI provider: `claude` (Anthropic) or `gemini` (Google); empty disables AI. The chart injects `ANTHROPIC_API_KEY` or `GEMINI_API_KEY` to match | `""` |
 | `llm.model` | Model override (empty = provider default) | `""` |
 | `llm.existingSecret` | Name of a pre-created Secret holding the API key (**preferred**) | `""` |
-| `llm.existingSecretKey` | Key within that Secret | `ANTHROPIC_API_KEY` |
+| `llm.existingSecretKey` | Key within that Secret; empty means the provider's env var name | `""` (`ANTHROPIC_API_KEY` / `GEMINI_API_KEY`) |
 | `llm.apiKey` | **Dev only:** raw key; requires `createSecret=true` to be stored in a Secret | `""` |
 | `llm.createSecret` | When true + `apiKey` set, the chart creates a Secret for the key | `false` |
 | `aiRemediation.enabled` | AI-generated ordered remediation plans (needs `llm.provider=claude`) | `false` |

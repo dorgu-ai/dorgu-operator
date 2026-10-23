@@ -11,6 +11,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - **Adversarial bypass suite (`test/adversarial/`, `make adversarial`).** One envtest test per attack in `test/adversarial/SCENARIOS.md` (OP-01 to OP-14, ID-01 to ID-04), each asserting the safe outcome against the real controllers. Holes not yet closed are listed once in `openScenarios` with the checkpoint that must close them and skip as `OPEN`; a listed scenario that starts passing, or an unlisted one that stops passing, fails the suite. `make adversarial` ends with the KPI I1 line, `adversarial: blocked N/18`.
 
+### Security
+
+- **The Gemini API key is sent in the `x-goog-api-key` header, never in the URL.** It used to travel as `?key=...` in the request URL, which ends up in proxy logs and in Go's `*url.Error` text; a network failure therefore wrote the key into the operator's error log. Error messages from both LLM clients also redact the key if a provider's error body echoes it back.
+
+### Fixed
+
+- **The chart injects the API key env var that matches `llm.provider`.** It always injected `ANTHROPIC_API_KEY`, so `llm.provider=gemini` started an operator that looked for `GEMINI_API_KEY`, found nothing and quietly ran without AI. `llm.existingSecretKey` now defaults to the provider's env var name (`ANTHROPIC_API_KEY` or `GEMINI_API_KEY`); an explicitly set key name still wins, so existing Claude installs render exactly as before. An unsupported `llm.provider` now fails the install instead of rendering an operator that ignores it. AI remediation planning remains Claude-only; with Gemini, diagnosis is AI-enhanced and plans stay rule-based.
+
 ### Removed
 
 - **The Deployment validating webhook (`internal/webhook`), and with it the `--enable-webhook`, `--webhook-mode`, `--webhook-cert-path`, `--webhook-cert-name` and `--webhook-cert-key` flags and the chart's `webhook.*` values, Service and `ValidatingWebhookConfiguration`.** It never worked: `cmd/main.go` built the validator without a decoder, and the `InjectDecoder` hook that would have set one was removed from controller-runtime long before v0.23, so every admission request dereferenced a nil decoder, panicked, was recovered as a 500 and admitted by `failurePolicy: Ignore`. No warning or denial was ever produced. Admission for Dorgu's own CRDs arrives as ValidatingAdmissionPolicies in a later release. **Breaking:** passing a removed flag stops the binary from starting, and `helm install`/`upgrade` with `webhook.enabled=true` now fails with a message saying the webhook was removed, rather than silently dropping the value.

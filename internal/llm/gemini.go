@@ -27,7 +27,10 @@ import (
 
 const (
 	defaultGeminiModel = "gemini-2.0-flash"
-	geminiAPIURLFmt    = "https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s"
+	geminiAPIURLFmt    = "https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent"
+	// geminiAPIKeyHeader carries the key. It never goes in the URL: URLs end up
+	// in proxy logs and in *url.Error messages, and from there in ours.
+	geminiAPIKeyHeader = "x-goog-api-key"
 )
 
 // GeminiClient implements the Client interface using the Google Gemini API.
@@ -35,7 +38,7 @@ type GeminiClient struct {
 	apiKey string
 	model  string
 	client *http.Client
-	// baseURL allows overriding the API URL for testing. When set, apiKey is appended as ?key=.
+	// baseURL allows overriding the API URL for testing.
 	baseURL string
 }
 
@@ -67,7 +70,7 @@ func (g *GeminiClient) EnhanceDiagnosis(ctx context.Context, req DiagnosisReques
 
 	apiURL := g.baseURL
 	if apiURL == "" {
-		apiURL = fmt.Sprintf(geminiAPIURLFmt, g.model, g.apiKey)
+		apiURL = fmt.Sprintf(geminiAPIURLFmt, g.model)
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(jsonBody))
@@ -76,10 +79,11 @@ func (g *GeminiClient) EnhanceDiagnosis(ctx context.Context, req DiagnosisReques
 	}
 
 	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set(geminiAPIKeyHeader, g.apiKey)
 
 	resp, err := g.client.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("API call failed: %w", err)
+		return nil, fmt.Errorf("API call failed: %s", redactKey(err.Error(), g.apiKey))
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -89,7 +93,7 @@ func (g *GeminiClient) EnhanceDiagnosis(ctx context.Context, req DiagnosisReques
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(respBody))
+		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, redactKey(string(respBody), g.apiKey))
 	}
 
 	var geminiResp geminiResponse

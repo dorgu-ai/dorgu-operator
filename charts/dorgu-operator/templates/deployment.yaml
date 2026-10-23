@@ -3,6 +3,10 @@
 {{- if and .Values.webhook .Values.webhook.enabled }}
 {{- fail "webhook.enabled was removed in dorgu-operator 0.12.0: the Deployment validating webhook never worked (every request failed open) and has been deleted. Remove the webhook values." }}
 {{- end }}
+{{- /* Refuse an LLM provider the operator does not support (fails inside the helper). */}}
+{{- if .Values.llm.provider }}
+{{- $_ := include "dorgu-operator.llmKeyEnv" . }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -76,7 +80,7 @@ spec:
             - --llm-model={{ .Values.llm.model }}
             {{- end }}
             {{- /* The API key is never passed as an inline arg (it would leak into the
-                   pod spec and `helm get values`). It is injected as the ANTHROPIC_API_KEY
+                   pod spec and `helm get values`). It is injected as the provider's key
                    env var from a Secret instead — see the env: block below. */}}
             {{- if .Values.llm.provider }}
             - --enable-ai-remediation={{ .Values.aiRemediation.enabled }}
@@ -89,7 +93,8 @@ spec:
             {{- else if .Values.operator.clusterPersonaEnsureInterval }}
             - --cluster-persona-ensure-interval={{ .Values.operator.clusterPersonaEnsureInterval }}
             {{- end }}
-          {{- /* Inject the Anthropic API key as ANTHROPIC_API_KEY from a Secret.
+          {{- /* Inject the LLM API key from a Secret as the env var the operator reads
+                 for llm.provider: ANTHROPIC_API_KEY for claude, GEMINI_API_KEY for gemini.
                  existingSecret (prod, key created out-of-band) takes precedence; otherwise
                  the chart-managed Secret (llm-secret.yaml, gated on createSecret+apiKey) is
                  referenced. The operator reads the env var when --llm-api-key is unset. */}}
@@ -103,12 +108,12 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
-          {{- if $secretName }}
-            - name: ANTHROPIC_API_KEY
+          {{- if and .Values.llm.provider $secretName }}
+            - name: {{ include "dorgu-operator.llmKeyEnv" . }}
               valueFrom:
                 secretKeyRef:
                   name: {{ $secretName }}
-                  key: {{ .Values.llm.existingSecretKey | default "ANTHROPIC_API_KEY" }}
+                  key: {{ include "dorgu-operator.llmSecretKey" . }}
           {{- end }}
           ports:
             - name: healthz
