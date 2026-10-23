@@ -83,6 +83,13 @@ healthCheck:
   enabled: true
   interval: 60s
 
+# Remediation safety. Dorgu never remediates kube-system or the namespace it is
+# installed in (read from the pod's own namespace). List any other namespace it
+# must never touch here; maps to --safety-excluded-namespaces. ClusterPersona
+# spec.policies.selfHealing.excludeNamespaces is honoured as well.
+safety:
+  excludedNamespaces: []
+
 # Metrics-server integration for container-level CPU/memory detection
 metricsServer:
   enabled: true

@@ -56,7 +56,6 @@ var Catalogue = []string{
 var openScenarios = map[string]openScenario{
 	"OP-01": {"CP1", "SafetyChecker runs only in the proposer; the apply path checks shape, not the 16x change"},
 	"OP-02": {"CP1", "rate and concurrency limits select RAs by creator-written labels; unlabelled RAs are invisible"},
-	"OP-03": {"CP0", "the deny-list hardcodes dorgu-operator-system; the chart installs into dorgu-system"},
 	"OP-04": {"CP1", "approval applies spec values without re-grounding against the live workload"},
 	"OP-05": {"CP1", "concurrency is checked at proposal time only; two approved Pending RAs both apply"},
 	"OP-06": {"CP1", "nothing binds an approval to the spec that was approved"},

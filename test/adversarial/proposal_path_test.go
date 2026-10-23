@@ -74,8 +74,11 @@ const operatorNamespace = "dorgu-system"
 // written by hand reaches the apply path without any deny-list; that is the
 // apply-time gate tracked by OP-01.
 func TestOP03DenyListProtectsOwnNamespace(t *testing.T) {
-	t.Setenv("POD_NAMESPACE", operatorNamespace)
-	checker := remediation.NewSafetyChecker(k8sClient, logr.Discard())
+	// Built the way cmd/main.go builds it, with POD_NAMESPACE set the way the
+	// chart's downward API sets it.
+	t.Setenv(remediation.OperatorNamespaceEnv, operatorNamespace)
+	checker := remediation.NewSafetyChecker(k8sClient, logr.Discard(),
+		remediation.WithProtectedNamespaces(remediation.OperatorNamespace()))
 
 	refused := map[string]bool{}
 	for _, target := range []string{"kube-system", operatorNamespace} {

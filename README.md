@@ -216,6 +216,7 @@ kubectl get clusterpersona           # dorgu-cluster, auto-created
 |-----------|-------------|---------|
 | `healthCheck.enabled` | Detection, diagnosis, incident tracking and remediation proposals. When `false`, the operator records persona health only and never opens an incident or proposes a fix | `true` |
 | `healthCheck.interval` | Health check reconciliation interval | `60s` |
+| `safety.excludedNamespaces` | Namespaces Dorgu never remediates, on top of `kube-system` and its own namespace (maps to `--safety-excluded-namespaces`) | `[]` |
 | `metricsServer.enabled` | metrics-server integration for container-level CPU/memory detection | `true` |
 | `llm.provider` | AI provider; `claude` enables Anthropic, empty disables AI | `""` |
 | `llm.model` | Model override (empty = provider default) | `""` |

@@ -44,9 +44,11 @@ const (
 	// MaxResourceDecrease caps resource decreases to 50%.
 	MaxResourceDecrease = 0.5
 
-	// defaultDenyNamespaces that are always excluded from remediation.
-	defaultDenyKubeSystem     = "kube-system"
-	defaultDenyOperatorSystem = "dorgu-operator-system"
+	// RuleDenyList is the SafetyViolation rule for a protected namespace (S4).
+	RuleDenyList = "deny-list"
+
+	// defaultDenyKubeSystem is always excluded from remediation.
+	defaultDenyKubeSystem = "kube-system"
 
 	// RemediationAction phase constants for safety checks.
 	phaseApproved  = "Approved"
@@ -64,14 +66,39 @@ const (
 type SafetyCheckerImpl struct {
 	client client.Client
 	logger logr.Logger
+
+	// protected are the namespaces the deny-list always refuses, on top of
+	// kube-system and any ClusterPersona excludeNamespaces.
+	protected []string
+}
+
+// SafetyOption configures a SafetyCheckerImpl.
+type SafetyOption func(*SafetyCheckerImpl)
+
+// WithProtectedNamespaces adds namespaces the deny-list always refuses: the
+// operator's own namespace and any the installer configured. Empty names are
+// ignored, so an unknown operator namespace can be passed through as-is.
+func WithProtectedNamespaces(namespaces ...string) SafetyOption {
+	return func(s *SafetyCheckerImpl) {
+		for _, ns := range namespaces {
+			if ns != "" && !slices.Contains(s.protected, ns) {
+				s.protected = append(s.protected, ns)
+			}
+		}
+	}
 }
 
 // NewSafetyChecker creates a new SafetyCheckerImpl.
-func NewSafetyChecker(c client.Client, logger logr.Logger) *SafetyCheckerImpl {
-	return &SafetyCheckerImpl{
-		client: c,
-		logger: logger.WithName("safety-checker"),
+func NewSafetyChecker(c client.Client, logger logr.Logger, opts ...SafetyOption) *SafetyCheckerImpl {
+	s := &SafetyCheckerImpl{
+		client:    c,
+		logger:    logger.WithName("safety-checker"),
+		protected: []string{defaultDenyKubeSystem},
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // Check validates a proposed RemediationAction against all safety guardrails.
@@ -298,11 +325,12 @@ func (s *SafetyCheckerImpl) checkDenyList(ctx context.Context, action *dorguv1.R
 		targetNamespace = action.Namespace
 	}
 
-	// Always deny kube-system and dorgu-operator-system.
-	if targetNamespace == defaultDenyKubeSystem || targetNamespace == defaultDenyOperatorSystem {
+	// Always deny kube-system, the operator's own namespace and any namespace
+	// the installer protected.
+	if slices.Contains(s.protected, targetNamespace) {
 		return &SafetyViolation{
-			Rule:    "deny-list",
-			Message: fmt.Sprintf("namespace %s is in the default deny list", targetNamespace),
+			Rule:    RuleDenyList,
+			Message: fmt.Sprintf("namespace %s is in the protected deny list", targetNamespace),
 		}
 	}
 
@@ -316,7 +344,7 @@ func (s *SafetyCheckerImpl) checkDenyList(ctx context.Context, action *dorguv1.R
 
 	if slices.Contains(excludedNamespaces, targetNamespace) {
 		return &SafetyViolation{
-			Rule:    "deny-list",
+			Rule:    RuleDenyList,
 			Message: fmt.Sprintf("namespace %s is excluded by ClusterPersona policy", targetNamespace),
 		}
 	}

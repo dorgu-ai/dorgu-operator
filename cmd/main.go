@@ -395,7 +395,9 @@ func main() {
 		}
 
 		// 7. Create remediation proposer with safety guardrails.
-		safetyChecker := remediation.NewSafetyChecker(mgr.GetClient(), setupLog)
+		safetyChecker := remediation.NewSafetyChecker(mgr.GetClient(), setupLog,
+			remediation.WithProtectedNamespaces(operatorNamespace()),
+			remediation.WithProtectedNamespaces(cfg.safetyExcludedNamespaces...))
 		var proposerOpts []remediation.ProposerOption
 		if aiPlanner != nil {
 			proposerOpts = append(proposerOpts, remediation.WithPlanner(aiPlanner))
@@ -467,4 +469,17 @@ func main() {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)
 	}
+}
+
+// operatorNamespace returns the namespace the deny-list must protect as
+// Dorgu's own, and says so when it cannot be determined.
+func operatorNamespace() string {
+	ns := remediation.OperatorNamespace()
+	if ns == "" {
+		setupLog.Info("operator namespace unknown: set " + remediation.OperatorNamespaceEnv +
+			"; the deny-list protects kube-system and --safety-excluded-namespaces only")
+		return ""
+	}
+	setupLog.Info("deny-list protects the operator namespace", "namespace", ns)
+	return ns
 }

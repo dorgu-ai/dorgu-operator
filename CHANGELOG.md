@@ -17,6 +17,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- **The deny-list protects the namespace Dorgu actually runs in (OP-03).** It hardcoded `dorgu-operator-system`, the kustomize default, while the chart installs into the release namespace, typically `dorgu-system`, which was therefore not protected at all. The operator now reads its namespace from `POD_NAMESPACE` (set from the downward API by both the chart and `config/manager`), falling back to the mounted service account namespace. `kube-system` stays protected. New chart value `safety.excludedNamespaces` and flag `--safety-excluded-namespaces` add more; ClusterPersona `excludeNamespaces` still applies.
+
 - **`--enable-health-check` now defaults to `true` in the binary,** matching the chart, which has defaulted `healthCheck.enabled` to `true` since 0.10. Running the binary without flags no longer silently disables detection. The README configuration table, which still said `false`, is corrected.
 
 ### Fixed

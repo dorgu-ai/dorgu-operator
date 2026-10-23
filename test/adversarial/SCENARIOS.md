@@ -32,7 +32,7 @@ never as blocked. None do today.
 |---|---|---|---|---|
 | OP-01 | Hand-created RA: 16x memory patch, `prePatchState: {}`, no Dorgu labels, status set Approved | Persona unchanged; RA not Applying | `TestOP01HandCreatedSixteenXPatch` | open, CP1 |
 | OP-02 | Five unlabelled RAs for one persona in the last hour, then a Dorgu proposal | The proposal hits the 5/h rate limit (selection by spec, not labels) | `TestOP02UnlabelledActionsEvadeRateLimit` | open, CP1 |
-| OP-03 | Proposal targeting `kube-system` or the operator's own namespace (`POD_NAMESPACE=dorgu-system`) | Both refused by the deny-list | `TestOP03DenyListProtectsOwnNamespace` | open, CP0 (0.6) |
+| OP-03 | Proposal targeting `kube-system` or the operator's own namespace (`POD_NAMESPACE=dorgu-system`) | Both refused by the deny-list | `TestOP03DenyListProtectsOwnNamespace` | **blocked** (0.6: deny-list reads `POD_NAMESPACE`) |
 | OP-04 | Dorgu proposal (256Mi to 512Mi) approved after the live limit was cut 4x to 64Mi | Refused, or re-clamped to at most 2x live | `TestOP04LiveValueChangedBeforeApproval` | open, CP1 |
 | OP-05 | Two Pending proposals for one persona (memory, CPU), both approved | The second does not apply | `TestOP05TwoApprovedProposalsForOnePersona` | open, CP1 |
 | OP-06 | `spec.action.patch` edited from 384Mi to 512Mi after approval | The unapproved 512Mi never reaches the persona | `TestOP06SpecEditedAfterApproval` | open, CP1 |

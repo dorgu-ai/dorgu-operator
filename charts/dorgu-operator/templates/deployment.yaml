@@ -80,6 +80,9 @@ spec:
             {{- if .Values.llm.provider }}
             - --enable-ai-remediation={{ .Values.aiRemediation.enabled }}
             {{- end }}
+            {{- with .Values.safety.excludedNamespaces }}
+            - --safety-excluded-namespaces={{ join "," . }}
+            {{- end }}
             {{- if not .Values.operator.autoCreateClusterPersona }}
             - --auto-create-cluster-persona=false
             {{- else if .Values.operator.clusterPersonaEnsureInterval }}
@@ -93,8 +96,13 @@ spec:
           {{- if and (not $secretName) .Values.llm.createSecret .Values.llm.apiKey }}
           {{-   $secretName = printf "%s-llm" (include "dorgu-operator.fullname" .) }}
           {{- end }}
-          {{- if $secretName }}
           env:
+            {{- /* The deny-list protects the namespace the operator runs in (OP-03). */}}
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          {{- if $secretName }}
             - name: ANTHROPIC_API_KEY
               valueFrom:
                 secretKeyRef:

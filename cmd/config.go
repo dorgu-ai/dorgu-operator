@@ -18,6 +18,7 @@ package main
 
 import (
 	"flag"
+	"strings"
 	"time"
 
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -66,6 +67,10 @@ type operatorConfig struct {
 
 	// Metrics-server integration
 	enableMetricsServer bool
+
+	// Safety: namespaces the deny-list refuses on top of kube-system and the
+	// operator's own namespace.
+	safetyExcludedNamespaces []string
 
 	// LLM (AI diagnosis)
 	llmProvider string // "claude", "gemini", or "" (disabled)
@@ -155,9 +160,26 @@ func parseFlags() operatorConfig {
 		"How often the operator re-ensures the auto-created ClusterPersona exists (clamped to a 30s minimum). "+
 			"Acts as a self-healing safety net so the persona converges even if the startup bootstrap missed.")
 
+	var excludedNamespaces string
+	flag.StringVar(&excludedNamespaces, "safety-excluded-namespaces", "",
+		"Comma-separated namespaces Dorgu never remediates, in addition to kube-system and the "+
+			"operator's own namespace (from POD_NAMESPACE).")
+
 	cfg.zapOpts = zap.Options{Development: true}
 	cfg.zapOpts.BindFlags(flag.CommandLine)
 	flag.Parse()
 
+	cfg.safetyExcludedNamespaces = splitNamespaces(excludedNamespaces)
 	return cfg
+}
+
+// splitNamespaces parses a comma-separated namespace list, dropping blanks.
+func splitNamespaces(list string) []string {
+	var out []string
+	for ns := range strings.SplitSeq(list, ",") {
+		if ns = strings.TrimSpace(ns); ns != "" {
+			out = append(out, ns)
+		}
+	}
+	return out
 }
