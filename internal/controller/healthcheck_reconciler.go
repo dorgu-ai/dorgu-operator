@@ -102,6 +102,9 @@ const (
 // +kubebuilder:rbac:groups="",resources=events,verbs=get;list;watch;create;patch
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch
+// The control-plane collector reads the scheduler and controller-manager
+// Leases through the cached client, which starts a cluster-wide informer.
+// +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=replicasets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch
 // +kubebuilder:rbac:groups=metrics.k8s.io,resources=pods,verbs=get;list
