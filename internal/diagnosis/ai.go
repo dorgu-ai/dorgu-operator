@@ -139,15 +139,5 @@ func enhanceDiagnosis(base Diagnosis, resp *llm.DiagnosisResponse) Diagnosis {
 		enhanced.SuggestedAction = resp.RecommendedAction
 	}
 
-	// Apply confidence adjustment, clamped to [0.0, 1.0].
-	adjusted := enhanced.Confidence + resp.ConfidenceAdjustment
-	if adjusted > 1.0 {
-		adjusted = 1.0
-	}
-	if adjusted < 0.0 {
-		adjusted = 0.0
-	}
-	enhanced.Confidence = adjusted
-
 	return enhanced
 }

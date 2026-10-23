@@ -31,8 +31,9 @@ import (
 )
 
 const (
-	// DefaultCacheSize is the default number of events in the in-memory cache.
-	DefaultCacheSize = 500
+	// maxDedupEntries is how many dedup keys the store holds before it prunes
+	// the expired ones.
+	maxDedupEntries = 1000
 
 	// DefaultDedupWindow is the default deduplication window.
 	DefaultDedupWindow = 5 * time.Minute
@@ -44,38 +45,27 @@ const (
 	MaxK8sNameLength = 253
 )
 
-// EventStore provides hybrid persistence: in-memory LRU cache + DorguEvent CRD.
+// EventStore records events as DorguEvent CRDs. It is write-only: nothing in
+// the operator reads events back, and the DorguEvent objects are the record.
 type EventStore interface {
-	// Store persists an event (both in-memory and as CRD).
+	// Store persists an event as a DorguEvent CRD, unless it is a duplicate.
 	Store(ctx context.Context, event *InternalEvent) error
-
-	// Query returns events matching the filter.
-	Query(ctx context.Context, filter EventFilter) ([]InternalEvent, error)
-
-	// Count returns the number of events matching the filter.
-	Count(ctx context.Context, filter EventFilter) (int, error)
 }
 
-// HybridEventStore implements EventStore with in-memory cache and CRD persistence.
+// HybridEventStore implements EventStore with in-memory deduplication and CRD
+// persistence.
 type HybridEventStore struct {
 	client      client.Client
 	logger      logr.Logger
-	cacheSize   int
 	dedupWindow time.Duration
 	ttl         time.Duration
 
-	mu       sync.RWMutex
-	cache    []InternalEvent
+	mu       sync.Mutex
 	dedupMap map[string]time.Time // key: dedup key → last seen time
 }
 
 // StoreOption configures the HybridEventStore.
 type StoreOption func(*HybridEventStore)
-
-// WithCacheSize sets the cache size.
-func WithCacheSize(size int) StoreOption {
-	return func(s *HybridEventStore) { s.cacheSize = size }
-}
 
 // WithDedupWindow sets the deduplication window.
 func WithDedupWindow(d time.Duration) StoreOption {
@@ -94,10 +84,8 @@ func NewEventStore(c client.Client, logger logr.Logger, opts ...StoreOption) *Hy
 	s := &HybridEventStore{
 		client:      c,
 		logger:      logger,
-		cacheSize:   DefaultCacheSize,
 		dedupWindow: DefaultDedupWindow,
 		ttl:         DefaultTTL,
-		cache:       make([]InternalEvent, 0, DefaultCacheSize),
 		dedupMap:    make(map[string]time.Time),
 	}
 	for _, opt := range opts {
@@ -119,9 +107,6 @@ func (s *HybridEventStore) Store(ctx context.Context, event *InternalEvent) erro
 		return nil
 	}
 
-	// Write to in-memory cache.
-	s.addToCache(*event)
-
 	// Persist as DorguEvent CRD. The error is returned, not logged: every caller
 	// already logs it, and logging here as well printed each failure twice, at
 	// two layers, which is half of what made F-06's 171 ERROR lines unreadable.
@@ -130,27 +115,6 @@ func (s *HybridEventStore) Store(ctx context.Context, event *InternalEvent) erro
 	}
 
 	return nil
-}
-
-// Query returns events matching the filter. Reads from cache first, falls back to K8s API.
-func (s *HybridEventStore) Query(ctx context.Context, filter EventFilter) ([]InternalEvent, error) {
-	// Try cache first.
-	results := s.queryCache(filter)
-	if len(results) > 0 || s.cacheCoversFilter(filter) {
-		return applyLimit(results, filter.Limit), nil
-	}
-
-	// Fall back to K8s API.
-	return s.queryAPI(ctx, filter)
-}
-
-// Count returns the number of events matching the filter.
-func (s *HybridEventStore) Count(ctx context.Context, filter EventFilter) (int, error) {
-	events, err := s.Query(ctx, filter)
-	if err != nil {
-		return 0, err
-	}
-	return len(events), nil
 }
 
 // dedupKey identifies what a record is about. The reason is part of that
@@ -183,7 +147,7 @@ func (s *HybridEventStore) checkAndMarkSeen(key string) bool {
 	s.dedupMap[key] = time.Now()
 
 	// Clean up old dedup entries periodically.
-	if len(s.dedupMap) > s.cacheSize*2 {
+	if len(s.dedupMap) > maxDedupEntries {
 		now := time.Now()
 		for k, t := range s.dedupMap {
 			if now.Sub(t) > s.dedupWindow {
@@ -193,76 +157,6 @@ func (s *HybridEventStore) checkAndMarkSeen(key string) bool {
 	}
 
 	return false
-}
-
-func (s *HybridEventStore) addToCache(event InternalEvent) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.cache = append(s.cache, event)
-
-	// Evict oldest entries when cache exceeds size.
-	if len(s.cache) > s.cacheSize {
-		s.cache = s.cache[len(s.cache)-s.cacheSize:]
-	}
-}
-
-func (s *HybridEventStore) queryCache(filter EventFilter) []InternalEvent {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	var results []InternalEvent
-	for _, event := range s.cache {
-		if matchesFilter(event, filter) {
-			results = append(results, event)
-		}
-	}
-	return results
-}
-
-// cacheCoversFilter returns true if the cache has enough data to answer the query
-// without falling back to the API. Currently conservative — only returns true
-// if the cache is not empty.
-func (s *HybridEventStore) cacheCoversFilter(filter EventFilter) bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	if filter.Since == nil {
-		return false
-	}
-
-	// If the cache is empty, can't cover anything.
-	if len(s.cache) == 0 {
-		return false
-	}
-
-	// If the oldest event in cache is newer than the filter's Since,
-	// we might be missing older events — need to go to API.
-	oldest := s.cache[0].EventTime
-	return !oldest.After(*filter.Since)
-}
-
-func (s *HybridEventStore) queryAPI(ctx context.Context, filter EventFilter) ([]InternalEvent, error) {
-	var list dorguv1.DorguEventList
-	opts := []client.ListOption{}
-
-	if filter.Namespace != "" {
-		opts = append(opts, client.InNamespace(filter.Namespace))
-	}
-
-	if err := s.client.List(ctx, &list, opts...); err != nil {
-		return nil, fmt.Errorf("listing DorguEvents: %w", err)
-	}
-
-	var results []InternalEvent
-	for _, de := range list.Items {
-		event := crdToInternalEvent(de)
-		if matchesFilter(event, filter) {
-			results = append(results, event)
-		}
-	}
-
-	return applyLimit(results, filter.Limit), nil
 }
 
 func (s *HybridEventStore) persistCRD(ctx context.Context, event *InternalEvent) error {
@@ -356,51 +250,4 @@ func sanitizeK8sName(s string) string {
 		}
 	}
 	return string(result)
-}
-
-func matchesFilter(event InternalEvent, filter EventFilter) bool {
-	if filter.Namespace != "" && event.InvolvedObject.Namespace != filter.Namespace {
-		return false
-	}
-	if filter.Severity != "" && event.Severity != filter.Severity {
-		return false
-	}
-	if filter.Category != "" && event.Category != filter.Category {
-		return false
-	}
-	if filter.Since != nil && event.EventTime.Before(*filter.Since) {
-		return false
-	}
-	if filter.PersonaRef != nil && event.PersonaRef != nil {
-		if event.PersonaRef.Kind != filter.PersonaRef.Kind ||
-			event.PersonaRef.Name != filter.PersonaRef.Name {
-			return false
-		}
-	}
-	return true
-}
-
-func crdToInternalEvent(de dorguv1.DorguEvent) InternalEvent {
-	return InternalEvent{
-		ID:       de.Name,
-		Severity: Severity(de.Spec.Severity),
-		Category: Category(de.Spec.Category),
-		Source:   de.Spec.Source,
-		Message:  de.Spec.Message,
-		InvolvedObject: dorguv1.ResourceReference{
-			Kind:      de.Spec.InvolvedObject.Kind,
-			Name:      de.Spec.InvolvedObject.Name,
-			Namespace: de.Spec.InvolvedObject.Namespace,
-		},
-		PersonaRef:  de.Spec.PersonaRef,
-		EventTime:   de.Spec.EventTime.Time,
-		K8sEventUID: de.Spec.K8sEventRef,
-	}
-}
-
-func applyLimit(events []InternalEvent, limit int) []InternalEvent {
-	if limit <= 0 || limit >= len(events) {
-		return events
-	}
-	return events[:limit]
 }

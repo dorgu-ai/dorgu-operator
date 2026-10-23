@@ -18,6 +18,7 @@ package main
 
 import (
 	"flag"
+	"strings"
 	"time"
 
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -36,13 +37,6 @@ type operatorConfig struct {
 
 	// Health probes
 	probeAddr string
-
-	// Webhook
-	enableWebhook   bool
-	webhookMode     string
-	webhookCertPath string
-	webhookCertName string
-	webhookCertKey  string
 
 	// Leader election
 	enableLeaderElection bool
@@ -66,6 +60,10 @@ type operatorConfig struct {
 
 	// Metrics-server integration
 	enableMetricsServer bool
+
+	// Safety: namespaces the deny-list refuses on top of kube-system and the
+	// operator's own namespace.
+	safetyExcludedNamespaces []string
 
 	// LLM (AI diagnosis)
 	llmProvider string // "claude", "gemini", or "" (disabled)
@@ -99,20 +97,13 @@ func parseFlags() operatorConfig {
 			"Enabling this will ensure there is only one active controller manager.")
 	flag.BoolVar(&cfg.secureMetrics, "metrics-secure", true,
 		"If set, the metrics endpoint is served securely via HTTPS. Use --metrics-secure=false to use HTTP instead.")
-	flag.StringVar(&cfg.webhookCertPath, "webhook-cert-path", "", "The directory that contains the webhook certificate.")
-	flag.StringVar(&cfg.webhookCertName, "webhook-cert-name", "tls.crt", "The name of the webhook certificate file.")
-	flag.StringVar(&cfg.webhookCertKey, "webhook-cert-key", "tls.key", "The name of the webhook key file.")
 	flag.StringVar(&cfg.metricsCertPath, "metrics-cert-path", "",
 		"The directory that contains the metrics server certificate.")
 	flag.StringVar(&cfg.metricsCertName, "metrics-cert-name", "tls.crt",
 		"The name of the metrics server certificate file.")
 	flag.StringVar(&cfg.metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
 	flag.BoolVar(&cfg.enableHTTP2, "enable-http2", false,
-		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
-	flag.BoolVar(&cfg.enableWebhook, "enable-webhook", false,
-		"Enable the validating webhook for Deployment resources against ApplicationPersona constraints.")
-	flag.StringVar(&cfg.webhookMode, "webhook-mode", "advisory",
-		"Webhook validation mode: 'advisory' (warn only) or 'enforcing' (reject on errors).")
+		"If set, HTTP/2 will be enabled for the metrics server")
 	flag.BoolVar(&cfg.enableArgoCD, "enable-argocd", true,
 		"Enable ArgoCD Application watching for sync status integration.")
 	flag.StringVar(&cfg.prometheusURL, "prometheus-url", "",
@@ -121,8 +112,9 @@ func parseFlags() operatorConfig {
 		"Enable WebSocket server for CLI real-time communication.")
 	flag.StringVar(&cfg.webSocketAddr, "websocket-addr", ":9090",
 		"Address for the WebSocket server to listen on.")
-	flag.BoolVar(&cfg.enableHealthCheck, "enable-health-check", false,
-		"Enable health check reconciler for Phase 2a detection and diagnosis.")
+	flag.BoolVar(&cfg.enableHealthCheck, "enable-health-check", true,
+		"Run detection, diagnosis and remediation proposals. When false, Dorgu records persona health only "+
+			"and never opens an incident or proposes a fix.")
 	flag.DurationVar(&cfg.healthCheckInterval, "health-check-interval", 60*time.Second,
 		"Health check reconciler interval.")
 	flag.BoolVar(&cfg.enableMetricsServer, "enable-metrics-server", true,
@@ -154,9 +146,26 @@ func parseFlags() operatorConfig {
 		"How often the operator re-ensures the auto-created ClusterPersona exists (clamped to a 30s minimum). "+
 			"Acts as a self-healing safety net so the persona converges even if the startup bootstrap missed.")
 
+	var excludedNamespaces string
+	flag.StringVar(&excludedNamespaces, "safety-excluded-namespaces", "",
+		"Comma-separated namespaces Dorgu never remediates, in addition to kube-system and the "+
+			"operator's own namespace (from POD_NAMESPACE).")
+
 	cfg.zapOpts = zap.Options{Development: true}
 	cfg.zapOpts.BindFlags(flag.CommandLine)
 	flag.Parse()
 
+	cfg.safetyExcludedNamespaces = splitNamespaces(excludedNamespaces)
 	return cfg
+}
+
+// splitNamespaces parses a comma-separated namespace list, dropping blanks.
+func splitNamespaces(list string) []string {
+	var out []string
+	for ns := range strings.SplitSeq(list, ",") {
+		if ns = strings.TrimSpace(ns); ns != "" {
+			out = append(out, ns)
+		}
+	}
+	return out
 }

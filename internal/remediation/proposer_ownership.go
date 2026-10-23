@@ -25,41 +25,6 @@ import (
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 )
 
-// kubectl subcommands that write to the cluster. A plan for an owned workload
-// may not hand the reader any of these against that workload: a direct write
-// takes field ownership away from the owner, which is what makes the next
-// `helm upgrade` fail outright rather than merely revert the fix (F-02).
-// Anything absent (get, describe, logs, top, events, explain, diff, and
-// `rollout status`/`history`) only reads, and stays useful on any workload.
-var mutatingKubectlVerbs = map[string]bool{
-	"annotate":  true,
-	"apply":     true,
-	"autoscale": true,
-	"cordon":    true,
-	"create":    true,
-	"delete":    true,
-	"drain":     true,
-	"edit":      true,
-	"expose":    true,
-	"label":     true,
-	"patch":     true,
-	"replace":   true,
-	"run":       true,
-	"scale":     true,
-	"set":       true,
-	"taint":     true,
-	"uncordon":  true,
-}
-
-// rolloutSubcommands that write. `kubectl rollout status` and `history` only
-// read, so they stay useful on an owned workload.
-var mutatingRolloutSubcommands = map[string]bool{
-	"undo":    true,
-	"restart": true,
-	"pause":   true,
-	"resume":  true,
-}
-
 // applyOwnershipShaping makes the plan match whoever owns the Deployment.
 //
 // The split this enforces, and the one that is easiest to get wrong:
@@ -118,68 +83,6 @@ func stripWorkloadWriteCommands(action *dorguv1.RemediationAction, ref *dorguv1.
 			action.Spec.Steps[i].Command = ""
 		}
 	}
-}
-
-// readOnlyKubectlVerbs are the kubectl subcommands that only read. They are
-// listed explicitly so that a command whose verb matches nothing at all can be
-// treated as a write: an unrecognised command against an owned workload is not
-// something to hand over on the assumption it is harmless.
-var readOnlyKubectlVerbs = map[string]bool{
-	"api-resources": true,
-	"api-versions":  true,
-	"auth":          true,
-	"cluster-info":  true,
-	"describe":      true,
-	"diff":          true,
-	"events":        true,
-	"explain":       true,
-	"get":           true,
-	"logs":          true,
-	"top":           true,
-	"version":       true,
-}
-
-// writesWorkload reports whether a suggested kubectl command changes cluster
-// state. A non-kubectl or empty command is not a workload write: it is already
-// dropped by SanitizeStepCommand before it reaches here.
-//
-// The verb is found by scanning for the first token that is a kubectl
-// subcommand, rather than the first non-flag token, so a global flag with a
-// value (`kubectl -n apps patch ...`) does not hide the verb behind its
-// argument.
-func writesWorkload(command string) bool {
-	fields := strings.Fields(command)
-	if len(fields) < 2 || fields[0] != "kubectl" {
-		return false
-	}
-
-	for i, arg := range fields[1:] {
-		switch {
-		case arg == "rollout":
-			return rolloutWrites(fields[i+2:])
-		case mutatingKubectlVerbs[arg]:
-			return true
-		case readOnlyKubectlVerbs[arg]:
-			return false
-		}
-	}
-
-	// No recognisable verb. Treat it as a write so an owned workload never
-	// receives a command Dorgu could not classify.
-	return true
-}
-
-// rolloutWrites classifies a `kubectl rollout` invocation from its remaining
-// arguments. status and history only read; undo, restart, pause and resume do
-// not.
-func rolloutWrites(args []string) bool {
-	for _, arg := range args {
-		if strings.HasPrefix(arg, "-") {
-			continue
-		}
-		return mutatingRolloutSubcommands[arg]
-	}
-	return false
 }
 
 // resourceChange is one concrete field the plan moves, in the form the reader

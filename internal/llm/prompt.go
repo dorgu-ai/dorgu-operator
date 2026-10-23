@@ -53,12 +53,5 @@ func buildUserMessage(req DiagnosisRequest) string {
 		sb.WriteString(line + "\n")
 	}
 
-	sb.WriteString(fmt.Sprintf("\nIncident history: %d previous occurrences\n", req.PreviousOccurrences))
-	if len(req.PreviousResolutions) > 0 {
-		sb.WriteString("Previous resolutions: " + strings.Join(req.PreviousResolutions, ", ") + "\n")
-	} else {
-		sb.WriteString("Previous resolutions: none\n")
-	}
-
 	return sb.String()
 }

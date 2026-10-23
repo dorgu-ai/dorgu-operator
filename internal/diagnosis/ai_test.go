@@ -20,7 +20,6 @@ import (
 	"context"
 	"fmt"
 	"testing"
-	"time"
 
 	"github.com/go-logr/logr"
 
@@ -129,63 +128,6 @@ func TestAIProvider_Diagnose_NoSignals(t *testing.T) {
 	}
 	if mock.calls != 0 {
 		t.Error("LLM should not be called with no signals")
-	}
-}
-
-func TestAIProvider_ConfidenceAdjustment_Clamped(t *testing.T) {
-	tests := []struct {
-		name           string
-		baseConfidence float64
-		adjustment     float64
-		want           float64
-	}{
-		{
-			name:           "positive adjustment within range",
-			baseConfidence: 0.70,
-			adjustment:     0.10,
-			want:           0.80,
-		},
-		{
-			name:           "clamped to 1.0",
-			baseConfidence: 0.95,
-			adjustment:     0.20,
-			want:           1.0,
-		},
-		{
-			name:           "clamped to 0.0",
-			baseConfidence: 0.10,
-			adjustment:     -0.50,
-			want:           0.0,
-		},
-		{
-			name:           "negative adjustment within range",
-			baseConfidence: 0.80,
-			adjustment:     -0.10,
-			want:           0.70,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			base := Diagnosis{
-				Summary:         "test",
-				Confidence:      tt.baseConfidence,
-				Category:        "resource",
-				Severity:        detection.SeverityCritical,
-				SuggestedAction: actionInvestigate,
-				DiagnosedAt:     time.Now(),
-			}
-			resp := &llm.DiagnosisResponse{
-				ConfidenceAdjustment: tt.adjustment,
-			}
-
-			result := enhanceDiagnosis(base, resp)
-
-			// Allow floating point imprecision.
-			if diff := result.Confidence - tt.want; diff > 0.001 || diff < -0.001 {
-				t.Errorf("confidence = %.4f, want %.4f", result.Confidence, tt.want)
-			}
-		})
 	}
 }
 

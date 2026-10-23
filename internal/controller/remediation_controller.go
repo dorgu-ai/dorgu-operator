@@ -29,6 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
+	"github.com/dorgu-ai/dorgu-operator/internal/metrics"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation"
 	"github.com/dorgu-ai/dorgu-operator/internal/websocket"
 )
@@ -101,22 +102,37 @@ func (r *RemediationController) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
+	// Every handler writes the new phase onto action and returns an error if
+	// the write failed, so a changed phase after a clean return is a
+	// transition that reached the API server.
+	from := action.Status.Phase
+	result, err := r.dispatch(ctx, logger, &action)
+	if err == nil {
+		metrics.RecordTransition(from, action.Status.Phase)
+	}
+	return result, err
+}
+
+// dispatch runs the handler for the action's current phase.
+func (r *RemediationController) dispatch(
+	ctx context.Context, logger logr.Logger, action *dorguv1.RemediationAction,
+) (ctrl.Result, error) {
 	switch action.Status.Phase {
 	case RemediationPhasePending:
 		// Waiting for human approval — no action.
 		return ctrl.Result{}, nil
 
 	case RemediationPhaseApproved:
-		return r.handleApproved(ctx, logger, &action)
+		return r.handleApproved(ctx, logger, action)
 
 	case RemediationPhaseApplying:
-		return r.handleApplying(ctx, logger, &action)
+		return r.handleApplying(ctx, logger, action)
 
 	case RemediationPhaseVerifying:
-		return r.handleVerifying(ctx, logger, &action)
+		return r.handleVerifying(ctx, logger, action)
 
 	case RemediationPhaseRejected:
-		return ctrl.Result{}, r.recordRejection(ctx, logger, &action)
+		return ctrl.Result{}, r.recordRejection(ctx, logger, action)
 
 	case RemediationPhaseCompleted, RemediationPhaseAcknowledged, RemediationPhaseRolledBack,
 		RemediationPhaseFailed, RemediationPhaseExpired:

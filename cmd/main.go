@@ -36,7 +36,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
-	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/controller"
@@ -46,7 +45,6 @@ import (
 	"github.com/dorgu-ai/dorgu-operator/internal/llm"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation/planner"
-	dorguwebhook "github.com/dorgu-ai/dorgu-operator/internal/webhook"
 	dorguws "github.com/dorgu-ai/dorgu-operator/internal/websocket"
 	// +kubebuilder:scaffold:imports
 )
@@ -83,24 +81,6 @@ func main() {
 	if !cfg.enableHTTP2 {
 		tlsOpts = append(tlsOpts, disableHTTP2)
 	}
-
-	// Initial webhook TLS options
-	webhookTLSOpts := tlsOpts
-	webhookServerOptions := webhook.Options{
-		TLSOpts: webhookTLSOpts,
-	}
-
-	if len(cfg.webhookCertPath) > 0 {
-		setupLog.Info("Initializing webhook certificate watcher using provided certificates",
-			"webhook-cert-path", cfg.webhookCertPath, "webhook-cert-name", cfg.webhookCertName,
-			"webhook-cert-key", cfg.webhookCertKey)
-
-		webhookServerOptions.CertDir = cfg.webhookCertPath
-		webhookServerOptions.CertName = cfg.webhookCertName
-		webhookServerOptions.KeyName = cfg.webhookCertKey
-	}
-
-	webhookServer := webhook.NewServer(webhookServerOptions)
 
 	// Metrics endpoint is enabled in 'config/default/kustomization.yaml'. The Metrics options configure the server.
 	// More info:
@@ -143,7 +123,6 @@ func main() {
 	mgr, err := ctrl.NewManager(restConfig, ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsServerOptions,
-		WebhookServer:          webhookServer,
 		HealthProbeBindAddress: cfg.probeAddr,
 		LeaderElection:         cfg.enableLeaderElection,
 		LeaderElectionID:       "48ec518d.dorgu.io",
@@ -181,7 +160,7 @@ func main() {
 	}
 
 	// Create WebSocket server upfront (before health check) so it can be injected
-	// into all controllers that need to broadcast lifecycle events.
+	// into the health check and remediation controllers, which broadcast lifecycle events.
 	var wsServer *dorguws.Server
 	if cfg.enableWebSocket {
 		setupLog.Info("Starting WebSocket server", "addr", cfg.webSocketAddr)
@@ -189,11 +168,9 @@ func main() {
 	}
 
 	if err := (&controller.ApplicationPersonaReconciler{
-		Client:             mgr.GetClient(),
-		Scheme:             mgr.GetScheme(),
-		PrometheusURL:      cfg.prometheusURL,
-		WebSocket:          wsServer,
-		HealthCheckEnabled: cfg.enableHealthCheck,
+		Client:        mgr.GetClient(),
+		Scheme:        mgr.GetScheme(),
+		PrometheusURL: cfg.prometheusURL,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ApplicationPersona")
 		os.Exit(1)
@@ -228,27 +205,13 @@ func main() {
 		}
 	}
 
-	// Register optional Deployment validating webhook
-	if cfg.enableWebhook {
-		mode := dorguwebhook.ModeAdvisory
-		if cfg.webhookMode == "enforcing" {
-			mode = dorguwebhook.ModeEnforcing
-		}
-		setupLog.Info("Registering Deployment validating webhook", "mode", mode)
-		mgr.GetWebhookServer().Register("/validate-deployment", &webhook.Admission{
-			Handler: &dorguwebhook.DeploymentValidator{
-				Client: mgr.GetClient(),
-				Mode:   mode,
-			},
-		})
-	}
 	// Create a single signal-handler context shared by all components.
 	// ctrl.SetupSignalHandler() must only be called once — a second call
 	// panics with "close of closed channel".
 	signalCtx := ctrl.SetupSignalHandler()
 
 	// Start the WebSocket server (already constructed above so it can be
-	// injected into the ApplicationPersonaReconciler before Setup).
+	// injected into the controllers before Setup).
 	if wsServer != nil {
 		go func() {
 			if err := wsServer.Start(signalCtx); err != nil {
@@ -397,7 +360,9 @@ func main() {
 		}
 
 		// 7. Create remediation proposer with safety guardrails.
-		safetyChecker := remediation.NewSafetyChecker(mgr.GetClient(), setupLog)
+		safetyChecker := remediation.NewSafetyChecker(mgr.GetClient(), setupLog,
+			remediation.WithProtectedNamespaces(operatorNamespace()),
+			remediation.WithProtectedNamespaces(cfg.safetyExcludedNamespaces...))
 		var proposerOpts []remediation.ProposerOption
 		if aiPlanner != nil {
 			proposerOpts = append(proposerOpts, remediation.WithPlanner(aiPlanner))
@@ -469,4 +434,17 @@ func main() {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)
 	}
+}
+
+// operatorNamespace returns the namespace the deny-list must protect as
+// Dorgu's own, and says so when it cannot be determined.
+func operatorNamespace() string {
+	ns := remediation.OperatorNamespace()
+	if ns == "" {
+		setupLog.Info("operator namespace unknown: set " + remediation.OperatorNamespaceEnv +
+			"; the deny-list protects kube-system and --safety-excluded-namespaces only")
+		return ""
+	}
+	setupLog.Info("deny-list protects the operator namespace", "namespace", ns)
+	return ns
 }

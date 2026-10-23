@@ -16,12 +16,6 @@ serviceAccount:
   annotations: {}
   name: ""
 
-# Webhook configuration
-webhook:
-  enabled: false
-  mode: advisory  # advisory | enforcing
-  port: 9443
-
 # Validation settings
 validation:
   requeueInterval: 60s
@@ -72,7 +66,9 @@ websocket:
 # Health check reconciler: detection, diagnosis, incident records, and remediation
 # proposals. On by default, because self-healing is the product and an operator
 # that detects nothing is indistinguishable from a broken install.
-# Turn it off with --set healthCheck.enabled=false.
+# Turn it off with --set healthCheck.enabled=false. Off means off: the operator
+# then records ApplicationPersona health only, and never opens an incident or
+# proposes a fix.
 #
 # This is local and free. AI diagnosis and AI remediation planning stay opt-in
 # (llm.provider + a key + aiRemediation.enabled below): inference costs money and
@@ -80,6 +76,13 @@ websocket:
 healthCheck:
   enabled: true
   interval: 60s
+
+# Remediation safety. Dorgu never remediates kube-system or the namespace it is
+# installed in (read from the pod's own namespace). List any other namespace it
+# must never touch here; maps to --safety-excluded-namespaces. ClusterPersona
+# spec.policies.selfHealing.excludeNamespaces is honoured as well.
+safety:
+  excludedNamespaces: []
 
 # Metrics-server integration for container-level CPU/memory detection
 metricsServer:
@@ -96,22 +99,26 @@ dorguEvents:
   retention: 24h
   maxRecords: 2000
 
-# AI provider config (Anthropic only for v1). Bedrock/IRSA is a future workstream.
-# The API key is injected as the ANTHROPIC_API_KEY env var from a Kubernetes Secret —
-# never as an inline pod-spec arg.
+# AI provider config: "claude" (Anthropic) or "gemini" (Google). AI diagnosis works
+# with either; AI remediation planning (aiRemediation below) is Claude-only for now.
+# Bedrock/IRSA is a future workstream.
+# The API key is injected from a Kubernetes Secret as the env var the provider needs,
+# ANTHROPIC_API_KEY for claude or GEMINI_API_KEY for gemini, never as an inline
+# pod-spec arg.
 #   Production: create a Secret out-of-band and set llm.existingSecret (PREFERRED — the
 #               key never appears in `helm get values` / `helm template`).
 #   Dev:        set llm.apiKey + llm.createSecret=true (chart stores it in a Secret).
 # NEVER commit a real key — use values-local.yaml (gitignored). See values-local.example.yaml.
 llm:
-  provider: ""            # "claude" to enable Anthropic AI; empty disables AI
-  model: ""               # empty = provider default (claude-sonnet-4-6)
+  provider: ""            # "claude" or "gemini"; empty disables AI
+  model: ""               # empty = provider default (claude-sonnet-4-6 / gemini-2.0-flash)
   existingSecret: ""      # name of a pre-created Secret holding the API key (PREFERRED)
-  existingSecretKey: "ANTHROPIC_API_KEY"  # key within the Secret
+  existingSecretKey: ""   # key within the Secret; empty = ANTHROPIC_API_KEY or GEMINI_API_KEY per provider
   apiKey: ""              # DEV ONLY: raw key; requires createSecret=true to be stored in a Secret
   createSecret: false     # when true + apiKey set, chart creates a Secret for the key
 
-# AI-generated ordered remediation (WS1). When enabled + llm.provider set, the planner
+# AI-generated ordered remediation (WS1). Claude only: with llm.provider=gemini the
+# operator keeps the rule-based planner. When enabled + llm.provider set, the planner
 # produces ordered Steps[] on RemediationAction. Deterministic rules remain the floor.
 # Maps to the operator's --enable-ai-remediation flag; only takes effect when llm.provider
 # is set (the flag is omitted otherwise, so the operator default applies but AI stays off
