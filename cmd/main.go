@@ -36,7 +36,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
-	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/controller"
@@ -46,7 +45,6 @@ import (
 	"github.com/dorgu-ai/dorgu-operator/internal/llm"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation/planner"
-	dorguwebhook "github.com/dorgu-ai/dorgu-operator/internal/webhook"
 	dorguws "github.com/dorgu-ai/dorgu-operator/internal/websocket"
 	// +kubebuilder:scaffold:imports
 )
@@ -83,24 +81,6 @@ func main() {
 	if !cfg.enableHTTP2 {
 		tlsOpts = append(tlsOpts, disableHTTP2)
 	}
-
-	// Initial webhook TLS options
-	webhookTLSOpts := tlsOpts
-	webhookServerOptions := webhook.Options{
-		TLSOpts: webhookTLSOpts,
-	}
-
-	if len(cfg.webhookCertPath) > 0 {
-		setupLog.Info("Initializing webhook certificate watcher using provided certificates",
-			"webhook-cert-path", cfg.webhookCertPath, "webhook-cert-name", cfg.webhookCertName,
-			"webhook-cert-key", cfg.webhookCertKey)
-
-		webhookServerOptions.CertDir = cfg.webhookCertPath
-		webhookServerOptions.CertName = cfg.webhookCertName
-		webhookServerOptions.KeyName = cfg.webhookCertKey
-	}
-
-	webhookServer := webhook.NewServer(webhookServerOptions)
 
 	// Metrics endpoint is enabled in 'config/default/kustomization.yaml'. The Metrics options configure the server.
 	// More info:
@@ -143,7 +123,6 @@ func main() {
 	mgr, err := ctrl.NewManager(restConfig, ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsServerOptions,
-		WebhookServer:          webhookServer,
 		HealthProbeBindAddress: cfg.probeAddr,
 		LeaderElection:         cfg.enableLeaderElection,
 		LeaderElectionID:       "48ec518d.dorgu.io",
@@ -226,20 +205,6 @@ func main() {
 		}
 	}
 
-	// Register optional Deployment validating webhook
-	if cfg.enableWebhook {
-		mode := dorguwebhook.ModeAdvisory
-		if cfg.webhookMode == "enforcing" {
-			mode = dorguwebhook.ModeEnforcing
-		}
-		setupLog.Info("Registering Deployment validating webhook", "mode", mode)
-		mgr.GetWebhookServer().Register("/validate-deployment", &webhook.Admission{
-			Handler: &dorguwebhook.DeploymentValidator{
-				Client: mgr.GetClient(),
-				Mode:   mode,
-			},
-		})
-	}
 	// Create a single signal-handler context shared by all components.
 	// ctrl.SetupSignalHandler() must only be called once — a second call
 	// panics with "close of closed channel".

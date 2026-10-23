@@ -38,13 +38,6 @@ type operatorConfig struct {
 	// Health probes
 	probeAddr string
 
-	// Webhook
-	enableWebhook   bool
-	webhookMode     string
-	webhookCertPath string
-	webhookCertName string
-	webhookCertKey  string
-
 	// Leader election
 	enableLeaderElection bool
 
@@ -104,20 +97,13 @@ func parseFlags() operatorConfig {
 			"Enabling this will ensure there is only one active controller manager.")
 	flag.BoolVar(&cfg.secureMetrics, "metrics-secure", true,
 		"If set, the metrics endpoint is served securely via HTTPS. Use --metrics-secure=false to use HTTP instead.")
-	flag.StringVar(&cfg.webhookCertPath, "webhook-cert-path", "", "The directory that contains the webhook certificate.")
-	flag.StringVar(&cfg.webhookCertName, "webhook-cert-name", "tls.crt", "The name of the webhook certificate file.")
-	flag.StringVar(&cfg.webhookCertKey, "webhook-cert-key", "tls.key", "The name of the webhook key file.")
 	flag.StringVar(&cfg.metricsCertPath, "metrics-cert-path", "",
 		"The directory that contains the metrics server certificate.")
 	flag.StringVar(&cfg.metricsCertName, "metrics-cert-name", "tls.crt",
 		"The name of the metrics server certificate file.")
 	flag.StringVar(&cfg.metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
 	flag.BoolVar(&cfg.enableHTTP2, "enable-http2", false,
-		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
-	flag.BoolVar(&cfg.enableWebhook, "enable-webhook", false,
-		"Enable the validating webhook for Deployment resources against ApplicationPersona constraints.")
-	flag.StringVar(&cfg.webhookMode, "webhook-mode", "advisory",
-		"Webhook validation mode: 'advisory' (warn only) or 'enforcing' (reject on errors).")
+		"If set, HTTP/2 will be enabled for the metrics server")
 	flag.BoolVar(&cfg.enableArgoCD, "enable-argocd", true,
 		"Enable ArgoCD Application watching for sync status integration.")
 	flag.StringVar(&cfg.prometheusURL, "prometheus-url", "",

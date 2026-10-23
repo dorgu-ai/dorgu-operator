@@ -1,3 +1,8 @@
+{{- /* The Deployment validating webhook was removed in 0.12.0: it never decoded a
+       request, so it admitted everything. Fail loudly rather than ignore the value. */}}
+{{- if and .Values.webhook .Values.webhook.enabled }}
+{{- fail "webhook.enabled was removed in dorgu-operator 0.12.0: the Deployment validating webhook never worked (every request failed open) and has been deleted. Remove the webhook values." }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -40,10 +45,6 @@ spec:
             {{- end }}
             {{- if .Values.leaderElection.enabled }}
             - --leader-elect=true
-            {{- end }}
-            {{- if .Values.webhook.enabled }}
-            - --enable-webhook=true
-            - --webhook-mode={{ .Values.webhook.mode }}
             {{- end }}
             {{- if not .Values.argocd.enabled }}
             - --enable-argocd=false
@@ -113,11 +114,6 @@ spec:
             - name: healthz
               containerPort: 8081
               protocol: TCP
-            {{- if .Values.webhook.enabled }}
-            - name: webhook
-              containerPort: {{ .Values.webhook.port }}
-              protocol: TCP
-            {{- end }}
             {{- if .Values.websocket.enabled }}
             - name: websocket
               containerPort: {{ .Values.websocket.port }}
@@ -143,18 +139,6 @@ spec:
             capabilities:
               drop:
                 - ALL
-          {{- if .Values.webhook.enabled }}
-          volumeMounts:
-            - name: webhook-certs
-              mountPath: /tmp/k8s-webhook-server/serving-certs
-              readOnly: true
-          {{- end }}
-      {{- if .Values.webhook.enabled }}
-      volumes:
-        - name: webhook-certs
-          secret:
-            secretName: {{ include "dorgu-operator.fullname" . }}-webhook-certs
-      {{- end }}
       terminationGracePeriodSeconds: 10
       {{- with .Values.nodeSelector }}
       nodeSelector:

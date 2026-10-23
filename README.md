@@ -191,8 +191,6 @@ helm install dorgu-operator oci://ghcr.io/dorgu-ai/dorgu-operator-charts/dorgu-o
   --create-namespace \
   --set healthCheck.enabled=true \
   --set metricsServer.enabled=true \
-  --set webhook.enabled=true \
-  --set webhook.mode=advisory \
   --set prometheus.enabled=true \
   --set prometheus.url=http://prometheus-server.monitoring:9090 \
   --set websocket.enabled=true
@@ -227,9 +225,6 @@ kubectl get clusterpersona           # dorgu-cluster, auto-created
 | `aiRemediation.enabled` | AI-generated ordered remediation plans (needs `llm.provider=claude`) | `false` |
 | `websocket.enabled` | WebSocket server for CLI real-time commands | `false` |
 | `websocket.port` | WebSocket server port | `9090` |
-| `webhook.enabled` | Validating webhook for Deployment resources | `false` |
-| `webhook.mode` | `advisory` (warn only) or `enforcing` (reject on errors) | `advisory` |
-| `webhook.port` | Webhook server port | `9443` |
 | `argocd.enabled` | ArgoCD Application watching for sync status | `true` |
 | `prometheus.enabled` | Prometheus integration for resource baseline learning | `false` |
 | `prometheus.url` | Prometheus server URL | `""` |

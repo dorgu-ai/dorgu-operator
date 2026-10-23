@@ -13,6 +13,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Removed
 
+- **The Deployment validating webhook (`internal/webhook`), and with it the `--enable-webhook`, `--webhook-mode`, `--webhook-cert-path`, `--webhook-cert-name` and `--webhook-cert-key` flags and the chart's `webhook.*` values, Service and `ValidatingWebhookConfiguration`.** It never worked: `cmd/main.go` built the validator without a decoder, and the `InjectDecoder` hook that would have set one was removed from controller-runtime long before v0.23, so every admission request dereferenced a nil decoder, panicked, was recovered as a 500 and admitted by `failurePolicy: Ignore`. No warning or denial was ever produced. Admission for Dorgu's own CRDs arrives as ValidatingAdmissionPolicies in a later release. **Breaking:** passing a removed flag stops the binary from starting, and `helm install`/`upgrade` with `webhook.enabled=true` now fails with a message saying the webhook was removed, rather than silently dropping the value.
+
 - **The legacy ApplicationPersona OOM proposer (OP-10).** With `--enable-health-check=false` (or `healthCheck.enabled=false`), the ApplicationPersona reconciler still opened OOMKilled incidents and wrote RemediationActions itself, with no safety check, ownership check or mode check, and with a patch the executor could not even apply (it lacked the `spec` wrapper). The documented promise that turning the health check off means Dorgu never opens an incident or proposes a fix is now true. The ApplicationPersona reconciler records health only; its unused `WebSocket` field is gone with it.
 
 ### Changed

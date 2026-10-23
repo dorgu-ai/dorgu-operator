@@ -30,12 +30,11 @@ Below are operator-specific steps.
 
 ### Operator-specific workflow
 
-1. **Fork and clone** the [dorgu-operator](https://github.com/dorgu-ai/dorgu-operator) repository. Create a branch from `main` (e.g. `fix/controller-name`, `feat/webhook-check`).
+1. **Fork and clone** the [dorgu-operator](https://github.com/dorgu-ai/dorgu-operator) repository. Create a branch from `main` (e.g. `fix/controller-name`, `feat/remediation-gate`).
 
 2. **Where to change code:**
    - **CRD types:** `api/v1/` (e.g. `applicationpersona_types.go`, `clusterpersona_types.go`)
    - **Controllers:** `internal/controller/` (ApplicationPersona, ClusterPersona, ArgoCD watcher)
-   - **Webhook:** `internal/webhook/`
    - **WebSocket server:** `internal/websocket/`
    - **Prometheus client:** `internal/metrics/`
    - **Helm chart:** `charts/dorgu-operator/`

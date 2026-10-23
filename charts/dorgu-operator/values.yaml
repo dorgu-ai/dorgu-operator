@@ -16,12 +16,6 @@ serviceAccount:
   annotations: {}
   name: ""
 
-# Webhook configuration
-webhook:
-  enabled: false
-  mode: advisory  # advisory | enforcing
-  port: 9443
-
 # Validation settings
 validation:
   requeueInterval: 60s
