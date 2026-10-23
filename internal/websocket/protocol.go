@@ -42,8 +42,6 @@ type Topic string
 const (
 	TopicPersonas     Topic = "personas"
 	TopicCluster      Topic = "cluster"
-	TopicDeployments  Topic = "deployments"
-	TopicEvents       Topic = "events"
 	TopicIncidents    Topic = "incidents"
 	TopicRemediations Topic = "remediations"
 	TopicHealth       Topic = "health"
@@ -62,35 +60,6 @@ type Message struct {
 type SubscribePayload struct {
 	Namespace string `json:"namespace,omitempty"`
 	Name      string `json:"name,omitempty"`
-}
-
-// PersonaEvent represents a persona change event.
-type PersonaEvent struct {
-	EventType string `json:"eventType"` // created, updated, deleted
-	Namespace string `json:"namespace"`
-	Name      string `json:"name"`
-	Phase     string `json:"phase,omitempty"`
-	Health    string `json:"health,omitempty"`
-	Persona   any    `json:"persona,omitempty"` // Full persona if requested
-}
-
-// ClusterEvent represents a cluster state change event.
-type ClusterEvent struct {
-	EventType        string `json:"eventType"` // updated, nodeAdded, nodeRemoved
-	Name             string `json:"name"`
-	Phase            string `json:"phase,omitempty"`
-	NodeCount        int    `json:"nodeCount,omitempty"`
-	ApplicationCount int    `json:"applicationCount,omitempty"`
-}
-
-// ValidationEvent represents a validation event.
-type ValidationEvent struct {
-	Namespace  string   `json:"namespace"`
-	Name       string   `json:"name"`
-	Passed     bool     `json:"passed"`
-	IssueCount int      `json:"issueCount"`
-	Severity   string   `json:"severity,omitempty"` // highest severity
-	Issues     []string `json:"issues,omitempty"`
 }
 
 // IncidentEvent represents an incident lifecycle event.
@@ -124,10 +93,6 @@ type HealthUpdateEvent struct {
 	EventType       string `json:"eventType"` // health-update
 	ActiveIncidents int    `json:"activeIncidents"`
 	PendingRemedies int    `json:"pendingRemediations"`
-	NodeCount       int    `json:"nodeCount"`
-	HealthyNodes    int    `json:"healthyNodes"`
-	CPUUtilization  string `json:"cpuUtilization"`
-	MemUtilization  string `json:"memUtilization"`
 }
 
 // ErrorPayload is the payload for error messages.

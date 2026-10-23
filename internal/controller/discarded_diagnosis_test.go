@@ -72,14 +72,6 @@ func (s *capturingEventStore) Store(_ context.Context, e *events.InternalEvent) 
 	return nil
 }
 
-func (s *capturingEventStore) Query(_ context.Context, _ events.EventFilter) ([]events.InternalEvent, error) {
-	return nil, nil
-}
-
-func (s *capturingEventStore) Count(_ context.Context, _ events.EventFilter) (int, error) {
-	return 0, nil
-}
-
 // capturingEmitter records the K8s Events the reconciler emits.
 type capturingEmitter struct {
 	mu       sync.Mutex

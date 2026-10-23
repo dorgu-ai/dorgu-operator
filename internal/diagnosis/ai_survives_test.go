@@ -15,9 +15,9 @@ limitations under the License.
 */
 
 // These tests cover the reason a paid-for AI diagnosis never reached the user
-// (F-05). AIProvider re-runs the rule-based logic and then applies the LLM's
-// ConfidenceAdjustment, which no response parser ever populates. So the AI
-// diagnosis carries the rule-based confidence *exactly*, and the engine's
+// (F-05). AIProvider re-runs the rule-based logic and keeps its confidence: the
+// model never adjusts it. So the AI diagnosis carries the rule-based confidence
+// *exactly*, and the engine's
 // "higher confidence wins" merge, being a strict comparison over a list that
 // starts with the rule-based provider, discarded it every single time.
 package diagnosis
@@ -56,7 +56,7 @@ func oomSignals() []detection.Signal {
 
 // The engine must keep the AI-enhanced diagnosis when both providers report the
 // same confidence for the same finding. This is the exact production shape: the
-// LLM returns no confidence adjustment, so the two confidences are identical.
+// model never adjusts confidence, so the two confidences are identical.
 func TestEngine_EqualConfidence_KeepsEnhancingProvider(t *testing.T) {
 	same := []dorguv1.ResourceReference{
 		{Kind: "Pod", Name: "report-worker-abc", Namespace: "apps"},
@@ -155,7 +155,6 @@ func TestEngine_RealProviders_AIEnhancedSurvives(t *testing.T) {
 		response: &llm.DiagnosisResponse{
 			EnhancedSummary:   "report-worker was OOM-killed: it needs ~120M, the limit is 48Mi.",
 			RecommendedAction: actionResourceAdjustment,
-			// No ConfidenceAdjustment, exactly as parseEnhancedResponse returns.
 		},
 	}
 

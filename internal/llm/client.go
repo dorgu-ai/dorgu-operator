@@ -49,10 +49,6 @@ type DiagnosisRequest struct {
 
 	// Signal context
 	Signals []SignalContext
-
-	// Incident history (for pattern recognition)
-	PreviousOccurrences int32
-	PreviousResolutions []string
 }
 
 // SignalContext provides signal details for LLM context.
@@ -69,8 +65,6 @@ type DiagnosisResponse struct {
 	EnhancedSummary string
 	// RecommendedAction may refine or confirm the rule-based suggestion.
 	RecommendedAction string
-	// ConfidenceAdjustment: positive = increase, negative = decrease (AI's assessment).
-	ConfidenceAdjustment float64
 }
 
 const defaultTimeout = 30 * time.Second

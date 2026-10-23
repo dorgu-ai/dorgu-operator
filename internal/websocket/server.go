@@ -190,25 +190,6 @@ func (s *Server) Broadcast(msg *Message) {
 	}
 }
 
-// BroadcastPersonaEvent broadcasts a persona event.
-func (s *Server) BroadcastPersonaEvent(eventType, namespace, name, phase, health string) {
-	event := PersonaEvent{
-		EventType: eventType,
-		Namespace: namespace,
-		Name:      name,
-		Phase:     phase,
-		Health:    health,
-	}
-
-	msg, err := NewEventMessage(TopicPersonas, event)
-	if err != nil {
-		log.Error(err, "Failed to create persona event message")
-		return
-	}
-
-	s.Broadcast(msg)
-}
-
 // BroadcastIncident broadcasts an incident lifecycle event.
 func (s *Server) BroadcastIncident(event IncidentEvent) {
 	msg, err := NewEventMessage(TopicIncidents, event)
@@ -236,25 +217,6 @@ func (s *Server) BroadcastHealthUpdate(event HealthUpdateEvent) {
 	msg, err := NewEventMessage(TopicHealth, event)
 	if err != nil {
 		log.Error(err, "Failed to create health update event message")
-		return
-	}
-
-	s.Broadcast(msg)
-}
-
-// BroadcastClusterEvent broadcasts a cluster event.
-func (s *Server) BroadcastClusterEvent(eventType, name, phase string, nodeCount, appCount int) {
-	event := ClusterEvent{
-		EventType:        eventType,
-		Name:             name,
-		Phase:            phase,
-		NodeCount:        nodeCount,
-		ApplicationCount: appCount,
-	}
-
-	msg, err := NewEventMessage(TopicCluster, event)
-	if err != nil {
-		log.Error(err, "Failed to create cluster event message")
 		return
 	}
 

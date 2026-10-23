@@ -84,13 +84,3 @@ const (
 	CategoryNode         Category = "node"
 	CategoryControlPlane Category = "controlplane"
 )
-
-// EventFilter is used for querying the event store.
-type EventFilter struct {
-	Namespace  string
-	Severity   Severity
-	Category   Category
-	PersonaRef *dorguv1.PersonaReference
-	Since      *time.Time
-	Limit      int
-}
