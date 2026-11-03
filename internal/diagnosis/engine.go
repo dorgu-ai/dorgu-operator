@@ -93,9 +93,8 @@ type rankedDiagnosis struct {
 // confident, and on an exact tie the one from the later provider.
 //
 // The tie is the common case, not a corner case. AIProvider re-runs the
-// rule-based logic and then applies the LLM's ConfidenceAdjustment, which no
-// response parser populates, so an AI-enhanced diagnosis carries the rule-based
-// confidence to the digit. Under a strict "higher confidence wins" comparison
+// rule-based logic and keeps its confidence (the model never adjusts it), so an
+// AI-enhanced diagnosis carries the rule-based confidence to the digit. Under a strict "higher confidence wins" comparison
 // the rule-based result, produced first, therefore won every time: the
 // ai-enhanced diagnosis the user was billed for was dropped here and never
 // reached the IncidentMemory (F-05). Providers run in order and each one

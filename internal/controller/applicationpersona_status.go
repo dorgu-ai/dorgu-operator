@@ -143,6 +143,10 @@ func extractContainerFailure(podName string, cs corev1.ContainerStatus) *dorguv1
 	return nil
 }
 
+// reasonOOMKilled is the container termination reason Kubernetes reports for an
+// out-of-memory kill, and the signal name Dorgu records for it.
+const reasonOOMKilled = "OOMKilled"
+
 // isFailureReason returns true if the waiting reason indicates a failure.
 func isFailureReason(reason string) bool {
 	failureReasons := map[string]bool{

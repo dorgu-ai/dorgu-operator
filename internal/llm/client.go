@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -48,10 +49,6 @@ type DiagnosisRequest struct {
 
 	// Signal context
 	Signals []SignalContext
-
-	// Incident history (for pattern recognition)
-	PreviousOccurrences int32
-	PreviousResolutions []string
 }
 
 // SignalContext provides signal details for LLM context.
@@ -68,11 +65,18 @@ type DiagnosisResponse struct {
 	EnhancedSummary string
 	// RecommendedAction may refine or confirm the rule-based suggestion.
 	RecommendedAction string
-	// ConfidenceAdjustment: positive = increase, negative = decrease (AI's assessment).
-	ConfidenceAdjustment float64
 }
 
 const defaultTimeout = 30 * time.Second
+
+// redactKey removes the API key from text bound for an error message or a
+// log line. Provider error bodies can echo the credential they rejected.
+func redactKey(text, apiKey string) string {
+	if apiKey == "" {
+		return text
+	}
+	return strings.ReplaceAll(text, apiKey, "[REDACTED]")
+}
 
 // NewClient creates an LLM client based on the provider name and API key.
 func NewClient(provider, apiKey string) (Client, error) {

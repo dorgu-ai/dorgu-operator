@@ -80,7 +80,7 @@ func (c *ClaudeClient) EnhanceDiagnosis(ctx context.Context, req DiagnosisReques
 
 	resp, err := c.client.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("API call failed: %w", err)
+		return nil, fmt.Errorf("API call failed: %s", redactKey(err.Error(), c.apiKey))
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -90,7 +90,7 @@ func (c *ClaudeClient) EnhanceDiagnosis(ctx context.Context, req DiagnosisReques
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(respBody))
+		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, redactKey(string(respBody), c.apiKey))
 	}
 
 	var claudeResp claudeResponse

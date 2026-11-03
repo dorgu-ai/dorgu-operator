@@ -254,6 +254,13 @@ func (p *Proposer) Propose(ctx context.Context, diag diagnosis.Diagnosis, incide
 		return &ProposalResult{SkipReason: reason}, nil
 	}
 
+	// A protected namespace is refused here, before planning, for the same
+	// reason: the deny list would discard any plan afterwards, so asking the
+	// model first only spends a call and sends that namespace's context out.
+	if violation := p.safety.NamespaceDenied(ctx, diag.PersonaRef.Namespace); violation != nil {
+		return &ProposalResult{SkipReason: fmt.Sprintf("safety check failed: [[%s] %s]", violation.Rule, violation.Message)}, nil
+	}
+
 	// Dedup: skip if an active RemediationAction already covers this proposal —
 	// either the same incident (per-cycle re-proposal) or the same
 	// persona+target (a second incident for one root cause, e.g. CrashLoop after

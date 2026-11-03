@@ -34,6 +34,7 @@ import (
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
 	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
 	"github.com/dorgu-ai/dorgu-operator/internal/events"
+	"github.com/dorgu-ai/dorgu-operator/internal/metrics"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation"
 	"github.com/dorgu-ai/dorgu-operator/internal/websocket"
 )
@@ -101,6 +102,9 @@ const (
 // +kubebuilder:rbac:groups="",resources=events,verbs=get;list;watch;create;patch
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch
+// The control-plane collector reads the scheduler and controller-manager
+// Leases through the cached client, which starts a cluster-wide informer.
+// +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=replicasets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch
 // +kubebuilder:rbac:groups=metrics.k8s.io,resources=pods,verbs=get;list
@@ -378,11 +382,13 @@ func (r *HealthCheckReconciler) processDiagnosis(
 			return nil
 		}
 		if suppressed != "" {
+			metrics.RecordProposal(metrics.SourceDorgu, diag.SuggestedAction, metrics.ProposalSuppressed)
 			r.Logger.V(1).Info("remediation not proposed", "reason", suppressed, "incident", incident.Name)
 			return nil
 		}
 
 		result, proposeErr := r.Proposer.Propose(ctx, *diag, incident)
+		metrics.RecordProposal(metrics.SourceDorgu, diag.SuggestedAction, proposalOutcome(result, proposeErr))
 		if proposeErr != nil {
 			r.Logger.Error(proposeErr, "failed to propose remediation", "incident", incident.Name)
 		} else if result.Proposed {
@@ -406,6 +412,18 @@ func (r *HealthCheckReconciler) processDiagnosis(
 	}
 
 	return nil
+}
+
+// proposalOutcome classifies a Propose call for dorgu_proposals_total.
+func proposalOutcome(result *remediation.ProposalResult, err error) string {
+	switch {
+	case err != nil:
+		return metrics.ProposalError
+	case result != nil && result.Proposed:
+		return metrics.ProposalProposed
+	default:
+		return metrics.ProposalSkipped
+	}
 }
 
 // findMatchingIncident searches for an active IncidentMemory matching a
@@ -587,6 +605,7 @@ func (r *HealthCheckReconciler) createIncident(
 
 	switch createErr := r.Client.Create(ctx, im); {
 	case createErr == nil:
+		metrics.RecordIncident(diag.Category, subject.attribution())
 	case apierrors.IsAlreadyExists(createErr):
 		// The incident is already there and our cached List did not see it yet.
 		// Fold this diagnosis into the object that really exists rather than

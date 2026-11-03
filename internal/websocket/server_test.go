@@ -284,38 +284,6 @@ func TestWebSocketServer_GetCluster(t *testing.T) {
 	assert.Equal(t, "v1.28.0", clusterResponse.KubernetesVer)
 }
 
-func TestWebSocketServer_BroadcastPersonaEvent(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = dorguv1.AddToScheme(scheme)
-	client := fake.NewClientBuilder().WithScheme(scheme).Build()
-
-	server := NewServer(client, ":0")
-
-	// Start the broadcast handler
-	go server.handleBroadcast()
-
-	// Test that BroadcastPersonaEvent doesn't panic
-	assert.NotPanics(t, func() {
-		server.BroadcastPersonaEvent("created", "default", "new-app", "Active", "Healthy")
-	})
-}
-
-func TestWebSocketServer_BroadcastClusterEvent(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = dorguv1.AddToScheme(scheme)
-	client := fake.NewClientBuilder().WithScheme(scheme).Build()
-
-	server := NewServer(client, ":0")
-
-	// Start the broadcast handler
-	go server.handleBroadcast()
-
-	// Test that BroadcastClusterEvent doesn't panic
-	assert.NotPanics(t, func() {
-		server.BroadcastClusterEvent("updated", "test-cluster", "Active", 3, 5)
-	})
-}
-
 func TestWebSocketServer_BroadcastIncident(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = dorguv1.AddToScheme(scheme)
@@ -512,8 +480,6 @@ func TestWebSocketServer_BroadcastHealthUpdate(t *testing.T) {
 			EventType:       "health-update",
 			ActiveIncidents: 2,
 			PendingRemedies: 1,
-			NodeCount:       3,
-			HealthyNodes:    3,
 		})
 	})
 }
@@ -554,10 +520,6 @@ func TestWebSocketServer_BroadcastHealthUpdate_WithSubscriber(t *testing.T) {
 		EventType:       "health-update",
 		ActiveIncidents: 2,
 		PendingRemedies: 1,
-		NodeCount:       3,
-		HealthyNodes:    2,
-		CPUUtilization:  "65%",
-		MemUtilization:  "78%",
 	})
 
 	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
@@ -578,10 +540,6 @@ func TestWebSocketServer_BroadcastHealthUpdate_WithSubscriber(t *testing.T) {
 	assert.Equal(t, "health-update", event.EventType)
 	assert.Equal(t, 2, event.ActiveIncidents)
 	assert.Equal(t, 1, event.PendingRemedies)
-	assert.Equal(t, 3, event.NodeCount)
-	assert.Equal(t, 2, event.HealthyNodes)
-	assert.Equal(t, "65%", event.CPUUtilization)
-	assert.Equal(t, "78%", event.MemUtilization)
 }
 
 func TestWebSocketServer_TopicIsolation(t *testing.T) {

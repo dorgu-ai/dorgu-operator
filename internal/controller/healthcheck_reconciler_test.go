@@ -759,10 +759,6 @@ var _ = Describe("HealthCheckReconciler", func() {
 type noopEventStore struct{}
 
 func (s *noopEventStore) Store(_ context.Context, _ *events.InternalEvent) error { return nil }
-func (s *noopEventStore) Query(_ context.Context, _ events.EventFilter) ([]events.InternalEvent, error) {
-	return nil, nil
-}
-func (s *noopEventStore) Count(_ context.Context, _ events.EventFilter) (int, error) { return 0, nil }
 
 // noopEmitter is a no-op Emitter implementation for testing.
 type noopEmitter struct{}

@@ -14,7 +14,7 @@
 llm:
   provider: claude
   existingSecret: dorgu-llm
-  # existingSecretKey: ANTHROPIC_API_KEY  # default
+  # existingSecretKey: ANTHROPIC_API_KEY  # default for claude; GEMINI_API_KEY for gemini
 aiRemediation:
   enabled: true
 

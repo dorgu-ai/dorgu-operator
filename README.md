@@ -191,8 +191,6 @@ helm install dorgu-operator oci://ghcr.io/dorgu-ai/dorgu-operator-charts/dorgu-o
   --create-namespace \
   --set healthCheck.enabled=true \
   --set metricsServer.enabled=true \
-  --set webhook.enabled=true \
-  --set webhook.mode=advisory \
   --set prometheus.enabled=true \
   --set prometheus.url=http://prometheus-server.monitoring:9090 \
   --set websocket.enabled=true
@@ -214,21 +212,19 @@ kubectl get clusterpersona           # dorgu-cluster, auto-created
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `healthCheck.enabled` | Enable detection, diagnosis, incident tracking, and remediation proposal | `false` |
+| `healthCheck.enabled` | Detection, diagnosis, incident tracking and remediation proposals. When `false`, the operator records persona health only and never opens an incident or proposes a fix | `true` |
 | `healthCheck.interval` | Health check reconciliation interval | `60s` |
+| `safety.excludedNamespaces` | Namespaces Dorgu never remediates, on top of `kube-system` and its own namespace (maps to `--safety-excluded-namespaces`) | `[]` |
 | `metricsServer.enabled` | metrics-server integration for container-level CPU/memory detection | `true` |
-| `llm.provider` | AI provider; `claude` enables Anthropic, empty disables AI | `""` |
+| `llm.provider` | AI provider: `claude` (Anthropic) or `gemini` (Google); empty disables AI. The chart injects `ANTHROPIC_API_KEY` or `GEMINI_API_KEY` to match | `""` |
 | `llm.model` | Model override (empty = provider default) | `""` |
 | `llm.existingSecret` | Name of a pre-created Secret holding the API key (**preferred**) | `""` |
-| `llm.existingSecretKey` | Key within that Secret | `ANTHROPIC_API_KEY` |
+| `llm.existingSecretKey` | Key within that Secret; empty means the provider's env var name | `""` (`ANTHROPIC_API_KEY` / `GEMINI_API_KEY`) |
 | `llm.apiKey` | **Dev only:** raw key; requires `createSecret=true` to be stored in a Secret | `""` |
 | `llm.createSecret` | When true + `apiKey` set, the chart creates a Secret for the key | `false` |
 | `aiRemediation.enabled` | AI-generated ordered remediation plans (needs `llm.provider=claude`) | `false` |
 | `websocket.enabled` | WebSocket server for CLI real-time commands | `false` |
 | `websocket.port` | WebSocket server port | `9090` |
-| `webhook.enabled` | Validating webhook for Deployment resources | `false` |
-| `webhook.mode` | `advisory` (warn only) or `enforcing` (reject on errors) | `advisory` |
-| `webhook.port` | Webhook server port | `9443` |
 | `argocd.enabled` | ArgoCD Application watching for sync status | `true` |
 | `prometheus.enabled` | Prometheus integration for resource baseline learning | `false` |
 | `prometheus.url` | Prometheus server URL | `""` |
@@ -236,7 +232,7 @@ kubectl get clusterpersona           # dorgu-cluster, auto-created
 | `operator.clusterPersonaEnsureInterval` | How often to re-ensure that persona exists (clamped to 30s minimum) | `2m` |
 | `validation.requeueInterval` | ApplicationPersona validation requeue interval | `60s` |
 | `leaderElection.enabled` | Leader election for the controller manager | `true` |
-| `metrics.enabled` / `metrics.bindAddress` / `metrics.secure` | Controller metrics endpoint | `true` / `:8443` / `true` |
+| `metrics.enabled` / `metrics.bindAddress` / `metrics.secure` | Controller metrics endpoint: controller-runtime defaults plus `dorgu_incidents_total{class,scope}`, `dorgu_proposals_total{source,action_type,result}` and `dorgu_remediation_transitions_total{from,to}` | `true` / `:8443` / `true` |
 | `healthProbe.bindAddress` | Liveness/readiness probe address | `:8081` |
 | `resources` | Manager container requests and limits | 10m/64Mi → 500m/128Mi |
 

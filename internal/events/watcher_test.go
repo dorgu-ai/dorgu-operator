@@ -81,18 +81,6 @@ func (m *mockStore) Store(_ context.Context, event *InternalEvent) error {
 	return nil
 }
 
-func (m *mockStore) Query(_ context.Context, _ EventFilter) ([]InternalEvent, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.events, nil
-}
-
-func (m *mockStore) Count(_ context.Context, _ EventFilter) (int, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return len(m.events), nil
-}
-
 func (m *mockStore) stored() []InternalEvent {
 	m.mu.Lock()
 	defer m.mu.Unlock()

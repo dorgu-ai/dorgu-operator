@@ -59,7 +59,7 @@ func TestStore_ReDeliveredEventIsIdempotentNotAnError(t *testing.T) {
 	store := NewEventStore(fakeClient, logger, WithDedupWindow(0))
 
 	ctx := context.Background()
-	event := newTestInternalEvent("e1", "kubelet", "test-pod", "default", SeverityCritical, CategoryHealth)
+	event := newTestInternalEvent("e1", "kubelet", "test-pod", "default", SeverityCritical)
 
 	require.NoError(t, store.Store(ctx, event))
 	require.NoError(t, store.Store(ctx, event),
@@ -86,12 +86,12 @@ func TestStore_DistinctReasonsAreBothRecorded(t *testing.T) {
 	at := time.Now()
 
 	detected := newTestInternalEvent("e1", "healthcheck-reconciler", "im-checkout", "apps",
-		SeverityCritical, CategoryHealth)
+		SeverityCritical)
 	detected.Reason = ReasonDorguDetected
 	detected.EventTime = at
 
 	discarded := newTestInternalEvent("e2", "healthcheck-reconciler", "im-checkout", "apps",
-		SeverityCritical, CategoryHealth)
+		SeverityCritical)
 	discarded.Reason = "DorguDiagnosisDiscarded"
 	discarded.EventTime = at
 
@@ -172,7 +172,7 @@ func TestWatcher_ReDeliveredEventStillReachesTheEmitter(t *testing.T) {
 	// A fixed EventTime is what the informer actually re-delivers: LastTimestamp
 	// has second granularity and does not move for a settled event.
 	classified := newTestInternalEvent("e1", "kubelet", "test-pod", "default",
-		SeverityCritical, CategoryHealth)
+		SeverityCritical)
 	classified.EventTime = time.Date(2026, 8, 23, 14, 0, 0, 0, time.UTC)
 
 	emitter := &mockEmitter{}
@@ -270,7 +270,7 @@ func TestStore_StampsTheConfiguredRetention(t *testing.T) {
 
 	ctx := context.Background()
 	require.NoError(t, store.Store(ctx,
-		newTestInternalEvent("e1", "kubelet", "test-pod", "default", SeverityInfo, CategoryHealth)))
+		newTestInternalEvent("e1", "kubelet", "test-pod", "default", SeverityInfo)))
 
 	var list dorguv1.DorguEventList
 	require.NoError(t, fakeClient.List(ctx, &list))

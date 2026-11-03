@@ -32,7 +32,7 @@ We take security seriously. If you believe you have found a security vulnerabili
 
 **In scope:**
 
-- The Dorgu Operator code: controllers (ApplicationPersona, ClusterPersona, ArgoCD watcher), validating webhook, WebSocket server, Prometheus client, CRD handling, and the Helm chart in this repository.
+- The Dorgu Operator code: controllers (ApplicationPersona, ClusterPersona, ArgoCD watcher), WebSocket server, Prometheus client, CRD handling, and the Helm chart in this repository.
 - Security impact of operator behavior (e.g. RBAC, admission decisions, status updates).
 
 **Out of scope:**

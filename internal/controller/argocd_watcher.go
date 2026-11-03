@@ -276,17 +276,3 @@ func ArgoCDCRDExists(dc discovery.DiscoveryInterface) bool {
 	}
 	return false
 }
-
-// IsArgoCDInstalled checks if ArgoCD CRDs are installed in the cluster.
-func IsArgoCDInstalled(ctx context.Context, c client.Client) bool {
-	// Try to list ArgoCD Applications
-	argoAppList := &unstructured.UnstructuredList{}
-	argoAppList.SetGroupVersionKind(schema.GroupVersionKind{
-		Group:   "argoproj.io",
-		Version: "v1alpha1",
-		Kind:    "ApplicationList",
-	})
-
-	err := c.List(ctx, argoAppList, client.Limit(1))
-	return err == nil
-}
