@@ -7,6 +7,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-11-06
+
+### Upgrade notes
+
+> **BREAKING: the validating webhook and its flags are gone.** `--enable-webhook`, `--webhook-mode`, `--webhook-cert-path`, `--webhook-cert-name` and `--webhook-cert-key` stop the binary from starting, and `helm install`/`upgrade` with `webhook.enabled=true` now fails with a message saying so. Remove them from your values and args before upgrading. The webhook never produced a warning or a denial, so nothing that worked depends on it.
+>
+> **`--enable-health-check` now defaults to `true`.** Anyone who ran the binary without flags (not the chart, which already defaulted to `true`) gets detection on. Pass `--enable-health-check=false` to keep it off.
+>
+> **The deny-list now protects the namespace the operator runs in** (typically `dorgu-system`), where it used to protect only `dorgu-operator-system`. Workloads in that namespace are no longer eligible for proposals.
+>
+> This release also carries the unreleased fixes from #49 (CR5-01, CR5-02, CR5-03), listed under Fixed.
+
 ### Added
 
 - **Adversarial bypass suite (`test/adversarial/`, `make adversarial`).** One envtest test per attack in `test/adversarial/SCENARIOS.md` (OP-01 to OP-14, ID-01 to ID-04), each asserting the safe outcome against the real controllers. Holes not yet closed are listed once in `openScenarios` with the checkpoint that must close them and skip as `OPEN`; a listed scenario that starts passing, or an unlisted one that stops passing, fails the suite. `make adversarial` ends with the KPI I1 line, `adversarial: blocked N/18`.
