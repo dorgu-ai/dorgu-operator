@@ -7,6 +7,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Security
+
+- **Incidents in a protected namespace are no longer sent to the model for diagnosis (EKS QA 2026-11-06, F-1).** The deny-list (`kube-system`, the operator's own namespace, `safety.excludedNamespaces` / `--safety-excluded-namespaces`, ClusterPersona `excludeNamespaces`) gated the remediation planner only, since the H-2 fix. `AIProvider.Diagnose` still called `EnhanceDiagnosis` once per diagnosis per cycle with no check, so an incident in `dorgu-system` sent its summary, severity and signal strings such as `Pod/dorgu-system/<name>` to the provider every cycle and was recorded `provider=ai-enhanced`. The provider now asks the same deny-list before any model call, through one shared predicate (`SafetyCheckerImpl.NamespaceProtected`, which is `NamespaceDenied` as a yes/no, passed to `diagnosis.NewAIProvider` as a `diagnosis.NamespaceGate`); the proposer and the diagnosis provider can no longer disagree. A diagnosis is withheld whole if any namespace it touches (its persona, its affected resources, the resources behind its signals) is protected. The incident is still detected, diagnosed by the rules and recorded, now as `provider=rule-based`. The deny-list fails closed on both paths: a persona or namespaced resource with no namespace, a `nil` gate, or a ClusterPersona list that cannot be read counts as protected (the last one used to be waved through as allowed, for the planner and for the apply-time safety check too). Cluster-scoped `Node` and `ComponentStatus` signals carry no namespace by nature and are still enhanced. The only other model call, the AI remediation planner, was already gated (`Propose` refuses a protected namespace before `PlanRemediation`) and now shares that predicate. Adversarial scenario OP-15 counts the requests that actually reach the model API; `make adversarial` now reports N/19. Unchanged: behaviour in non-protected namespaces, the one-call-per-diagnosis-per-cycle cadence and the absence of a call metric (H-3, tracked separately), and the RBAC and flags.
+
 ## [0.12.0] - 2026-11-06
 
 ### Upgrade notes

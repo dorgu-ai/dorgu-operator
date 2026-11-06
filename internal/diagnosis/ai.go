@@ -23,6 +23,7 @@ import (
 
 	"github.com/go-logr/logr"
 
+	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
 	"github.com/dorgu-ai/dorgu-operator/internal/llm"
 )
@@ -33,16 +34,23 @@ const providerNameAI = "ai-enhanced"
 // It re-runs the rule-based logic to get base diagnoses, then enhances each
 // with an LLM call. On any LLM failure, it returns an empty slice so
 // the rule-based diagnoses from the primary provider are used as-is.
+//
+// A diagnosis that touches a protected namespace (see NamespaceGate) is never
+// sent: it is left out of the result, so the rule-based diagnosis stands.
 type AIProvider struct {
 	llmClient    llm.Client
+	gate         NamespaceGate
 	ruleProvider *RuleBasedProvider
 	logger       logr.Logger
 }
 
-// NewAIProvider creates an AI-enhanced diagnosis provider.
-func NewAIProvider(client llm.Client, logger logr.Logger) *AIProvider {
+// NewAIProvider creates an AI-enhanced diagnosis provider. The gate is the
+// deny-list; with a nil gate nothing is sent, because an unavailable deny-list
+// fails closed.
+func NewAIProvider(client llm.Client, gate NamespaceGate, logger logr.Logger) *AIProvider {
 	return &AIProvider{
 		llmClient:    client,
+		gate:         gate,
 		ruleProvider: NewRuleBasedProvider(logger),
 		logger:       logger.WithName("ai-diagnosis"),
 	}
@@ -66,6 +74,14 @@ func (p *AIProvider) Diagnose(ctx context.Context, signals []detection.Signal) (
 	enhanced := make([]Diagnosis, 0, len(baseDiagnoses))
 
 	for _, d := range baseDiagnoses {
+		if ns, protected := p.protectedNamespace(ctx, d); protected {
+			p.logger.V(1).Info("not sending the diagnosis to the model: protected or unknown namespace",
+				"namespace", ns,
+				"category", d.Category,
+			)
+			continue
+		}
+
 		req := buildLLMRequest(d)
 
 		resp, err := p.llmClient.EnhanceDiagnosis(ctx, req)
@@ -84,6 +100,54 @@ func (p *AIProvider) Diagnose(ctx context.Context, signals []detection.Signal) (
 	}
 
 	return enhanced, nil
+}
+
+// clusterScopedKinds are the resource kinds the detectors report without a
+// namespace because they have none. Every other kind with an empty namespace is
+// one whose namespace could not be determined.
+var clusterScopedKinds = map[string]bool{
+	"Node":            true,
+	"ComponentStatus": true,
+}
+
+// protectedNamespace reports whether d may not be sent to the model, and the
+// namespace that decided it. It looks at everything buildLLMRequest sends (the
+// resources behind the contributing signals) and at the diagnosis' own affected
+// resources and persona, so a diagnosis spanning one protected namespace is
+// withheld whole. It fails closed: no gate, a persona or namespaced resource
+// without a namespace, or a gate that says so, all withhold the diagnosis.
+func (p *AIProvider) protectedNamespace(ctx context.Context, d Diagnosis) (string, bool) {
+	if p.gate == nil {
+		return "", true
+	}
+
+	namespaces := make([]string, 0, len(d.AffectedResources)+len(d.Contributing)+1)
+	if d.PersonaRef != nil {
+		namespaces = append(namespaces, d.PersonaRef.Namespace)
+	}
+	refs := make([]dorguv1.ResourceReference, 0, len(d.AffectedResources)+len(d.Contributing))
+	refs = append(refs, d.AffectedResources...)
+	for _, cs := range d.Contributing {
+		refs = append(refs, cs.Signal.Resource)
+	}
+	for _, ref := range refs {
+		if ref.Namespace == "" && clusterScopedKinds[ref.Kind] {
+			continue
+		}
+		namespaces = append(namespaces, ref.Namespace)
+	}
+
+	checked := make(map[string]bool, len(namespaces))
+	for _, ns := range namespaces {
+		if checked[ns] {
+			continue
+		}
+		checked[ns] = true
+		if ns == "" || p.gate.NamespaceProtected(ctx, ns) {
+			return ns, true
+		}
+	}
+	return "", false
 }
 
 // buildLLMRequest converts a diagnosis into an LLM request. The contributing

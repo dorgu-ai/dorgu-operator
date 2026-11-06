@@ -30,6 +30,7 @@ import (
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
 	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
 	"github.com/dorgu-ai/dorgu-operator/internal/llm"
+	"github.com/dorgu-ai/dorgu-operator/internal/remediation"
 )
 
 // stubLLMClient returns a fixed enhancement and counts its calls. It mirrors what
@@ -93,7 +94,7 @@ var _ = Describe("HealthCheckReconciler AI diagnosis persistence", func() {
 			Detection: detection.NewEngine(testLogger, collector),
 			Diagnosis: diagnosis.NewEngine(testLogger,
 				diagnosis.NewRuleBasedProvider(testLogger),
-				diagnosis.NewAIProvider(stub, testLogger),
+				diagnosis.NewAIProvider(stub, remediation.NewSafetyChecker(k8sClient, testLogger), testLogger),
 			),
 			EventStore:        &noopEventStore{},
 			EventEmitter:      &noopEmitter{},
