@@ -376,8 +376,10 @@ func (s *SafetyCheckerImpl) NamespaceDenied(ctx context.Context, namespace strin
 		s.logger.Error(err, "cannot read ClusterPersona excludeNamespaces; refusing the namespace until the deny list is readable",
 			"namespace", namespace)
 		return &SafetyViolation{
-			Rule:    RuleDenyList,
-			Message: fmt.Sprintf("namespace %s cannot be cleared: the ClusterPersona deny list could not be read: %v", namespace, err),
+			Rule: RuleDenyList,
+			// Fixed text: the message becomes a SkipReason that may be persisted or
+			// shown, and the raw API error stays in the log above.
+			Message: fmt.Sprintf("namespace %s: deny-list could not be read, treating namespace as protected", namespace),
 		}
 	}
 

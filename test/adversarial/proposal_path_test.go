@@ -224,8 +224,32 @@ func TestOP16MixedNamespaceEvictionNeverReachesThePlanner(t *testing.T) {
 		t.Fatalf("the attack needs one merged allowed-persona diagnosis; got %d diagnoses", len(diagnoses))
 	}
 
-	Expect(t, "OP-16", apiCalls.Load() == 0,
-		fmt.Sprintf("%d request(s) reached the model API carrying a %s pod", apiCalls.Load(), operatorNamespace))
+	denied := apiCalls.Load()
+
+	// Positive control for the planner: the same proposer and transport must
+	// reach the model for an all-allowed diagnosis, or a zero above only means
+	// the transport stopped matching.
+	allowed := diagnosis.Diagnosis{
+		Summary:    "Node under pressure (NodeMemoryPressure), causing pod evictions.",
+		Category:   string(detection.CategoryNode),
+		Severity:   detection.SeverityCritical,
+		PersonaRef: &dorguv1.PersonaReference{Kind: kindPersona, Name: appName, Namespace: ns},
+		Contributing: []diagnosis.ContributingSignal{
+			{Signal: node},
+			{Signal: evicted(ns, appName+"-abc")},
+		},
+		SuggestedAction: "resource-adjustment",
+	}
+	if _, err := proposer.Propose(testCtx(t), allowed, &incident); err != nil {
+		t.Fatalf("proposing the allowed control: %v", err)
+	}
+	if apiCalls.Load()-denied < 1 {
+		t.Fatalf("positive control: an all-allowed diagnosis made no planner request; " +
+			"the counting transport is not observing the planner, so OP-16 proves nothing")
+	}
+
+	Expect(t, "OP-16", denied == 0,
+		fmt.Sprintf("%d request(s) reached the model API carrying a %s pod", denied, operatorNamespace))
 }
 
 // plannerFunc is a planner that only counts that it was asked.

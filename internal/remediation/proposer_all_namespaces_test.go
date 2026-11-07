@@ -158,7 +158,9 @@ func TestProposer_UnreadableDenyListIsLoudAndExplained(t *testing.T) {
 	result, err := p.Propose(context.Background(), newOOMDiagnosis("apps", "my-app", detection.SeverityCritical), incident)
 	require.NoError(t, err)
 	assert.False(t, result.Proposed)
-	assert.Contains(t, result.SkipReason, "clusterpersonas is forbidden")
+	// The raw API error stays in the log: the skip reason may be persisted or shown.
+	assert.NotContains(t, result.SkipReason, "clusterpersonas is forbidden")
+	assert.Contains(t, result.SkipReason, "deny-list could not be read, treating namespace as protected")
 
 	var loud bool
 	for _, line := range logs {
