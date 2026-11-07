@@ -43,7 +43,7 @@ func (m *mockLLMClient) EnhanceDiagnosis(_ context.Context, _ llm.DiagnosisReque
 func (m *mockLLMClient) Provider() string { return "mock" }
 
 func TestAIProvider_Name(t *testing.T) {
-	provider := NewAIProvider(&mockLLMClient{}, logr.Discard())
+	provider := NewAIProvider(&mockLLMClient{}, allowAll{}, logr.Discard())
 	if provider.Name() != providerNameAI {
 		t.Errorf("name = %q, want %q", provider.Name(), providerNameAI)
 	}
@@ -57,7 +57,7 @@ func TestAIProvider_Diagnose_EnhancesRuleBasedSummary(t *testing.T) {
 		},
 	}
 
-	provider := NewAIProvider(mock, logr.Discard())
+	provider := NewAIProvider(mock, allowAll{}, logr.Discard())
 
 	signals := []detection.Signal{
 		{
@@ -93,7 +93,7 @@ func TestAIProvider_Diagnose_GracefulDegradation(t *testing.T) {
 		err: fmt.Errorf("API timeout"),
 	}
 
-	provider := NewAIProvider(mock, logr.Discard())
+	provider := NewAIProvider(mock, allowAll{}, logr.Discard())
 
 	signals := []detection.Signal{
 		{
@@ -117,7 +117,7 @@ func TestAIProvider_Diagnose_GracefulDegradation(t *testing.T) {
 
 func TestAIProvider_Diagnose_NoSignals(t *testing.T) {
 	mock := &mockLLMClient{}
-	provider := NewAIProvider(mock, logr.Discard())
+	provider := NewAIProvider(mock, allowAll{}, logr.Discard())
 
 	diagnoses, err := provider.Diagnose(context.Background(), nil)
 	if err != nil {

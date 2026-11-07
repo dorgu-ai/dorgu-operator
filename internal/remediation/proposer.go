@@ -240,6 +240,12 @@ func NewProposer(c client.Client, safety SafetyChecker, logger logr.Logger, opts
 	return p
 }
 
+// withholdFromModel reports whether diag touches any protected namespace.
+func (p *Proposer) withholdFromModel(ctx context.Context, diag diagnosis.Diagnosis) bool {
+	_, protected := diagnosis.ProtectedNamespace(ctx, p.safety, diag)
+	return protected
+}
+
 // Propose generates a RemediationAction from a diagnosis, applying safety checks.
 func (p *Proposer) Propose(ctx context.Context, diag diagnosis.Diagnosis, incident *dorguv1.IncidentMemory) (*ProposalResult, error) {
 	if diag.PersonaRef == nil {
@@ -285,7 +291,15 @@ func (p *Proposer) Propose(ctx context.Context, diag diagnosis.Diagnosis, incide
 	// AI path: when a planner is configured, try it first across all signal
 	// types. Any failure degrades gracefully to the deterministic rules below
 	// (mirroring diagnosis/ai.go's degrade-to-rules behavior).
-	if p.planner != nil {
+	//
+	// A diagnosis that touches a protected namespace anywhere is never given to
+	// the planner (the prompt carries every contributing signal's message), and
+	// falls through to the rule-based path below, which never calls a model: the
+	// same enumeration the AI diagnosis provider uses, so the two cannot differ.
+	if p.planner != nil && p.withholdFromModel(ctx, diag) {
+		p.logger.V(1).Info("not asking the planner: the diagnosis touches a protected or unknown namespace",
+			"category", diag.Category)
+	} else if p.planner != nil {
 		result, err := p.proposeWithPlanner(ctx, diag, incident, obs, workloadRef)
 		if err != nil {
 			p.logger.V(0).Info("AI remediation planning failed, falling back to rules",

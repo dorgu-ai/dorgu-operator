@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
@@ -119,10 +120,7 @@ func loadAppPersona(ctx context.Context, c client.Client, ref *dorguv1.PersonaRe
 		return nil, fmt.Errorf("unsupported persona kind %q for remediation planning", ref.Kind)
 	}
 
-	namespace := ref.Namespace
-	if namespace == "" {
-		namespace = "default"
-	}
+	namespace := personaNamespace(ref)
 
 	var persona dorguv1.ApplicationPersona
 	key := client.ObjectKey{Name: ref.Name, Namespace: namespace}
@@ -130,6 +128,16 @@ func loadAppPersona(ctx context.Context, c client.Client, ref *dorguv1.PersonaRe
 		return nil, fmt.Errorf("getting ApplicationPersona %s/%s: %w", namespace, ref.Name, err)
 	}
 	return &persona, nil
+}
+
+// personaNamespace is the one namespace everything about the persona is read
+// from. An empty namespace means "default", as it always has for the persona
+// itself; it must never widen a list to every namespace.
+func personaNamespace(ref *dorguv1.PersonaReference) string {
+	if ref.Namespace == "" {
+		return "default"
+	}
+	return ref.Namespace
 }
 
 // loadClusterPersona returns the singleton ClusterPersona, or nil if none exists
@@ -151,9 +159,7 @@ func loadPastIncidents(ctx context.Context, c client.Client, ref *dorguv1.Person
 	var list dorguv1.IncidentMemoryList
 	opts := []client.ListOption{
 		client.MatchingLabels{labelPersonaName: ref.Name},
-	}
-	if ref.Namespace != "" {
-		opts = append(opts, client.InNamespace(ref.Namespace))
+		client.InNamespace(personaNamespace(ref)),
 	}
 	if err := c.List(ctx, &list, opts...); err != nil {
 		return nil
@@ -214,6 +220,14 @@ func loadPastRemediations(
 		if namespace == "" {
 			namespace = incidents[i].Namespace
 		}
+		// An IncidentMemory is writable by anyone with access to its namespace, so
+		// its reference is not trusted to point elsewhere: reading another
+		// namespace's RemediationAction would put its explanation in the prompt.
+		if namespace != personaNamespace(ref) {
+			log.FromContext(ctx).V(1).Info("ignoring a remediation reference outside the persona's namespace",
+				"incident", incidents[i].Name)
+			continue
+		}
 		var ra dorguv1.RemediationAction
 		key := client.ObjectKey{Name: res.RemediationRef.Name, Namespace: namespace}
 		if err := c.Get(ctx, key, &ra); err != nil {
@@ -226,9 +240,7 @@ func loadPastRemediations(
 	var list dorguv1.RemediationActionList
 	opts := []client.ListOption{
 		client.MatchingLabels{labelPersonaName: ref.Name},
-	}
-	if ref.Namespace != "" {
-		opts = append(opts, client.InNamespace(ref.Namespace))
+		client.InNamespace(personaNamespace(ref)),
 	}
 	if err := c.List(ctx, &list, opts...); err == nil {
 		for i := range list.Items {

@@ -225,8 +225,8 @@ func newCrashLoopOOMDiagnosis(namespace, personaName string, severity detection.
 			Namespace: namespace,
 		},
 		Contributing: []diagnosis.ContributingSignal{
-			{Signal: detection.Signal{Type: detection.SignalCrashLoopBackOff, Severity: severity, DetectedAt: time.Now()}, Detail: "restarting"},
-			{Signal: detection.Signal{Type: detection.SignalOOMKilled, Severity: severity, DetectedAt: time.Now()}, Detail: "prior OOM kill"},
+			{Signal: detection.Signal{Resource: podIn(namespace), Type: detection.SignalCrashLoopBackOff, Severity: severity, DetectedAt: time.Now()}, Detail: "restarting"},
+			{Signal: detection.Signal{Resource: podIn(namespace), Type: detection.SignalOOMKilled, Severity: severity, DetectedAt: time.Now()}, Detail: "prior OOM kill"},
 		},
 		SuggestedAction: "resource-adjustment",
 		DiagnosedAt:     time.Now(),
@@ -248,7 +248,7 @@ func newCPUDiagnosis(namespace, personaName string, severity detection.Severity)
 			Namespace: namespace,
 		},
 		Contributing: []diagnosis.ContributingSignal{
-			{Signal: detection.Signal{Type: detection.SignalCPUSaturationHigh, Severity: severity, DetectedAt: time.Now()}, Detail: "cpu high"},
+			{Signal: detection.Signal{Resource: podIn(namespace), Type: detection.SignalCPUSaturationHigh, Severity: severity, DetectedAt: time.Now()}, Detail: "cpu high"},
 		},
 		SuggestedAction: "resource-adjustment",
 		DiagnosedAt:     time.Now(),

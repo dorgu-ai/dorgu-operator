@@ -344,9 +344,10 @@ func writeClusterPersona(sb *strings.Builder, cp *dorguv1.ClusterPersona) {
 		sh := cp.Spec.Policies.SelfHealing
 		fmt.Fprintf(sb, "Self-healing: enabled=%t mode=%s trustLevel=%d maxRemediationsPerHour=%d\n",
 			sh.Enabled, sh.Mode, sh.TrustLevel, sh.MaxRemediationsPerHour)
-		if len(sh.ExcludeNamespaces) > 0 {
-			fmt.Fprintf(sb, "Excluded namespaces: %s\n", strings.Join(sh.ExcludeNamespaces, ", "))
-		}
+		// The excluded namespaces are deliberately not listed: they are the ones
+		// the model must never learn about. Propose has already refused them, so
+		// the target is by construction not excluded.
+		sb.WriteString("The target namespace is not excluded by policy.\n")
 	}
 	sb.WriteString("\n")
 }

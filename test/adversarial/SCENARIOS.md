@@ -7,7 +7,7 @@ CLI-06) live in the CLI repo.
 Run it with `make adversarial`. The last lines print KPI I1:
 
 ```
-adversarial: blocked N/18
+adversarial: blocked N/20
 ```
 
 ## How the bookkeeping works
@@ -44,6 +44,8 @@ never as blocked. None do today.
 | OP-12 | Verification is Unknown on every attempt | Change rolled back, not left applied | `TestOP12UnknownVerificationRollsBack` | open, CP1 |
 | OP-13 | RA with empty `personaRef.namespace`; the OOM signal is still firing | Verifier does not report Healthy | `TestOP13VerifierEmptyNamespace` | open, CP1 |
 | OP-14 | Pending RA past its approval deadline is approved | Phase Expired; persona unchanged | `TestOP14StaleApproval` | open, CP1 |
+| OP-15 | An OOM incident in `kube-system` or the operator's own namespace, with an AI diagnosis provider and an AI planner configured | No request reaches the model API (diagnosis and planner), no planner call, and the incident is still diagnosed, rule-based | `TestOP15DenyListKeepsProtectedNamespacesFromTheModel` | **blocked** (the diagnosis provider asks the same deny-list as the planner) |
+| OP-16 | Node pressure evicts pods from two namespaces and the rules merge them into one diagnosis: persona in an allowed namespace, one signal naming a pod in the operator's namespace; the AI planner is configured | No request reaches the model API (the planner prompt carries every signal's message, so the whole diagnosis is withheld) | `TestOP16MixedNamespaceEvictionNeverReachesThePlanner` | **blocked** (the planner and the diagnosis provider share one all-namespaces check) |
 | ID-01 | ServiceAccount holding `remediationactions/status` patch sets Approved | Denied at admission | `TestID01ServiceAccountApproves` | open, CP2 |
 | ID-02 | The user that created the RA approves it | Denied | `TestID02ProposerApprovesOwnProposal` | open, CP2 |
 | ID-03 | User `alice` approves with `approvedBy: cli-user` | Denied, or `approvedBy` recorded as `alice` | `TestID03ApprovedByNotTheAuthenticatedUser` | open, CP2 |
@@ -53,6 +55,13 @@ never as blocked. None do today.
 
 - **OP-03** covers the proposal-time deny-list, which is what CP0 fixes. A hand-written RA reaches
   the apply path without any deny-list check; that is the apply-time gate tracked by OP-01.
+- **OP-15** runs the real Claude client over a counting `http.DefaultTransport`, so it counts requests
+  that would have left the cluster rather than calls to a fake. Found by EKS QA 2026-11-06 (F-1): the
+  deny-list gated the planner only.
+- **OP-15** carries a positive control: an allowed namespace through the same engine and transport must
+  make exactly one request, so a transport that stops matching cannot turn the scenario into a pass.
+- **OP-16** is the multi-namespace case OP-15 does not cover: a gate on `PersonaRef.Namespace` alone passes
+  it, because the persona is allowed. It runs the real Claude planner over the counting transport.
 - **OP-08** uses a 1 minute floor. The operator default is 10 minutes; P1 owns the exact bound.
 - **OP-09** asserts at intake (empty phase), because the CLI shows verdicts on Pending RAs before
   anyone approves.

@@ -276,7 +276,13 @@ func main() {
 			detection.NewPersonaCorrelator(mgr.GetClient(), setupLog.WithName("persona-correlator")),
 		)
 
-		// 3. Create diagnosis engine with providers.
+		// 3. Create diagnosis engine with providers. The safety checker is built
+		// first because it is the single deny-list: it gates the remediation
+		// proposer and the diagnosis provider's model call alike.
+		safetyChecker := remediation.NewSafetyChecker(mgr.GetClient(), setupLog,
+			remediation.WithProtectedNamespaces(operatorNamespace()),
+			remediation.WithProtectedNamespaces(cfg.safetyExcludedNamespaces...))
+
 		var diagnosisProviders []diagnosis.DiagnosisProvider
 		diagnosisProviders = append(diagnosisProviders, diagnosis.NewRuleBasedProvider(setupLog))
 
@@ -304,7 +310,7 @@ func main() {
 							setter.SetModel(cfg.llmModel)
 						}
 					}
-					diagnosisProviders = append(diagnosisProviders, diagnosis.NewAIProvider(llmClient, setupLog))
+					diagnosisProviders = append(diagnosisProviders, diagnosis.NewAIProvider(llmClient, safetyChecker, setupLog))
 					setupLog.Info("AI diagnosis enabled", "provider", cfg.llmProvider)
 				}
 
@@ -359,10 +365,7 @@ func main() {
 			os.Exit(1)
 		}
 
-		// 7. Create remediation proposer with safety guardrails.
-		safetyChecker := remediation.NewSafetyChecker(mgr.GetClient(), setupLog,
-			remediation.WithProtectedNamespaces(operatorNamespace()),
-			remediation.WithProtectedNamespaces(cfg.safetyExcludedNamespaces...))
+		// 7. Create remediation proposer with the same safety checker.
 		var proposerOpts []remediation.ProposerOption
 		if aiPlanner != nil {
 			proposerOpts = append(proposerOpts, remediation.WithPlanner(aiPlanner))

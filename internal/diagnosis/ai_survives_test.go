@@ -161,7 +161,7 @@ func TestEngine_RealProviders_AIEnhancedSurvives(t *testing.T) {
 	engine := NewEngine(
 		logr.Discard(),
 		NewRuleBasedProvider(logr.Discard()),
-		NewAIProvider(mock, logr.Discard()),
+		NewAIProvider(mock, allowAll{}, logr.Discard()),
 	)
 
 	diagnoses, err := engine.Analyze(context.Background(), oomSignals())

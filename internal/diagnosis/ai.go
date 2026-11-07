@@ -33,16 +33,23 @@ const providerNameAI = "ai-enhanced"
 // It re-runs the rule-based logic to get base diagnoses, then enhances each
 // with an LLM call. On any LLM failure, it returns an empty slice so
 // the rule-based diagnoses from the primary provider are used as-is.
+//
+// A diagnosis that touches a protected namespace (see NamespaceGate) is never
+// sent: it is left out of the result, so the rule-based diagnosis stands.
 type AIProvider struct {
 	llmClient    llm.Client
+	gate         NamespaceGate
 	ruleProvider *RuleBasedProvider
 	logger       logr.Logger
 }
 
-// NewAIProvider creates an AI-enhanced diagnosis provider.
-func NewAIProvider(client llm.Client, logger logr.Logger) *AIProvider {
+// NewAIProvider creates an AI-enhanced diagnosis provider. The gate is the
+// deny-list; with a nil gate nothing is sent, because an unavailable deny-list
+// fails closed.
+func NewAIProvider(client llm.Client, gate NamespaceGate, logger logr.Logger) *AIProvider {
 	return &AIProvider{
 		llmClient:    client,
+		gate:         gate,
 		ruleProvider: NewRuleBasedProvider(logger),
 		logger:       logger.WithName("ai-diagnosis"),
 	}
@@ -66,6 +73,14 @@ func (p *AIProvider) Diagnose(ctx context.Context, signals []detection.Signal) (
 	enhanced := make([]Diagnosis, 0, len(baseDiagnoses))
 
 	for _, d := range baseDiagnoses {
+		if ns, protected := ProtectedNamespace(ctx, p.gate, d); protected {
+			p.logger.V(1).Info("not sending the diagnosis to the model: protected or unknown namespace",
+				"namespace", ns,
+				"category", d.Category,
+			)
+			continue
+		}
+
 		req := buildLLMRequest(d)
 
 		resp, err := p.llmClient.EnhanceDiagnosis(ctx, req)

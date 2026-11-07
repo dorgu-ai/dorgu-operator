@@ -327,8 +327,38 @@ func (s *SafetyCheckerImpl) checkDenyList(ctx context.Context, action *dorguv1.R
 	return s.NamespaceDenied(ctx, targetNamespace)
 }
 
-// NamespaceDenied applies the deny list to a namespace on its own (S4).
+// NamespaceProtected is NamespaceDenied as a yes/no, for callers that only need
+// the verdict. It satisfies diagnosis.NamespaceGate, so the diagnosis provider
+// asks this same deny list before any model call.
+func (s *SafetyCheckerImpl) NamespaceProtected(ctx context.Context, namespace string) bool {
+	return s.NamespaceDenied(ctx, namespace) != nil
+}
+
+// NamespaceDenied applies the deny list to a namespace on its own (S4). It is
+// the one place the deny list is decided: the proposer calls it before planning
+// and the diagnosis provider calls it, through NamespaceProtected, before any
+// model call.
+//
+// It fails closed. A namespace that cannot be determined (empty), or an
+// excludeNamespaces policy that cannot be read, is refused: guessing "allowed"
+// would send a protected namespace's context to a model, or plan against it.
 func (s *SafetyCheckerImpl) NamespaceDenied(ctx context.Context, namespace string) *SafetyViolation {
+	// A nil checker (a typed nil inside an interface) has no deny list to
+	// consult, which is the same as one that cannot be read.
+	if s == nil {
+		return &SafetyViolation{
+			Rule:    RuleDenyList,
+			Message: "no deny list is configured, so the namespace cannot be cleared",
+		}
+	}
+
+	if namespace == "" {
+		return &SafetyViolation{
+			Rule:    RuleDenyList,
+			Message: "namespace could not be determined, so the deny list cannot clear it",
+		}
+	}
+
 	// Always deny kube-system, the operator's own namespace and any namespace
 	// the installer protected.
 	if slices.Contains(s.protected, namespace) {
@@ -341,9 +371,16 @@ func (s *SafetyCheckerImpl) NamespaceDenied(ctx context.Context, namespace strin
 	// Check ClusterPersona excludeNamespaces.
 	excludedNamespaces, err := s.getExcludedNamespaces(ctx)
 	if err != nil {
-		s.logger.V(1).Info("failed to read ClusterPersona excluded namespaces", "error", err)
-		// Don't fail the check — default deny list is already enforced.
-		return nil
+		// Logged loudly: while this persists (lost RBAC, missing CRD) every AI
+		// call and proposal is refused, and that must not be silent.
+		s.logger.Error(err, "cannot read ClusterPersona excludeNamespaces; refusing the namespace until the deny list is readable",
+			"namespace", namespace)
+		return &SafetyViolation{
+			Rule: RuleDenyList,
+			// Fixed text: the message becomes a SkipReason that may be persisted or
+			// shown, and the raw API error stays in the log above.
+			Message: fmt.Sprintf("namespace %s: deny-list could not be read, treating namespace as protected", namespace),
+		}
 	}
 
 	if slices.Contains(excludedNamespaces, namespace) {

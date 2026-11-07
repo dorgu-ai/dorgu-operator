@@ -23,7 +23,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
@@ -37,6 +39,7 @@ import (
 	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
 	"github.com/dorgu-ai/dorgu-operator/internal/llm"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation"
+	"github.com/dorgu-ai/dorgu-operator/internal/remediation/planner"
 )
 
 // Scenarios on the detect -> diagnose -> propose path.
@@ -91,6 +94,170 @@ func TestOP03DenyListProtectsOwnNamespace(t *testing.T) {
 
 	blocked := refused["kube-system"] && refused[operatorNamespace]
 	Expect(t, "OP-03", blocked, fmt.Sprintf("deny-list refused: %v", refused))
+}
+
+// OP-15: an incident in kube-system or the operator's own namespace. Nothing
+// about it may leave the cluster: no diagnosis enhancement call and no planner
+// call, and the incident must still be diagnosed (rule-based) so it is shown.
+//
+// EKS QA 2026-11-06 (F-1): the deny-list gated the planner but not the
+// diagnosis call, so a dorgu-system incident was recorded ai-enhanced. The real
+// Claude client runs over a counting transport, so this counts requests that
+// would have reached the provider rather than calls to a fake.
+func TestOP15DenyListKeepsProtectedNamespacesFromTheModel(t *testing.T) {
+	t.Setenv(remediation.OperatorNamespaceEnv, operatorNamespace)
+	apiCalls := withCannedClaudeReply(t, "A narrative about a namespace that must never be sent.")
+	checker := remediation.NewSafetyChecker(k8sClient, logr.Discard(),
+		remediation.WithProtectedNamespaces(remediation.OperatorNamespace()))
+
+	llmClient, err := llm.NewClient("claude", "test-key")
+	if err != nil {
+		t.Fatalf("building LLM client: %v", err)
+	}
+	engine := diagnosis.NewEngine(logr.Discard(),
+		diagnosis.NewRuleBasedProvider(logr.Discard()),
+		diagnosis.NewAIProvider(llmClient, checker, logr.Discard()))
+
+	var plannerCalls atomic.Int32
+	proposer := remediation.NewProposer(k8sClient, checker, logr.Discard(),
+		remediation.WithPlanner(plannerFunc(func() { plannerCalls.Add(1) })))
+
+	leaked := map[string]string{}
+	for _, target := range []string{"kube-system", operatorNamespace} {
+		diagnoses, diagErr := engine.Analyze(testCtx(t), []detection.Signal{oomSignal(target)})
+		if diagErr != nil || len(diagnoses) == 0 {
+			t.Fatalf("diagnosing %s: %v (%d results); the incident must still be diagnosed", target, diagErr, len(diagnoses))
+		}
+		for _, d := range diagnoses {
+			if d.Provider != "rule-based" {
+				leaked[target] = "diagnosis provider " + d.Provider
+			}
+			if _, proposeErr := proposer.Propose(testCtx(t), d, nil); proposeErr != nil {
+				t.Fatalf("proposing for %s: %v", target, proposeErr)
+			}
+		}
+	}
+
+	denied := apiCalls.Load()
+
+	// Positive control: the same engine and transport must reach the model for an
+	// allowed namespace, or a zero above only means the transport stopped matching.
+	if _, err := engine.Analyze(testCtx(t), []detection.Signal{oomSignal("op-15-allowed")}); err != nil {
+		t.Fatalf("diagnosing the allowed control: %v", err)
+	}
+	if got := apiCalls.Load() - denied; got != 1 {
+		t.Fatalf("positive control: an allowed namespace made %d provider requests, want exactly 1; "+
+			"the counting transport is not observing the client, so OP-15 proves nothing", got)
+	}
+
+	blocked := len(leaked) == 0 && denied == 0 && plannerCalls.Load() == 0
+	Expect(t, "OP-15", blocked, fmt.Sprintf("provider requests=%d, planner calls=%d, non-rule-based diagnoses=%v",
+		denied, plannerCalls.Load(), leaked))
+}
+
+// OP-16: node pressure evicts pods from several namespaces and the rules merge
+// them into ONE diagnosis. Its persona (the first one found) is in an allowed
+// namespace, but a contributing signal names a pod in the operator's namespace.
+// The planner prompt carries every signal's message, so the whole diagnosis must
+// be withheld from the model, not just checked on its persona.
+//
+// The attacker only needs a memory-hungry pod in a namespace that has a persona:
+// the node's eviction takes the denied pod down with it.
+func TestOP16MixedNamespaceEvictionNeverReachesThePlanner(t *testing.T) {
+	t.Setenv(remediation.OperatorNamespaceEnv, operatorNamespace)
+	apiCalls := withCannedClaudeReply(t, "A plan for a namespace that must never be sent.")
+	checker := remediation.NewSafetyChecker(k8sClient, logr.Discard(),
+		remediation.WithProtectedNamespaces(remediation.OperatorNamespace()))
+
+	ns := newNamespace(t, "op-16")
+	createPersona(t, ns)
+	createIncident(t, ns)
+
+	node := detection.Signal{
+		Type: detection.SignalNodeMemoryPressure, Severity: detection.SeverityCritical,
+		Category: detection.CategoryNode, Source: "node-collector",
+		Message:  "Node ip-10-0-0-9 has memory pressure",
+		Resource: dorguv1.ResourceReference{Kind: "Node", Name: "ip-10-0-0-9"}, DetectedAt: time.Now(),
+	}
+	evicted := func(podNamespace, name string) detection.Signal {
+		return detection.Signal{
+			Type: detection.SignalPodEvicted, Severity: detection.SeverityWarning,
+			Category: detection.CategoryNode, Source: "pod-collector",
+			Message:    fmt.Sprintf("Pod %s/%s was evicted due to node memory pressure", podNamespace, name),
+			Resource:   dorguv1.ResourceReference{Kind: "Pod", Name: name, Namespace: podNamespace},
+			PersonaRef: &dorguv1.PersonaReference{Kind: kindPersona, Name: appName, Namespace: ns},
+			Metadata:   map[string]string{"node": "ip-10-0-0-9"},
+			DetectedAt: time.Now(),
+		}
+	}
+	victim := evicted(operatorNamespace, "operator-victim")
+	victim.PersonaRef = nil
+	signals := []detection.Signal{node, evicted(ns, appName+"-abc"), victim}
+
+	diagnoses, err := diagnosis.NewRuleBasedProvider(logr.Discard()).Diagnose(testCtx(t), signals)
+	if err != nil || len(diagnoses) == 0 {
+		t.Fatalf("rule-based diagnosis: %v (%d results)", err, len(diagnoses))
+	}
+
+	claudePlanner, err := planner.NewClaudePlanner("test-key")
+	if err != nil {
+		t.Fatalf("building planner: %v", err)
+	}
+	proposer := remediation.NewProposer(k8sClient, checker, logr.Discard(), remediation.WithPlanner(claudePlanner))
+
+	var incident dorguv1.IncidentMemory
+	if err := k8sClient.Get(testCtx(t), client.ObjectKey{Namespace: ns, Name: incidentName}, &incident); err != nil {
+		t.Fatalf("reading incident: %v", err)
+	}
+
+	merged := false
+	for _, d := range diagnoses {
+		if d.PersonaRef == nil || d.PersonaRef.Namespace != ns {
+			continue
+		}
+		merged = merged || len(d.Contributing) == len(signals)
+		if _, err := proposer.Propose(testCtx(t), d, &incident); err != nil {
+			t.Fatalf("proposing: %v", err)
+		}
+	}
+	if !merged {
+		t.Fatalf("the attack needs one merged allowed-persona diagnosis; got %d diagnoses", len(diagnoses))
+	}
+
+	denied := apiCalls.Load()
+
+	// Positive control for the planner: the same proposer and transport must
+	// reach the model for an all-allowed diagnosis, or a zero above only means
+	// the transport stopped matching.
+	allowed := diagnosis.Diagnosis{
+		Summary:    "Node under pressure (NodeMemoryPressure), causing pod evictions.",
+		Category:   string(detection.CategoryNode),
+		Severity:   detection.SeverityCritical,
+		PersonaRef: &dorguv1.PersonaReference{Kind: kindPersona, Name: appName, Namespace: ns},
+		Contributing: []diagnosis.ContributingSignal{
+			{Signal: node},
+			{Signal: evicted(ns, appName+"-abc")},
+		},
+		SuggestedAction: "resource-adjustment",
+	}
+	if _, err := proposer.Propose(testCtx(t), allowed, &incident); err != nil {
+		t.Fatalf("proposing the allowed control: %v", err)
+	}
+	if apiCalls.Load()-denied < 1 {
+		t.Fatalf("positive control: an all-allowed diagnosis made no planner request; " +
+			"the counting transport is not observing the planner, so OP-16 proves nothing")
+	}
+
+	Expect(t, "OP-16", denied == 0,
+		fmt.Sprintf("%d request(s) reached the model API carrying a %s pod", denied, operatorNamespace))
+}
+
+// plannerFunc is a planner that only counts that it was asked.
+type plannerFunc func()
+
+func (f plannerFunc) PlanRemediation(context.Context, planner.RemediationContext) (*planner.RemediationPlan, error) {
+	f()
+	return nil, fmt.Errorf("the planner must not be called for a protected namespace")
 }
 
 // OP-10: the health check is turned off (healthCheck.enabled=false). An OOM
@@ -161,7 +328,8 @@ func TestOP11ModelProseSteersAction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("building LLM client: %v", err)
 	}
-	ai, err := diagnosis.NewAIProvider(llmClient, logr.Discard()).Diagnose(testCtx(t), signals)
+	checker := remediation.NewSafetyChecker(k8sClient, logr.Discard())
+	ai, err := diagnosis.NewAIProvider(llmClient, checker, logr.Discard()).Diagnose(testCtx(t), signals)
 	if err != nil || len(ai) == 0 {
 		t.Fatalf("AI diagnosis: %v (%d results)", err, len(ai))
 	}
@@ -174,13 +342,17 @@ func TestOP11ModelProseSteersAction(t *testing.T) {
 // withCannedClaudeReply answers every request to the Anthropic API with text,
 // for the duration of the test. The LLM client uses the default transport,
 // so this exercises the real client and response parser end to end.
-func withCannedClaudeReply(t *testing.T, text string) {
+//
+// It returns a counter of the requests that reached the Anthropic API.
+func withCannedClaudeReply(t *testing.T, text string) *atomic.Int32 {
 	t.Helper()
+	calls := &atomic.Int32{}
 	original := http.DefaultTransport
 	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		if req.URL.Host != "api.anthropic.com" {
 			return original.RoundTrip(req)
 		}
+		calls.Add(1)
 		body, err := json.Marshal(map[string]any{
 			"content": []map[string]string{{"type": "text", "text": text}},
 		})
@@ -195,6 +367,7 @@ func withCannedClaudeReply(t *testing.T, text string) {
 		}, nil
 	})
 	t.Cleanup(func() { http.DefaultTransport = original })
+	return calls
 }
 
 type roundTripFunc func(*http.Request) (*http.Response, error)

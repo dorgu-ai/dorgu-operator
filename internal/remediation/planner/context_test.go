@@ -241,3 +241,37 @@ func TestBuildContext_NoClusterPersonaIsTolerated(t *testing.T) {
 	assert.Nil(t, rc.ClusterPersona)
 	assert.NotNil(t, rc.AppPersona)
 }
+
+// An IncidentMemory is writable by anyone with access to its namespace, so its
+// remediation reference is not trusted to name an object in that namespace. A
+// reference into a protected namespace must not pull that RemediationAction's
+// explanation into the planner prompt.
+func TestBuildContext_DoesNotFollowARemediationRefOutOfThePersonaNamespace(t *testing.T) {
+	const secret = "rotate the ledger signing key in dorgu-system"
+	now := time.Now()
+
+	foreign := remediation("dorgu-system", "ra-foreign", "operator", "Completed", "Healthy")
+	foreign.Spec.Explanation = secret
+	pointing := incident("im-pointing", "my-app", "OOMKilled", now.Add(-time.Hour), "ra-foreign")
+	pointing.Spec.Resolution.RemediationRef.Namespace = "dorgu-system"
+	local := remediation(testNamespace, "ra-local", "my-app", "Completed", "Healthy")
+	sameNamespaceRef := incident("im-local", "my-app", "OOMKilled", now.Add(-2*time.Hour), "ra-local")
+
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
+		WithRuntimeObjects(appPersona(), pointing, sameNamespaceRef, foreign, local).Build()
+
+	rc, err := BuildContext(context.Background(), c, oomDiagnosis("my-app"),
+		incident("im-trigger", "my-app", "OOMKilled", now, ""))
+	require.NoError(t, err)
+
+	msg := buildPlanUserMessage(*rc)
+	assert.NotContains(t, msg, secret)
+	for _, ra := range rc.PastRemediations {
+		assert.Equal(t, testNamespace, ra.Namespace, "only the persona's own namespace is read")
+	}
+	names := make([]string, 0, len(rc.PastRemediations))
+	for _, ra := range rc.PastRemediations {
+		names = append(names, ra.Name)
+	}
+	assert.Contains(t, names, "ra-local", "a same-namespace reference is still followed")
+}
