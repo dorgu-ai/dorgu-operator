@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
@@ -137,9 +138,94 @@ func TestOP15DenyListKeepsProtectedNamespacesFromTheModel(t *testing.T) {
 		}
 	}
 
-	blocked := len(leaked) == 0 && apiCalls.Load() == 0 && plannerCalls.Load() == 0
+	denied := apiCalls.Load()
+
+	// Positive control: the same engine and transport must reach the model for an
+	// allowed namespace, or a zero above only means the transport stopped matching.
+	if _, err := engine.Analyze(testCtx(t), []detection.Signal{oomSignal("op-15-allowed")}); err != nil {
+		t.Fatalf("diagnosing the allowed control: %v", err)
+	}
+	if got := apiCalls.Load() - denied; got != 1 {
+		t.Fatalf("positive control: an allowed namespace made %d provider requests, want exactly 1; "+
+			"the counting transport is not observing the client, so OP-15 proves nothing", got)
+	}
+
+	blocked := len(leaked) == 0 && denied == 0 && plannerCalls.Load() == 0
 	Expect(t, "OP-15", blocked, fmt.Sprintf("provider requests=%d, planner calls=%d, non-rule-based diagnoses=%v",
-		apiCalls.Load(), plannerCalls.Load(), leaked))
+		denied, plannerCalls.Load(), leaked))
+}
+
+// OP-16: node pressure evicts pods from several namespaces and the rules merge
+// them into ONE diagnosis. Its persona (the first one found) is in an allowed
+// namespace, but a contributing signal names a pod in the operator's namespace.
+// The planner prompt carries every signal's message, so the whole diagnosis must
+// be withheld from the model, not just checked on its persona.
+//
+// The attacker only needs a memory-hungry pod in a namespace that has a persona:
+// the node's eviction takes the denied pod down with it.
+func TestOP16MixedNamespaceEvictionNeverReachesThePlanner(t *testing.T) {
+	t.Setenv(remediation.OperatorNamespaceEnv, operatorNamespace)
+	apiCalls := withCannedClaudeReply(t, "A plan for a namespace that must never be sent.")
+	checker := remediation.NewSafetyChecker(k8sClient, logr.Discard(),
+		remediation.WithProtectedNamespaces(remediation.OperatorNamespace()))
+
+	ns := newNamespace(t, "op-16")
+	createPersona(t, ns)
+	createIncident(t, ns)
+
+	node := detection.Signal{
+		Type: detection.SignalNodeMemoryPressure, Severity: detection.SeverityCritical,
+		Category: detection.CategoryNode, Source: "node-collector",
+		Message:  "Node ip-10-0-0-9 has memory pressure",
+		Resource: dorguv1.ResourceReference{Kind: "Node", Name: "ip-10-0-0-9"}, DetectedAt: time.Now(),
+	}
+	evicted := func(podNamespace, name string) detection.Signal {
+		return detection.Signal{
+			Type: detection.SignalPodEvicted, Severity: detection.SeverityWarning,
+			Category: detection.CategoryNode, Source: "pod-collector",
+			Message:    fmt.Sprintf("Pod %s/%s was evicted due to node memory pressure", podNamespace, name),
+			Resource:   dorguv1.ResourceReference{Kind: "Pod", Name: name, Namespace: podNamespace},
+			PersonaRef: &dorguv1.PersonaReference{Kind: kindPersona, Name: appName, Namespace: ns},
+			Metadata:   map[string]string{"node": "ip-10-0-0-9"},
+			DetectedAt: time.Now(),
+		}
+	}
+	victim := evicted(operatorNamespace, "operator-victim")
+	victim.PersonaRef = nil
+	signals := []detection.Signal{node, evicted(ns, appName+"-abc"), victim}
+
+	diagnoses, err := diagnosis.NewRuleBasedProvider(logr.Discard()).Diagnose(testCtx(t), signals)
+	if err != nil || len(diagnoses) == 0 {
+		t.Fatalf("rule-based diagnosis: %v (%d results)", err, len(diagnoses))
+	}
+
+	claudePlanner, err := planner.NewClaudePlanner("test-key")
+	if err != nil {
+		t.Fatalf("building planner: %v", err)
+	}
+	proposer := remediation.NewProposer(k8sClient, checker, logr.Discard(), remediation.WithPlanner(claudePlanner))
+
+	var incident dorguv1.IncidentMemory
+	if err := k8sClient.Get(testCtx(t), client.ObjectKey{Namespace: ns, Name: incidentName}, &incident); err != nil {
+		t.Fatalf("reading incident: %v", err)
+	}
+
+	merged := false
+	for _, d := range diagnoses {
+		if d.PersonaRef == nil || d.PersonaRef.Namespace != ns {
+			continue
+		}
+		merged = merged || len(d.Contributing) == len(signals)
+		if _, err := proposer.Propose(testCtx(t), d, &incident); err != nil {
+			t.Fatalf("proposing: %v", err)
+		}
+	}
+	if !merged {
+		t.Fatalf("the attack needs one merged allowed-persona diagnosis; got %d diagnoses", len(diagnoses))
+	}
+
+	Expect(t, "OP-16", apiCalls.Load() == 0,
+		fmt.Sprintf("%d request(s) reached the model API carrying a %s pod", apiCalls.Load(), operatorNamespace))
 }
 
 // plannerFunc is a planner that only counts that it was asked.

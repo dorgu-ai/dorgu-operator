@@ -16,7 +16,11 @@ limitations under the License.
 
 package diagnosis
 
-import "context"
+import (
+	"context"
+
+	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
+)
 
 // NamespaceGate decides whether a namespace is protected, meaning nothing about
 // it may be sent to a model. It is the deny-list the remediation safety checker
@@ -26,4 +30,57 @@ type NamespaceGate interface {
 	// NamespaceProtected reports whether namespace is protected. It must fail
 	// closed: an empty namespace, or a deny-list that cannot be read, is protected.
 	NamespaceProtected(ctx context.Context, namespace string) bool
+}
+
+// clusterScopedKinds are the resource kinds the detectors report without a
+// namespace because they have none. Every other kind with an empty namespace is
+// one whose namespace could not be determined.
+var clusterScopedKinds = map[string]bool{
+	"Node":            true,
+	"ComponentStatus": true,
+}
+
+// ProtectedNamespace reports whether d may not be sent to a model, and the
+// namespace that decided it. It is the one enumeration of the namespaces a
+// diagnosis touches, used by every path that sends a diagnosis out (the AI
+// diagnosis provider and the AI remediation planner): its persona, its affected
+// resources, and the resource behind every contributing signal. A diagnosis
+// merges signals across pods, so one protected namespace anywhere withholds the
+// whole diagnosis.
+//
+// It fails closed: a nil gate, a persona or namespaced resource with no
+// namespace, or a gate that says so, all withhold the diagnosis. Only the
+// cluster-scoped kinds in clusterScopedKinds may have an empty namespace.
+func ProtectedNamespace(ctx context.Context, gate NamespaceGate, d Diagnosis) (string, bool) {
+	if gate == nil {
+		return "", true
+	}
+
+	namespaces := make([]string, 0, len(d.AffectedResources)+len(d.Contributing)+1)
+	if d.PersonaRef != nil {
+		namespaces = append(namespaces, d.PersonaRef.Namespace)
+	}
+	refs := make([]dorguv1.ResourceReference, 0, len(d.AffectedResources)+len(d.Contributing))
+	refs = append(refs, d.AffectedResources...)
+	for _, cs := range d.Contributing {
+		refs = append(refs, cs.Signal.Resource)
+	}
+	for _, ref := range refs {
+		if ref.Namespace == "" && clusterScopedKinds[ref.Kind] {
+			continue
+		}
+		namespaces = append(namespaces, ref.Namespace)
+	}
+
+	checked := make(map[string]bool, len(namespaces))
+	for _, ns := range namespaces {
+		if checked[ns] {
+			continue
+		}
+		checked[ns] = true
+		if ns == "" || gate.NamespaceProtected(ctx, ns) {
+			return ns, true
+		}
+	}
+	return "", false
 }

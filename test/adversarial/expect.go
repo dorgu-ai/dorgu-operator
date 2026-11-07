@@ -47,7 +47,7 @@ type openScenario struct {
 // counts against it, so a scenario without a test shows up as "not run".
 var Catalogue = []string{
 	"OP-01", "OP-02", "OP-03", "OP-04", "OP-05", "OP-06", "OP-07",
-	"OP-08", "OP-09", "OP-10", "OP-11", "OP-12", "OP-13", "OP-14", "OP-15",
+	"OP-08", "OP-09", "OP-10", "OP-11", "OP-12", "OP-13", "OP-14", "OP-15", "OP-16",
 	"ID-01", "ID-02", "ID-03", "ID-04",
 }
 

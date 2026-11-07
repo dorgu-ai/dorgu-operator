@@ -86,6 +86,10 @@ type RemediationProposer interface {
 
 // SafetyChecker validates a proposed remediation against safety guardrails.
 type SafetyChecker interface {
+	// NamespaceProtected is the deny list as a yes/no, which is what the
+	// diagnosis package needs to decide whether a diagnosis may reach a model.
+	diagnosis.NamespaceGate
+
 	Check(ctx context.Context, action *dorguv1.RemediationAction) (*SafetyResult, error)
 
 	// NamespaceDenied reports whether nothing may be proposed in namespace at

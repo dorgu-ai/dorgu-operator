@@ -80,6 +80,13 @@ func newTestIncident(namespace, name, personaName, signal string) *dorguv1.Incid
 	}
 }
 
+// podIn is the pod a fixture signal is about. Every real signal carries its
+// resource, and a diagnosis whose resources have no namespace is withheld from
+// the planner (fail closed), so a fixture that wants the planner needs one too.
+func podIn(namespace string) dorguv1.ResourceReference {
+	return dorguv1.ResourceReference{Kind: "Pod", Name: "my-app-abc", Namespace: namespace}
+}
+
 func newOOMDiagnosis(namespace, personaName string, severity detection.Severity) diagnosis.Diagnosis {
 	return diagnosis.Diagnosis{
 		Summary:    "OOMKilled detected",
@@ -97,6 +104,7 @@ func newOOMDiagnosis(namespace, personaName string, severity detection.Severity)
 				Signal: detection.Signal{
 					Type:       detection.SignalOOMKilled,
 					Severity:   severity,
+					Resource:   podIn(namespace),
 					DetectedAt: time.Now(),
 				},
 				Detail: "container killed due to OOM",
@@ -192,6 +200,7 @@ func TestProposer_CPUSaturation(t *testing.T) {
 				Signal: detection.Signal{
 					Type:       detection.SignalCPUSaturationHigh,
 					Severity:   detection.SeverityWarning,
+					Resource:   podIn(defaultNamespace),
 					DetectedAt: time.Now(),
 				},
 				Detail: "CPU saturation high",
@@ -326,11 +335,11 @@ func TestProposer_CrashLoopWithOOM_ProposesMemoryIncrease(t *testing.T) {
 		},
 		Contributing: []diagnosis.ContributingSignal{
 			{
-				Signal: detection.Signal{Type: detection.SignalCrashLoopBackOff, Severity: detection.SeverityCritical, DetectedAt: time.Now()},
+				Signal: detection.Signal{Type: detection.SignalCrashLoopBackOff, Severity: detection.SeverityCritical, Resource: podIn(defaultNamespace), DetectedAt: time.Now()},
 				Detail: "pod in CrashLoopBackOff",
 			},
 			{
-				Signal: detection.Signal{Type: detection.SignalOOMKilled, Severity: detection.SeverityCritical, DetectedAt: time.Now()},
+				Signal: detection.Signal{Type: detection.SignalOOMKilled, Severity: detection.SeverityCritical, Resource: podIn(defaultNamespace), DetectedAt: time.Now()},
 				Detail: "OOM killed before crash",
 			},
 		},
@@ -374,7 +383,7 @@ func TestProposer_CrashLoopWithoutOOM_Skips(t *testing.T) {
 		},
 		Contributing: []diagnosis.ContributingSignal{
 			{
-				Signal: detection.Signal{Type: detection.SignalCrashLoopBackOff, Severity: detection.SeverityWarning, DetectedAt: time.Now()},
+				Signal: detection.Signal{Type: detection.SignalCrashLoopBackOff, Severity: detection.SeverityWarning, Resource: podIn(defaultNamespace), DetectedAt: time.Now()},
 				Detail: "pod in CrashLoopBackOff",
 			},
 		},

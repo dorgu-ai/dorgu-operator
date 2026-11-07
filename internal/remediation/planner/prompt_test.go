@@ -141,3 +141,23 @@ func TestExtractPlan_CarriesTheCommandThrough(t *testing.T) {
 	assert.Equal(t, "kubectl set image deployment/web web=nginx:1.27-alpine -n demo", plan.Steps[0].Command)
 	assert.Empty(t, plan.Steps[1].Command, "an omitted command stays empty")
 }
+
+// The namespaces the deny-list excludes are meant to be invisible to the model,
+// so the policy that names them must not be written into the prompt either.
+func TestBuildPlanUserMessage_NeverNamesAnExcludedNamespace(t *testing.T) {
+	cp := clusterPersona()
+	require.NotNil(t, cp.Spec.Policies)
+	require.NotNil(t, cp.Spec.Policies.SelfHealing)
+	cp.Spec.Policies.SelfHealing.ExcludeNamespaces = []string{"payments-prod", "secret-ledger"}
+
+	msg := buildPlanUserMessage(RemediationContext{
+		Diagnosis:      oomDiagnosis("my-app"),
+		AppPersona:     appPersona(),
+		ClusterPersona: cp,
+	})
+
+	assert.Contains(t, msg, "Self-healing:", "the rest of the policy is still sent")
+	assert.NotContains(t, msg, "payments-prod")
+	assert.NotContains(t, msg, "secret-ledger")
+	assert.NotContains(t, msg, "Excluded namespaces")
+}

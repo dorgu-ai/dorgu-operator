@@ -343,6 +343,15 @@ func (s *SafetyCheckerImpl) NamespaceProtected(ctx context.Context, namespace st
 // excludeNamespaces policy that cannot be read, is refused: guessing "allowed"
 // would send a protected namespace's context to a model, or plan against it.
 func (s *SafetyCheckerImpl) NamespaceDenied(ctx context.Context, namespace string) *SafetyViolation {
+	// A nil checker (a typed nil inside an interface) has no deny list to
+	// consult, which is the same as one that cannot be read.
+	if s == nil {
+		return &SafetyViolation{
+			Rule:    RuleDenyList,
+			Message: "no deny list is configured, so the namespace cannot be cleared",
+		}
+	}
+
 	if namespace == "" {
 		return &SafetyViolation{
 			Rule:    RuleDenyList,
@@ -362,10 +371,13 @@ func (s *SafetyCheckerImpl) NamespaceDenied(ctx context.Context, namespace strin
 	// Check ClusterPersona excludeNamespaces.
 	excludedNamespaces, err := s.getExcludedNamespaces(ctx)
 	if err != nil {
-		s.logger.V(1).Info("failed to read ClusterPersona excluded namespaces", "error", err)
+		// Logged loudly: while this persists (lost RBAC, missing CRD) every AI
+		// call and proposal is refused, and that must not be silent.
+		s.logger.Error(err, "cannot read ClusterPersona excludeNamespaces; refusing the namespace until the deny list is readable",
+			"namespace", namespace)
 		return &SafetyViolation{
 			Rule:    RuleDenyList,
-			Message: fmt.Sprintf("namespace %s cannot be cleared: the ClusterPersona deny list could not be read", namespace),
+			Message: fmt.Sprintf("namespace %s cannot be cleared: the ClusterPersona deny list could not be read: %v", namespace, err),
 		}
 	}
 
