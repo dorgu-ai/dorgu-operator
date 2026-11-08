@@ -180,6 +180,20 @@ type ApplyTicket struct {
 	// +optional
 	ObservedResourceVersion string `json:"observedResourceVersion,omitempty"`
 
+	// ObservedGeneration is metadata.generation of the Deployment when the ticket
+	// was written. Generation moves only when the Deployment's spec does, so unlike
+	// resourceVersion it is not disturbed by status or scale writes: a client that
+	// compares it asks "did the spec change under the ticket", which is the question.
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// IssuedAt is when the operator wrote the ticket. Operator-set. A client that
+	// recorded its approval at time T accepts only a ticket issued at or after T,
+	// so a ticket that was already there before the approval cannot be mistaken for
+	// the answer to it.
+	// +optional
+	IssuedAt *metav1.Time `json:"issuedAt,omitempty"`
+
 	// ExpiresAt is when the ticket stops being valid. Nothing is applied under an
 	// expired ticket.
 	ExpiresAt metav1.Time `json:"expiresAt"`

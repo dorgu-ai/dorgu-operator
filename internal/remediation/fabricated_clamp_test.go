@@ -107,7 +107,7 @@ func TestProposer_CR503_NoClampIsAnnouncedWhenNothingWasClamped(t *testing.T) {
 		require.Empty(t, action.Spec.Steps[i].Safety,
 			"step %d: no guardrail ruled on this plan, so it carries no verdict", i+1)
 	}
-	assert.Equal(t, "128Mi", patchLimit(t, action.Spec.Action.Patch.Raw, "memory"),
+	assert.Equal(t, "128Mi", patchLimit(t, planned(action).Patch.Raw, "memory"),
 		"the plan applies exactly what the model asked for")
 
 	assertNoGuardrailClaim(t, action)

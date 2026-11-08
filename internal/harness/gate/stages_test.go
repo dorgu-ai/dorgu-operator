@@ -147,7 +147,7 @@ func incident(name string) *dorguv1.IncidentMemory {
 func dedupCandidate() Candidate {
 	cand := planCandidate(personaUpdateStep(memPatch("300Mi")))
 	cand.IncidentRef.Name = incidentOne
-	cand.Facts = Facts{Incident: incident(incidentOne), Severity: "warning", PrimarySignal: "OOMKilled", TargetPath: ResourcePathMemory}
+	cand.Facts = Facts{Incident: incident(incidentOne), SuggestedAction: ClassResourceAdjustment, Severity: "warning", PrimarySignal: "OOMKilled", TargetPath: ResourcePathMemory}
 	return cand
 }
 

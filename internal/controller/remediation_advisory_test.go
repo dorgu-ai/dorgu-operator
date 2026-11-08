@@ -225,13 +225,3 @@ var _ = Describe("RemediationController advisory plans", func() {
 		Expect(updatedPersona.Spec.Resources.Limits.Memory).To(Equal("256Mi"))
 	})
 })
-
-// findCondition returns the named condition, or nil.
-func findCondition(conditions []metav1.Condition, conditionType string) *metav1.Condition {
-	for i := range conditions {
-		if conditions[i].Type == conditionType {
-			return &conditions[i]
-		}
-	}
-	return nil
-}

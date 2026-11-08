@@ -67,6 +67,18 @@ never as blocked. None do today.
   `status.applyTicket`, which is the only thing the executor applies. The fixtures create their
   RemediationActions the way the proposer does (`createRA`: gate decision and the `Proposed` condition
   written to status) or the way anyone with `create` can (`createHandMadeRA`: nothing recorded).
+- **The ticket is re-checked at apply (B5 fix round).** `Executor.Apply` runs `gate.Run(ApprovalRecheck)` again
+  on live state and applies a ticket only if the gate would issue exactly that ticket: same patch, same
+  container, same workload, with the approval history on record (`status.approvedAt`, the `Proposed`
+  condition at the current generation, `status.gate` as the approval re-check). A ticket forged onto an
+  action nobody approved, one whose patch the plan does not produce, and one whose policy (observe mode, deny
+  list, cap) changed since approval are refused with a reason enum. What this does NOT close: a client with
+  `remediationactions/status` can still forge the *history* too, and the CLI trusts a ticket it finds in
+  status. That is the ID-01 class (no admission policy on status), closed in P2 by `dorgu-action-integrity`
+  (ticket writable only by the operator ServiceAccount, task 2.5); until then the CLI's own live checks
+  (ownership, UID, generation, re-read before patching, observe mode) are the stopgap. The forged-ticket
+  cases are covered by `TestF1_*` in `internal/harness/gate`, `internal/remediation` and
+  `internal/controller`; they are not catalogue scenarios because the catalogue's count is a KPI.
 - **OP-05** asserts "exactly one applies", not "the first reconciled applies": the re-check orders two
   simultaneously approved plans by approval time (a second's resolution), then name, so which of the
   two wins can depend on the names.

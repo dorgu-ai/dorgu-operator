@@ -504,6 +504,22 @@ spec:
                       expired ticket.
                     format: date-time
                     type: string
+                  issuedAt:
+                    description: |-
+                      IssuedAt is when the operator wrote the ticket. Operator-set. A client that
+                      recorded its approval at time T accepts only a ticket issued at or after T,
+                      so a ticket that was already there before the approval cannot be mistaken for
+                      the answer to it.
+                    format: date-time
+                    type: string
+                  observedGeneration:
+                    description: |-
+                      ObservedGeneration is metadata.generation of the Deployment when the ticket
+                      was written. Generation moves only when the Deployment's spec does, so unlike
+                      resourceVersion it is not disturbed by status or scale writes: a client that
+                      compares it asks "did the spec change under the ticket", which is the question.
+                    format: int64
+                    type: integer
                   observedResourceVersion:
                     description: |-
                       ObservedResourceVersion is the resourceVersion of the Deployment when the

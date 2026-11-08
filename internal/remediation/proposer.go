@@ -169,10 +169,11 @@ func (p *Proposer) intent(diag diagnosis.Diagnosis, incident *dorguv1.IncidentMe
 // it is model text: the target path and signal come from the rules.
 func factsFor(diag diagnosis.Diagnosis, incident *dorguv1.IncidentMemory) gate.Facts {
 	return gate.Facts{
-		Incident:      incident,
-		Severity:      string(diag.Severity),
-		PrimarySignal: string(primarySignalType(diag)),
-		TargetPath:    diagnosisTargetPath(diag),
+		Incident:        incident,
+		SuggestedAction: diag.SuggestedAction,
+		Severity:        string(diag.Severity),
+		PrimarySignal:   string(primarySignalType(diag)),
+		TargetPath:      diagnosisTargetPath(diag),
 	}
 }
 
@@ -410,9 +411,21 @@ var errPersistFailed = errors.New("recording the remediation failed")
 // action is deleted and the error returned, so the caller reports a failure
 // instead of a proposal that does not exist.
 func (p *Proposer) persist(ctx context.Context, action *dorguv1.RemediationAction, dec *gate.Decision) (*ProposalResult, error) {
+	// spec.action is a notification and nothing more (F7). It used to carry the
+	// merged persona patch for one release of back-compat, and a CLI from before
+	// tickets applies whatever patch it finds there without asking the operator.
+	// steps[] is the only plan, and what is applied is the ticket the gate issues at
+	// approval. The patch stays in the working copy above because the proposer
+	// still shapes a plan through it; it is stripped here, on the way out.
+	action.Spec.Action = dorguv1.RemediationActionDetail{Type: dorguv1.ActionTypeNotification}
+
 	if err := p.client.Create(ctx, action); err != nil {
 		return nil, fmt.Errorf("creating RemediationAction: %w", err)
 	}
+	// The generation the apiserver gave this object. The Proposed condition pins it,
+	// and it must not be re-read: a spec edit that lands between Create and the
+	// status write would otherwise be cleared by a gate that never saw it (F9).
+	createdGeneration := action.GetGeneration()
 
 	key := client.ObjectKeyFromObject(action)
 	err := retry.OnError(retry.DefaultBackoff, retriableStatusWrite, func() error {
@@ -430,7 +443,7 @@ func (p *Proposer) persist(ctx context.Context, action *dorguv1.RemediationActio
 				Status:             metav1.ConditionTrue,
 				Reason:             dorguv1.ReasonGateCleared,
 				Message:            "the operator's gate cleared this plan when it was proposed",
-				ObservedGeneration: fresh.Generation,
+				ObservedGeneration: createdGeneration,
 				LastTransitionTime: metav1.Now(),
 			}},
 		}

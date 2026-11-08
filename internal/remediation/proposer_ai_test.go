@@ -112,9 +112,9 @@ func TestProposer_AIPath_MapsPlanToSteps(t *testing.T) {
 	assert.Equal(t, "256Mi", limits["memory"], "pre-patch snapshots the current value")
 
 	// Back-compat single Action populated from the persona-update step.
-	assert.Equal(t, "persona-update", a.Spec.Action.Type)
-	require.NotNil(t, a.Spec.Action.Patch)
-	assert.JSONEq(t, `{"spec":{"resources":{"limits":{"memory":"384Mi"}}}}`, string(a.Spec.Action.Patch.Raw))
+	assert.Equal(t, "persona-update", planned(a).Type)
+	require.NotNil(t, planned(a).Patch)
+	assert.JSONEq(t, `{"spec":{"resources":{"limits":{"memory":"384Mi"}}}}`, string(planned(a).Patch.Raw))
 
 	// Invariant holds.
 	require.NoError(t, a.ValidateAutoExecutable())
@@ -175,7 +175,7 @@ func TestProposer_AIPath_BlastRadiusClampsStep(t *testing.T) {
 	assert.False(t, a.Spec.Steps[1].AutoExecutable)
 	assert.Equal(t, "untouched", a.Spec.Steps[1].Rationale, "advisory step rationale untouched")
 
-	assert.Equal(t, dorguv1.ActionTypePersonaUpdate, a.Spec.Action.Type)
+	assert.Equal(t, dorguv1.ActionTypePersonaUpdate, planned(a).Type)
 	require.NoError(t, a.ValidateAutoExecutable())
 }
 
@@ -214,7 +214,7 @@ func TestProposer_AIPath_FallbackOnPlannerError(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, result.Proposed)
 	assertRuleBasedSingleStep(t, result.Action)
-	assert.Equal(t, "persona-update", result.Action.Spec.Action.Type)
+	assert.Equal(t, "persona-update", planned(result.Action).Type)
 	assert.NotEqual(t, dorguv1.PlanSourceAIAnthropic, result.Action.Spec.PlanSource)
 }
 
@@ -252,7 +252,7 @@ func TestProposer_NoPlanner_UsesRules(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, result.Proposed)
 	assertRuleBasedSingleStep(t, result.Action)
-	assert.Equal(t, "persona-update", result.Action.Spec.Action.Type)
+	assert.Equal(t, "persona-update", planned(result.Action).Type)
 }
 
 // TestProposer_AIPath_AllAdvisoryPlanPersists covers a diagnosis whose fix is
@@ -289,7 +289,7 @@ func TestProposer_AIPath_AllAdvisoryPlanPersists(t *testing.T) {
 	for _, s := range result.Action.Spec.Steps {
 		assert.False(t, s.AutoExecutable)
 	}
-	assert.Equal(t, dorguv1.ActionTypeNotification, result.Action.Spec.Action.Type)
+	assert.Equal(t, dorguv1.ActionTypeNotification, planned(result.Action).Type)
 }
 
 // TestProposer_AIPath_AllAdvisoryPlanForResourceChangeFallsBack is the same
@@ -322,7 +322,7 @@ func TestProposer_AIPath_AllAdvisoryPlanForResourceChangeFallsBack(t *testing.T)
 	require.NoError(t, err)
 	require.True(t, result.Proposed)
 
-	assert.Equal(t, dorguv1.ActionTypePersonaUpdate, result.Action.Spec.Action.Type)
+	assert.Equal(t, dorguv1.ActionTypePersonaUpdate, planned(result.Action).Type)
 	assert.NotEqual(t, dorguv1.PlanSourceAIAnthropic, result.Action.Spec.PlanSource,
 		"the fallback records itself as rule-based, so what happened is auditable")
 	assert.True(t, result.Action.HasAutoApplicableChange())
@@ -596,6 +596,6 @@ func assertRuleBasedSingleStep(t *testing.T, action *dorguv1.RemediationAction) 
 	assert.Equal(t, dorguv1.StepTypePersonaUpdate, step.Type)
 	assert.True(t, step.AutoExecutable)
 	require.NotNil(t, step.Patch)
-	assert.JSONEq(t, string(step.Patch.Raw), string(action.Spec.Action.Patch.Raw),
+	assert.JSONEq(t, string(step.Patch.Raw), string(planned(action).Patch.Raw),
 		"spec.action is derived from steps[]")
 }

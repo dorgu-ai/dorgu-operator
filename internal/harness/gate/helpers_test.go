@@ -148,6 +148,7 @@ func planCandidate(steps ...dorguv1.RemediationStep) Candidate {
 		Target: target(), Namespace: testNS, Name: "ra-new", Source: dorguv1.PlanSourceAIAnthropic,
 		IncidentRef: dorguv1.IncidentReference{Name: incidentOne, Namespace: testNS},
 		Steps:       steps,
+		Facts:       Facts{SuggestedAction: ClassResourceAdjustment},
 	}
 }
 
@@ -156,6 +157,7 @@ func legacyCandidate(patch *apiextensionsv1.JSON) Candidate {
 		Target: target(), Namespace: testNS, Name: "ra-new", Source: dorguv1.PlanSourceRuleBased,
 		IncidentRef: dorguv1.IncidentReference{Name: incidentOne, Namespace: testNS},
 		Action:      dorguv1.RemediationActionDetail{Type: dorguv1.ActionTypePersonaUpdate, Patch: patch},
+		Facts:       Facts{SuggestedAction: ClassResourceAdjustment},
 	}
 }
 

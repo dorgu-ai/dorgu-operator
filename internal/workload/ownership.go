@@ -341,19 +341,22 @@ func controllerOwner(refs []metav1.OwnerReference) (Ownership, bool) {
 // isKnownBenignManager reports whether a field manager entry says nothing about a
 // workload being reconciled. Only these are benign (R8):
 //
-//   - Dorgu's own two managers, by exact name. A prefix match let any manager
-//     named "dorgu-something" pass as Dorgu.
+//   - Dorgu's own two managers, by exact name (case included). A prefix or a
+//     case-insensitive match let a manager named "dorgu-something" or "Dorgu"
+//     pass as Dorgu.
 //   - kubectl's client-side managers (kubectl-set, kubectl-patch, kubectl-edit,
 //     kubectl-client-side-apply, ...), which are Update entries: a human with
 //     kubectl, which is what unmanaged means. A kubectl Apply entry is server-side
 //     apply, and a pipeline that does that re-asserts its manifest on every run.
 //   - the Deployment controller.
 func isKnownBenignManager(entry metav1.ManagedFieldsEntry) bool {
-	lower := strings.ToLower(entry.Manager)
+	// Compared exactly, case included: "Dorgu" or "KUBECTL-edit" is another
+	// manager's name, and a manager chooses its own name (F5).
+	manager := entry.Manager
 	switch {
-	case lower == managerDorgu || lower == managerDorguOperator || lower == managerKubeControllers:
+	case manager == managerDorgu || manager == managerDorguOperator || manager == managerKubeControllers:
 		return true
-	case strings.HasPrefix(lower, managerKubectlPrefix):
+	case strings.HasPrefix(manager, managerKubectlPrefix):
 		return entry.Operation == metav1.ManagedFieldsOperationUpdate
 	}
 	return false

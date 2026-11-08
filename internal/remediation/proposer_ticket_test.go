@@ -18,6 +18,7 @@ package remediation
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"testing"
@@ -34,6 +35,7 @@ import (
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
 	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
+	"github.com/dorgu-ai/dorgu-operator/internal/remediation/planner"
 )
 
 // The proposer pins the spec generation the gate cleared, so an approval can tell
@@ -133,4 +135,127 @@ func TestProposer_RuleBasedActionIsDerivedFromItsStep(t *testing.T) {
 	require.True(t, result.Proposed)
 
 	assertRuleBasedSingleStep(t, result.Action)
+}
+
+// --- B5 fix round: F7, F9, V2 -----------------------------------------------------
+
+// F7: spec.action is a notification only. A pre-0.14 CLI applies the patch it finds
+// in spec.action without a ticket; there must be none to find.
+func TestF7_TheProposedSpecActionCarriesNoPatch(t *testing.T) {
+	c := fake.NewClientBuilder().WithScheme(newTestScheme()).
+		WithRuntimeObjects(newTestPersona(defaultNamespace, "my-app")).
+		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+	p := NewProposer(c, gate.New(c, testLogger()), testLogger())
+
+	result, err := p.Propose(context.Background(),
+		newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityWarning),
+		newTestIncident(defaultNamespace, "oom", "my-app", "OOMKilled"))
+	require.NoError(t, err)
+	require.True(t, result.Proposed)
+
+	var stored dorguv1.RemediationAction
+	require.NoError(t, c.Get(context.Background(), client.ObjectKeyFromObject(result.Action), &stored))
+	assert.Equal(t, dorguv1.ActionTypeNotification, stored.Spec.Action.Type)
+	assert.Nil(t, stored.Spec.Action.Patch, "no patch for an old CLI to apply")
+	assert.Nil(t, stored.Spec.Action.PrePatchState)
+	require.Len(t, stored.Spec.Steps, 1)
+	require.NotNil(t, stored.Spec.Steps[0].Patch, "steps[] is the only plan and still carries the change")
+	assert.True(t, stored.HasAutoApplicableChange())
+}
+
+func TestF7_AnAIPlansSpecActionCarriesNoPatchEither(t *testing.T) {
+	c := fake.NewClientBuilder().WithScheme(newTestScheme()).
+		WithRuntimeObjects(newTestPersona(defaultNamespace, "my-app")).
+		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+	p := NewProposer(c, gate.New(c, testLogger()), testLogger(), WithPlanner(&stubPlanner{plan: threeStepPlan()}))
+
+	result, err := p.Propose(context.Background(),
+		newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical),
+		newTestIncident(defaultNamespace, "oom", "my-app", "OOMKilled"))
+	require.NoError(t, err)
+	require.True(t, result.Proposed)
+
+	var stored dorguv1.RemediationAction
+	require.NoError(t, c.Get(context.Background(), client.ObjectKeyFromObject(result.Action), &stored))
+	assert.Equal(t, dorguv1.ActionTypeNotification, stored.Spec.Action.Type)
+	assert.Nil(t, stored.Spec.Action.Patch)
+	assert.True(t, stored.Spec.Steps[0].AutoExecutable)
+}
+
+// F9: the Proposed condition pins the generation Create returned. An edit that
+// lands between Create and the status write must not be baked into the pin.
+func TestF9_TheClearedGenerationIsTheOneCreateReturned(t *testing.T) {
+	truth := fake.NewClientBuilder().WithScheme(newTestScheme()).
+		WithRuntimeObjects(newTestPersona(defaultNamespace, "my-app")).
+		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+	c := interceptor.NewClient(truth, interceptor.Funcs{
+		Create: func(ctx context.Context, inner client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+			if err := inner.Create(ctx, obj, opts...); err != nil {
+				return err
+			}
+			if _, ok := obj.(*dorguv1.RemediationAction); ok {
+				obj.SetGeneration(1) // what the apiserver answers a Create with
+			}
+			return nil
+		},
+		Get: func(ctx context.Context, inner client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if err := inner.Get(ctx, key, obj, opts...); err != nil {
+				return err
+			}
+			if _, ok := obj.(*dorguv1.RemediationAction); ok {
+				obj.SetGeneration(2) // somebody edited the spec after Create returned
+			}
+			return nil
+		},
+	})
+	p := NewProposer(c, gate.New(c, testLogger()), testLogger())
+
+	result, err := p.Propose(context.Background(),
+		newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityWarning),
+		newTestIncident(defaultNamespace, "oom", "my-app", "OOMKilled"))
+	require.NoError(t, err)
+	require.True(t, result.Proposed)
+
+	var stored dorguv1.RemediationAction
+	require.NoError(t, truth.Get(context.Background(), client.ObjectKeyFromObject(result.Action), &stored))
+	var proposed *metav1.Condition
+	for i := range stored.Status.Conditions {
+		if stored.Status.Conditions[i].Type == dorguv1.ConditionProposed {
+			proposed = &stored.Status.Conditions[i]
+		}
+	}
+	require.NotNil(t, proposed)
+	assert.Equal(t, int64(1), proposed.ObservedGeneration, "the pin is what Create returned, not what a later Get saw")
+}
+
+// V2 (B4 review): the rules say "fix the deployment" for an image-pull failure and
+// the model answers with a memory persona-update. The gate's action-class check
+// refuses it; nothing is proposed and no model-chosen persona change is applied.
+func TestV2_AModelPersonaUpdateForAnImagePullDiagnosisIsRefused(t *testing.T) {
+	c := fake.NewClientBuilder().WithScheme(newTestScheme()).
+		WithRuntimeObjects(newTestPersona(defaultNamespace, "my-app")).
+		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+	memoryPlan := &planner.RemediationPlan{
+		RootCause: "image cannot be pulled; raise memory", Confidence: 0.9,
+		Steps: []planner.PlannedStep{{
+			Order: 1, Type: dorguv1.StepTypePersonaUpdate, Description: "raise memory", Rationale: "r", Risk: "low",
+			Patch: json.RawMessage(`{"spec":{"resources":{"limits":{"memory":"384Mi"}}}}`),
+		}},
+	}
+	p := NewProposer(c, gate.New(c, testLogger()), testLogger(), WithPlanner(&stubPlanner{plan: memoryPlan}))
+	diag := newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical)
+	diag.Contributing[0].Signal.Type = detection.SignalImagePullBackOff
+	diag.SuggestedAction = "deployment-fix" // what the rule engine says for image-pull
+
+	result, err := p.Propose(context.Background(), diag,
+		newTestIncident(defaultNamespace, "imagepull", "my-app", "ImagePullBackOff"))
+	require.NoError(t, err)
+
+	assert.False(t, result.Proposed, "the plan's class (persona-update) is not the rules' (deployment-fix)")
+	require.NotNil(t, result.Decision)
+	_, guardrail := result.Decision.RefusedBy()
+	assert.Equal(t, gate.GuardrailActionClass, guardrail)
+	var list dorguv1.RemediationActionList
+	require.NoError(t, c.List(context.Background(), &list))
+	assert.Empty(t, list.Items, "nothing was written")
 }

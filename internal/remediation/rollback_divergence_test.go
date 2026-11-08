@@ -19,6 +19,7 @@ package remediation
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -40,41 +41,71 @@ import (
 //	after RolledBack persona limits.memory 512Mi   deployment limits.memory 16Mi
 //
 // The persona came back. The Deployment did not, and nothing said so.
-func driftedAction(managedBy, detail string) *dorguv1.RemediationAction {
+func driftedAction(managedBy string) *dorguv1.RemediationAction {
+	now := metav1.Now()
 	return &dorguv1.RemediationAction{
 		ObjectMeta: metav1.ObjectMeta{Name: "ra-drifted", Namespace: "drift"},
 		Spec: dorguv1.RemediationActionSpec{
 			PersonaRef: dorguv1.PersonaReference{
 				Kind: kindApplicationPersona, Name: "drifted", Namespace: "drift",
 			},
+			// Everything below is editable by whoever can write the spec, so the
+			// rollback report must not read it (F8). It points at a workload and a
+			// field that are not the ones the ticket is about.
 			WorkloadRef: &dorguv1.WorkloadRef{
-				Kind:            "Deployment",
-				Name:            "drifted",
-				Namespace:       "drift",
-				Container:       "drifted",
-				ManagedBy:       managedBy,
-				ManagedByDetail: detail,
+				Kind: "Deployment", Name: "decoy", Namespace: "elsewhere", Container: "decoy",
+				ManagedBy: managedBy,
 				ObservedResources: &dorguv1.ObservedResources{
-					Limits:   &dorguv1.ResourceValues{CPU: "500m", Memory: "8Mi"},
-					Requests: &dorguv1.ResourceValues{CPU: "100m", Memory: "8Mi"},
+					Limits: &dorguv1.ResourceValues{CPU: "1", Memory: "1Gi"},
 				},
 			},
 			Action: dorguv1.RemediationActionDetail{
 				Type:          dorguv1.ActionTypePersonaUpdate,
-				Patch:         mustJSON(`{"spec":{"resources":{"limits":{"memory":"16Mi"}}}}`),
-				PrePatchState: mustJSON(`{"spec":{"resources":{"limits":{"memory":"512Mi"}}}}`),
+				Patch:         mustJSON(`{"spec":{"resources":{"limits":{"cpu":"9"}}}}`),
+				PrePatchState: mustJSON(`{"spec":{"resources":{"limits":{"cpu":"1"}}}}`),
 			},
 			Rollback: &dorguv1.RemediationRollbackSpec{Enabled: true},
+		},
+		// What the operator wrote: the ticket (the paths and the workload it was
+		// bound to) and status.gate (the live values it measured before the heal).
+		Status: dorguv1.RemediationActionStatus{
+			ApplyTicket: &dorguv1.ApplyTicket{
+				WorkloadUID: driftedUID, Container: "drifted",
+				Patch:     mustJSON(`{"spec":{"resources":{"limits":{"memory":"16Mi"}}}}`),
+				IssuedAt:  &now,
+				ExpiresAt: metav1.NewTime(now.Add(10 * time.Minute)),
+			},
+			Gate: &dorguv1.GateStatus{
+				Phase: "ApprovalRecheck", Result: "Pass",
+				Observed: &dorguv1.GateObserved{
+					WorkloadUID: driftedUID,
+					LiveValues: &dorguv1.ObservedResources{
+						Limits:   &dorguv1.ResourceValues{CPU: "500m", Memory: "8Mi"},
+						Requests: &dorguv1.ResourceValues{CPU: "100m", Memory: "8Mi"},
+					},
+				},
+				PrePatchState: mustJSON(`{"spec":{"resources":{"limits":{"memory":"512Mi"}}}}`),
+			},
 		},
 	}
 }
 
+const driftedUID = "uid-drift"
+
+// ownedBy marks a Deployment as owned the way the live detection reads it.
+func helmOwned(d *appsv1.Deployment) {
+	d.Labels = map[string]string{"app.kubernetes.io/managed-by": "Helm"}
+	d.Annotations = map[string]string{"meta.helm.sh/release-name": "drifted"}
+}
+
 // driftedDeployment is the live workload after the heal landed on it.
-func driftedDeployment(limitMemory string) *appsv1.Deployment {
-	return &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{Name: "drifted", Namespace: "drift"},
+func driftedDeployment(limitMemory string, mutate ...func(*appsv1.Deployment)) *appsv1.Deployment {
+	d := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "drifted", Namespace: "drift", UID: driftedUID},
 		Spec: appsv1.DeploymentSpec{
+			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "drifted"}},
 			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "drifted"}},
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{{
 						Name: "drifted",
@@ -93,6 +124,10 @@ func driftedDeployment(limitMemory string) *appsv1.Deployment {
 			},
 		},
 	}
+	for _, m := range mutate {
+		m(d)
+	}
+	return d
 }
 
 func rollbackFor(objs ...runtime.Object) *Rollback {
@@ -118,7 +153,7 @@ func resourceQty(value string) resource.Quantity {
 // still-changed live value.
 func TestRollback_CR502_PersonaOnlyRollbackIsReported(t *testing.T) {
 	r := rollbackFor(driftedDeployment("16Mi"))
-	action := driftedAction(dorguv1.ManagedByUnmanaged, "")
+	action := driftedAction(dorguv1.ManagedByUnmanaged)
 
 	outcome := r.InspectRollback(context.Background(), action)
 
@@ -144,8 +179,8 @@ func TestRollback_CR502_PersonaOnlyRollbackIsReported(t *testing.T) {
 // resources` is the F-02 defect, and a rollback advisory is not an exemption
 // from it.
 func TestRollback_CR502_OwnedWorkloadGetsNoWriteCommand(t *testing.T) {
-	r := rollbackFor(driftedDeployment("16Mi"))
-	action := driftedAction(dorguv1.ManagedByHelm, `Helm release "drifted" in namespace drift`)
+	r := rollbackFor(driftedDeployment("16Mi", helmOwned))
+	action := driftedAction(dorguv1.ManagedByHelm)
 
 	outcome := r.InspectRollback(context.Background(), action)
 
@@ -162,7 +197,7 @@ func TestRollback_CR502_OwnedWorkloadGetsNoWriteCommand(t *testing.T) {
 // never reached the Deployment, so the rollback really did undo everything.
 func TestRollback_CR502_NoDivergenceWhenTheWorkloadNeverChanged(t *testing.T) {
 	r := rollbackFor(driftedDeployment("8Mi"))
-	action := driftedAction(dorguv1.ManagedByUnmanaged, "")
+	action := driftedAction(dorguv1.ManagedByUnmanaged)
 
 	outcome := r.InspectRollback(context.Background(), action)
 
@@ -175,7 +210,7 @@ func TestRollback_CR502_NoDivergenceWhenTheWorkloadNeverChanged(t *testing.T) {
 // rollback it could not verify. An unreadable workload is not a restored one.
 func TestRollback_CR502_UnreadableWorkloadSaysSo(t *testing.T) {
 	r := rollbackFor()
-	action := driftedAction(dorguv1.ManagedByUnmanaged, "")
+	action := driftedAction(dorguv1.ManagedByUnmanaged)
 
 	outcome := r.InspectRollback(context.Background(), action)
 
@@ -192,8 +227,8 @@ func TestRollback_CR502_MultipleFieldsAreAllNamed(t *testing.T) {
 	deploy.Spec.Template.Spec.Containers[0].Resources.Requests[corev1.ResourceMemory] = resourceQty("16Mi")
 
 	r := rollbackFor(deploy)
-	action := driftedAction(dorguv1.ManagedByUnmanaged, "")
-	action.Spec.Action.Patch = mustJSON(
+	action := driftedAction(dorguv1.ManagedByUnmanaged)
+	action.Status.ApplyTicket.Patch = mustJSON(
 		`{"spec":{"resources":{"limits":{"memory":"16Mi"},"requests":{"memory":"16Mi"}}}}`)
 
 	outcome := r.InspectRollback(context.Background(), action)
@@ -203,4 +238,30 @@ func TestRollback_CR502_MultipleFieldsAreAllNamed(t *testing.T) {
 	assert.Equal(t, "resources.requests.memory", outcome.Divergences[1].Field)
 	assert.Contains(t, outcome.Message(), "--limits=memory=8Mi")
 	assert.Contains(t, outcome.Message(), "--requests=memory=8Mi")
+}
+
+// F8: the report is built from the ticket and status.gate. A replaced Deployment
+// (another UID) is not the one the ticket was bound to, so Dorgu will not say
+// whether it carries the change.
+func TestF8_ADeploymentWithAnotherUIDIsNotComparedToTheTicket(t *testing.T) {
+	replaced := driftedDeployment("16Mi", func(d *appsv1.Deployment) { d.UID = "uid-someone-else" })
+	r := rollbackFor(replaced)
+
+	outcome := r.InspectRollback(context.Background(), driftedAction(dorguv1.ManagedByUnmanaged))
+
+	assert.False(t, outcome.Diverged())
+	assert.Equal(t, ReasonWorkloadUnreadable, outcome.Reason())
+	assert.Contains(t, outcome.Message(), "not the Deployment the ticket")
+}
+
+// F8: with no ticket there is nothing to say Dorgu wrote, so nothing diverged.
+func TestF8_NoTicketMeansNothingToCompare(t *testing.T) {
+	r := rollbackFor(driftedDeployment("16Mi"))
+	action := driftedAction(dorguv1.ManagedByUnmanaged)
+	action.Status.ApplyTicket = nil
+
+	outcome := r.InspectRollback(context.Background(), action)
+
+	assert.False(t, outcome.Diverged())
+	assert.Equal(t, ReasonWorkloadUnreadable, outcome.Reason())
 }

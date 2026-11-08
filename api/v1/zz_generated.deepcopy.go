@@ -237,6 +237,10 @@ func (in *ApplyTicket) DeepCopyInto(out *ApplyTicket) {
 			(*in)[i].DeepCopyInto(&(*out)[i])
 		}
 	}
+	if in.IssuedAt != nil {
+		in, out := &in.IssuedAt, &out.IssuedAt
+		*out = (*in).DeepCopy()
+	}
 	in.ExpiresAt.DeepCopyInto(&out.ExpiresAt)
 }
 

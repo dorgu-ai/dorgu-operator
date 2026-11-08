@@ -136,7 +136,7 @@ func TestProposer_GroundsMemoryInLiveWorkload(t *testing.T) {
 	require.True(t, result.Proposed)
 
 	// 2x of the LIVE 32Mi, not of the stale 96Mi.
-	assert.Equal(t, "64Mi", patchLimit(t, result.Action.Spec.Action.Patch.Raw, "memory"))
+	assert.Equal(t, "64Mi", patchLimit(t, planned(result.Action).Patch.Raw, "memory"))
 
 	// Every stated number comes from the live workload.
 	assert.Contains(t, result.Action.Spec.Explanation, "32Mi")
@@ -224,7 +224,7 @@ func TestProposer_FallsBackToPersonaWhenWorkloadUnreadable(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, result.Proposed)
 
-	assert.Equal(t, "512Mi", patchLimit(t, result.Action.Spec.Action.Patch.Raw, "memory"))
+	assert.Equal(t, "512Mi", patchLimit(t, planned(result.Action).Patch.Raw, "memory"))
 	require.NotNil(t, result.Action.Spec.WorkloadRef)
 	assert.Equal(t, dorguv1.ManagedByUnknown, result.Action.Spec.WorkloadRef.ManagedBy,
 		"an unresolvable workload is owned until proven otherwise")

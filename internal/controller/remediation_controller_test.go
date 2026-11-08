@@ -232,6 +232,9 @@ var _ = Describe("RemediationController", func() {
 			Expect(updatedAction.Status.Phase).To(Equal(RemediationPhaseApplying))
 			Expect(updatedAction.Status.AppliedAt).NotTo(BeNil())
 
+			// The CLI heals the workload with the user's credentials.
+			simulateCLIPatch(ctx, action, "512Mi")
+
 			// Step 2: Wait, then Applying → Verifying.
 			time.Sleep(2 * time.Second)
 			result, err = controller.Reconcile(ctx, reconcile.Request{
@@ -409,6 +412,9 @@ var _ = Describe("RemediationController", func() {
 				NamespacedName: client.ObjectKeyFromObject(action),
 			})
 			Expect(err).NotTo(HaveOccurred())
+
+			// The CLI heals the workload with the user's credentials.
+			simulateCLIPatch(ctx, action, "512Mi")
 
 			time.Sleep(2 * time.Second)
 

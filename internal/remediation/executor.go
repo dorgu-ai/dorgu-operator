@@ -19,6 +19,7 @@ package remediation
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/go-logr/logr"
@@ -34,6 +35,11 @@ import (
 // failure cooldown exists to protect against (F-03).
 type PreconditionError struct {
 	Reason string
+
+	// Guardrail is the machine-readable reason (a gate.Guardrail* value) when the
+	// gate refused; empty for a phase or wiring problem. Callers branch on it,
+	// never on Reason.
+	Guardrail string
 }
 
 func (e *PreconditionError) Error() string {
@@ -71,6 +77,10 @@ func NewExecutor(c client.Client, g *gate.Gate, logger logr.Logger) *Executor {
 // refusal too, never a pass.
 func (e *Executor) Apply(ctx context.Context, action *dorguv1.RemediationAction) error {
 	if err := e.validatePreconditions(ctx, action); err != nil {
+		var problem *gate.TicketProblem
+		if errors.As(err, &problem) {
+			return &PreconditionError{Reason: problem.Reason, Guardrail: problem.Guardrail}
+		}
 		return &PreconditionError{Reason: err.Error()}
 	}
 

@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"time"
 
 	"github.com/go-logr/logr"
 	. "github.com/onsi/gomega"
@@ -34,8 +35,14 @@ import (
 )
 
 // envtestGate is the one gate the envtest-backed controller specs use.
+//
+// Its clock runs a little ahead of the real one: the specs create a Deployment and
+// approve against it within the same second, which the gate's clock-skew margin
+// (rightly) reads as "written around the time of the ticket". A cluster's workload
+// is never that fresh; the clock offset stands in for its age.
 func envtestGate(log logr.Logger) *gate.Gate {
-	return gate.New(k8sClient, log, gate.WithReader(k8sClient))
+	return gate.New(k8sClient, log, gate.WithReader(k8sClient),
+		gate.WithClock(func() time.Time { return time.Now().Add(2 * gate.ClockSkewMargin) }))
 }
 
 // ensurePersonaDeployment makes sure a live Deployment answers to the persona
@@ -87,6 +94,7 @@ func approveProposed(ctx context.Context, action *dorguv1.RemediationAction) {
 		Target: action.Spec.PersonaRef, Namespace: action.Namespace, Name: action.Name,
 		Source: action.Spec.PlanSource, IncidentRef: action.Spec.IncidentRef,
 		Steps: action.EffectiveSteps(), Final: true,
+		Facts: gate.Facts{SuggestedAction: gate.ClassResourceAdjustment},
 	}, gate.PhaseProposal)
 	Expect(err).NotTo(HaveOccurred())
 	Expect(decision.Allowed()).To(BeTrue(), decision.SkipReason())
@@ -108,4 +116,26 @@ func approveProposed(ctx context.Context, action *dorguv1.RemediationAction) {
 // reqFor is the reconcile request for an object.
 func reqFor(obj client.Object) reconcile.Request {
 	return reconcile.Request{NamespacedName: client.ObjectKeyFromObject(obj)}
+}
+
+// simulateCLIPatch does what `dorgu remediation approve` does to the cluster after
+// the operator's ticket: the user's credentials change the Deployment's memory
+// limit (which moves its generation), and the CLI records WorkloadPatched on the
+// action. The persona's Deployment must exist (ensurePersonaDeployment).
+func simulateCLIPatch(ctx context.Context, action *dorguv1.RemediationAction, memory string) {
+	var deploy appsv1.Deployment
+	key := client.ObjectKey{Name: action.Spec.PersonaRef.Name, Namespace: action.Namespace}
+	Expect(k8sClient.Get(ctx, key, &deploy)).To(Succeed())
+	deploy.Spec.Template.Spec.Containers[0].Resources.Limits[corev1.ResourceMemory] = resource.MustParse(memory)
+	Expect(k8sClient.Update(ctx, &deploy, client.FieldOwner(gate.DorguFieldManager))).To(Succeed()) // the CLI patches as "dorgu"
+
+	Eventually(func(g Gomega) {
+		var fresh dorguv1.RemediationAction
+		g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(action), &fresh)).To(Succeed())
+		fresh.Status.Conditions = append(fresh.Status.Conditions, metav1.Condition{
+			Type: "WorkloadPatched", Status: metav1.ConditionTrue, Reason: "CLIAppliedResourceChange",
+			Message: "dorgu CLI applied resources.limits.memory=" + memory, LastTransitionTime: metav1.Now(),
+		})
+		g.Expect(k8sClient.Status().Update(ctx, &fresh)).To(Succeed())
+	}).Should(Succeed())
 }

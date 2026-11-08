@@ -24,10 +24,12 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
+	"github.com/dorgu-ai/dorgu-operator/internal/workload"
 )
 
 // CR5-02, clean-room run #5: `RolledBack` rolled back half the world.
@@ -119,64 +121,90 @@ func (o RollbackOutcome) Reason() string {
 // InspectRollback compares the live workload against what Dorgu recorded before
 // the remediation, and reports what the rollback could not reach.
 //
+// It reads the ticket (which workload, which container, which fields Dorgu wrote)
+// and status.gate (the live values the gate measured before the change), both
+// written by the operator. It never reads spec.action or spec.workloadRef: whoever
+// can edit a spec can point those at another workload or another field, and a
+// report that says "the workload is clean" or "revert this" must not be theirs to
+// write (F8).
+//
 // It never returns an error. A rollback that succeeded must not be reported as
 // failed because the advisory beside it could not be computed, so an unreadable
 // workload becomes an outcome that says so rather than an error that hides it.
 func (r *Rollback) InspectRollback(ctx context.Context, action *dorguv1.RemediationAction) RollbackOutcome {
-	ref := action.Spec.WorkloadRef
-	if ref == nil || ref.Name == "" || ref.Namespace == "" {
+	ticket := action.Status.ApplyTicket
+	if ticket == nil || ticket.WorkloadUID == "" || action.Status.Gate == nil || action.Status.Gate.Observed == nil {
 		return RollbackOutcome{
-			Ref:        ref,
-			Unreadable: "Dorgu never resolved a live Deployment for this application, so it cannot say whether the workload still carries the change.",
+			Unreadable: "Dorgu holds no apply ticket or recorded baseline for this change, so it cannot say whether the workload still carries it.",
+		}
+	}
+	personaKey := client.ObjectKey{Namespace: action.Spec.PersonaRef.Namespace, Name: action.Spec.PersonaRef.Name}
+	if personaKey.Namespace == "" {
+		personaKey.Namespace = action.Namespace
+	}
+	if personaKey.Namespace == "" || personaKey.Name == "" {
+		return RollbackOutcome{Unreadable: "The remediation names no persona, so Dorgu cannot find the workload to check whether it still carries the change."}
+	}
+
+	obs, err := workload.Observe(ctx, r.client, personaKey.Namespace, personaKey.Name)
+	if err != nil || obs == nil || obs.Deployment == nil {
+		why := "no Deployment answers to the persona any more"
+		if err != nil {
+			why = err.Error()
+		}
+		return RollbackOutcome{
+			Unreadable: fmt.Sprintf(
+				"Dorgu could not read the Deployment for persona %s/%s to check whether it still carries the change: %s",
+				personaKey.Namespace, personaKey.Name, why),
 		}
 	}
 
-	var deploy appsv1.Deployment
-	key := client.ObjectKey{Name: ref.Name, Namespace: ref.Namespace}
-	if err := r.client.Get(ctx, key, &deploy); err != nil {
+	ref := obs.Ref(metav1.Now())
+	ref.Container = ticket.Container
+	if string(obs.Deployment.UID) != ticket.WorkloadUID {
 		return RollbackOutcome{
 			Ref: ref,
 			Unreadable: fmt.Sprintf(
-				"Dorgu could not read Deployment %s/%s to check whether it still carries the change: %v",
-				ref.Namespace, ref.Name, err),
+				"Deployment %s/%s is not the Deployment the ticket was issued for (its UID changed), so Dorgu cannot say whether the workload the heal patched still carries the change.",
+				ref.Namespace, ref.Name),
 		}
 	}
 
-	container := containerNamed(&deploy, ref.Container)
+	container := containerNamed(obs.Deployment, ticket.Container)
 	if container == nil {
 		return RollbackOutcome{
 			Ref: ref,
 			Unreadable: fmt.Sprintf(
 				"Dorgu could not find container %q on Deployment %s/%s, so it cannot say whether the workload still carries the change.",
-				ref.Container, ref.Namespace, ref.Name),
+				ticket.Container, ref.Namespace, ref.Name),
 		}
 	}
 
 	return RollbackOutcome{
 		Ref:         ref,
-		Divergences: compareToPreRemediation(action, ref, container),
+		Divergences: compareToPreRemediation(ticket, action.Status.Gate.Observed.LiveValues, container),
 	}
 }
 
-// compareToPreRemediation returns every field the remediation touched whose
-// live value no longer matches what Dorgu observed before it ran.
+// compareToPreRemediation returns every field the ticket changed whose live value
+// no longer matches what the gate observed before it ran.
 //
-// The comparison is against ObservedResources, the live values read at proposal
-// time, and NOT against the patch's prePatchState. prePatchState holds the
-// PERSONA's prior value, which in the clean-room case was 512Mi — a value the
-// Deployment never had. Telling a user to set their workload to 512Mi because
-// the persona used to say so would be a worse bug than the one being fixed.
+// The comparison is against the gate's observed live values, and NOT against the
+// patch's prePatchState. prePatchState holds the PERSONA's prior value, which in
+// the clean-room case was 512Mi — a value the Deployment never had. Telling a user
+// to set their workload to 512Mi because the persona used to say so would be a
+// worse bug than the one being fixed.
 func compareToPreRemediation(
-	action *dorguv1.RemediationAction,
-	ref *dorguv1.WorkloadRef,
+	ticket *dorguv1.ApplyTicket,
+	before *dorguv1.ObservedResources,
 	container *corev1.Container,
 ) []WorkloadDivergence {
-	if action.Spec.Action.Patch == nil || len(action.Spec.Action.Patch.Raw) == 0 {
+	if ticket.Patch == nil || len(ticket.Patch.Raw) == 0 {
 		return nil
 	}
 
 	paths := make([]string, 0, 4)
-	for path := range gate.PatchLeafValues(action.Spec.Action.Patch.Raw) {
+	for path := range gate.PatchLeafValues(ticket.Patch.Raw) {
 		if gate.IsResourcePath(path) {
 			paths = append(paths, path)
 		}
@@ -186,7 +214,7 @@ func compareToPreRemediation(
 	out := make([]WorkloadDivergence, 0, len(paths))
 	for _, personaPath := range paths {
 		field := strings.TrimPrefix(personaPath, "spec.")
-		intended := observedResourceValue(ref, field)
+		intended := observedResourceValue(before, field)
 		live := liveResourceValue(container, field)
 		if intended == "" || live == intended {
 			continue
@@ -290,15 +318,15 @@ func containerNamed(deploy *appsv1.Deployment, name string) *corev1.Container {
 	return nil
 }
 
-// observedResourceValue reads a container-relative path out of the pre-remediation
-// record, returning "" when the workload did not set it.
-func observedResourceValue(ref *dorguv1.WorkloadRef, field string) string {
-	if ref.ObservedResources == nil {
+// observedResourceValue reads a container-relative path out of the gate's
+// pre-remediation record, returning "" when the workload did not set it.
+func observedResourceValue(before *dorguv1.ObservedResources, field string) string {
+	if before == nil {
 		return ""
 	}
-	values := ref.ObservedResources.Limits
+	values := before.Limits
 	if strings.Contains(field, ".requests.") {
-		values = ref.ObservedResources.Requests
+		values = before.Requests
 	}
 	if values == nil {
 		return ""

@@ -134,12 +134,12 @@ func TestProposer_OOM_MemoryIncrease_Warning(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, result.Proposed)
 	assert.NotNil(t, result.Action)
-	assert.Equal(t, "persona-update", result.Action.Spec.Action.Type)
+	assert.Equal(t, "persona-update", planned(result.Action).Type)
 	assert.True(t, result.Action.Spec.Approval.Required, "approval must be required")
 
 	// Verify memory was increased by 50% (warning).
 	var patch map[string]any
-	require.NoError(t, json.Unmarshal(result.Action.Spec.Action.Patch.Raw, &patch))
+	require.NoError(t, json.Unmarshal(planned(result.Action).Patch.Raw, &patch))
 	spec := patch["spec"].(map[string]any)
 	resources := spec["resources"].(map[string]any)
 	limits := resources["limits"].(map[string]any)
@@ -166,7 +166,7 @@ func TestProposer_OOM_MemoryIncrease_Critical(t *testing.T) {
 
 	// Verify memory was increased by 100% (critical) = 512Mi.
 	var patch map[string]any
-	require.NoError(t, json.Unmarshal(result.Action.Spec.Action.Patch.Raw, &patch))
+	require.NoError(t, json.Unmarshal(planned(result.Action).Patch.Raw, &patch))
 	spec := patch["spec"].(map[string]any)
 	resources := spec["resources"].(map[string]any)
 	limits := resources["limits"].(map[string]any)
@@ -218,7 +218,7 @@ func TestProposer_CPUSaturation(t *testing.T) {
 
 	// Verify CPU was increased by 25% (warning): 500m → 625m.
 	var patch map[string]any
-	require.NoError(t, json.Unmarshal(result.Action.Spec.Action.Patch.Raw, &patch))
+	require.NoError(t, json.Unmarshal(planned(result.Action).Patch.Raw, &patch))
 	spec := patch["spec"].(map[string]any)
 	resources := spec["resources"].(map[string]any)
 	limits := resources["limits"].(map[string]any)
@@ -354,7 +354,7 @@ func TestProposer_CrashLoopWithOOM_ProposesMemoryIncrease(t *testing.T) {
 	assert.True(t, result.Proposed)
 
 	var patch map[string]any
-	require.NoError(t, json.Unmarshal(result.Action.Spec.Action.Patch.Raw, &patch))
+	require.NoError(t, json.Unmarshal(planned(result.Action).Patch.Raw, &patch))
 	spec := patch["spec"].(map[string]any)
 	resources := spec["resources"].(map[string]any)
 	limits := resources["limits"].(map[string]any)
@@ -486,10 +486,10 @@ func TestProposer_PrePatchStateCaptured(t *testing.T) {
 
 	require.NoError(t, err)
 	require.True(t, result.Proposed)
-	require.NotNil(t, result.Action.Spec.Action.PrePatchState)
+	require.NotNil(t, planned(result.Action).PrePatchState)
 
 	var prePatch map[string]any
-	require.NoError(t, json.Unmarshal(result.Action.Spec.Action.PrePatchState.Raw, &prePatch))
+	require.NoError(t, json.Unmarshal(planned(result.Action).PrePatchState.Raw, &prePatch))
 	spec := prePatch["spec"].(map[string]any)
 	resources := spec["resources"].(map[string]any)
 	limits := resources["limits"].(map[string]any)

@@ -428,12 +428,17 @@ func TestR11_ApprovalReadsTheLiveWorkloadUncached(t *testing.T) {
 
 func ticketedAction(mutate ...func(*dorguv1.RemediationAction)) *dorguv1.RemediationAction {
 	return proposedAction(append([]func(*dorguv1.RemediationAction){func(ra *dorguv1.RemediationAction) {
+		issued := metav1.NewTime(fixedNow)
 		ra.Status.Phase = "Ticketed"
 		ra.Status.ApplyTicket = &dorguv1.ApplyTicket{
 			WorkloadUID: "uid-1", Container: testPersona, Patch: memPatch("384Mi"),
-			ObservedResourceVersion: "42", ExpiresAt: metav1.NewTime(fixedNow.Add(TicketTTL)),
+			ObservedResourceVersion: "42", IssuedAt: &issued, ExpiresAt: metav1.NewTime(fixedNow.Add(TicketTTL)),
 		}
-		ra.Status.Gate.PrePatchState = memPatch("256Mi")
+		// What the approval re-check recorded when it issued the ticket.
+		ra.Status.Gate = &dorguv1.GateStatus{
+			Phase: string(PhaseApprovalRecheck), Result: string(ResultPass), EvaluatedAt: issued,
+			Observed: priorObservation("uid-1"), PrePatchState: memPatch("256Mi"),
+		}
 	}}, mutate...)...)
 }
 

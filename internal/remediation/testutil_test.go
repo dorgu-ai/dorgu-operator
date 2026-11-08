@@ -125,3 +125,10 @@ func assertAppliable(action *dorguv1.RemediationAction, diag diagnosis.Diagnosis
 	}
 	return fmt.Errorf("a plan that applies nothing for a diagnosed change to %s", target)
 }
+
+// planned is the plan of a RemediationAction as the operator applies it: derived
+// from steps[], the only plan. spec.action is a notification and carries no patch
+// (F7), so a test that wants "the patch this action makes" reads it from here.
+func planned(a *dorguv1.RemediationAction) dorguv1.RemediationActionDetail {
+	return gate.DeriveAction(a.Spec.Steps)
+}

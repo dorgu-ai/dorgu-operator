@@ -148,6 +148,20 @@ const (
 
 	// GuardrailTicket is the apply-time check of a ticket (see CheckTicket).
 	GuardrailTicket = "apply-ticket"
+
+	// GuardrailNotApproved: the action has no approval on record (status.approvedAt),
+	// so no ticket can be honoured for it. A ticket written onto an action nobody
+	// approved lands here.
+	GuardrailNotApproved = "not-approved"
+
+	// GuardrailTicketMismatch: the ticket is not what the gate derives from the
+	// plan on live state right now (its patch, container or workload differ).
+	GuardrailTicketMismatch = "ticket-mismatch"
+
+	// GuardrailActionClass: the plan's action class is not the one the rules
+	// recommended for the diagnosis. The rules own the class; a model may word the
+	// plan but may not change what kind of change it is.
+	GuardrailActionClass = "action-class"
 )
 
 // Safety rule names. They are the Rule of a Violation and the Guardrail of the
@@ -235,6 +249,12 @@ type Facts struct {
 
 	// PrimarySignal is the diagnosis's primary signal type.
 	PrimarySignal string
+
+	// SuggestedAction is the rules' recommended action class for the diagnosis
+	// ("resource-adjustment", "deployment-fix", ...). It is rule-derived, never
+	// model text. A plan that auto-applies a persona change is admitted only when
+	// the rules recommended a resource adjustment (Proposal only).
+	SuggestedAction string
 
 	// TargetPath is the persona-spec path the diagnosis calls for changing, the
 	// incident-independent identity of the fix. Empty when none is derivable.

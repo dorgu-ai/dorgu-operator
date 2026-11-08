@@ -26,6 +26,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -34,6 +35,7 @@ import (
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
+	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation"
 )
 
@@ -134,7 +136,7 @@ var _ = Describe("RemediationController rollback scope (CR5-02)", func() {
 				},
 			},
 		}
-		Expect(k8sClient.Create(ctx, deploy)).To(Succeed())
+		Expect(k8sClient.Create(ctx, deploy, client.FieldOwner("kubectl-create"))).To(Succeed())
 		return deploy
 	}
 
@@ -253,7 +255,7 @@ var _ = Describe("RemediationController rollback scope (CR5-02)", func() {
 			// The CLI patches the Deployment to 512Mi with the user's credentials.
 			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy)).To(Succeed())
 			deploy.Spec.Template.Spec.Containers[0].Resources.Limits[corev1.ResourceMemory] = resource.MustParse("512Mi")
-			Expect(k8sClient.Update(ctx, deploy)).To(Succeed())
+			Expect(k8sClient.Update(ctx, deploy, client.FieldOwner(gate.DorguFieldManager))).To(Succeed())
 		})
 
 		// The half that always worked.
@@ -291,12 +293,20 @@ var _ = Describe("RemediationController rollback scope (CR5-02)", func() {
 	It("will not claim a clean rollback it could not verify", func() {
 		persona := createPersona("rs-unread-persona")
 		incident := createIncident("rs-unread-incident", persona.Name)
-		// A Deployment answers to the persona (an approval needs one), but the
-		// workload the action's own record names is not there: it cannot be read.
-		healedDeployment("rs-unread-persona", "256Mi")
-		action := groundedAction("rs-unread-action", persona.Name, incident.Name, "rs-unread-missing")
+		deploy := healedDeployment("rs-unread-persona", "256Mi")
+		action := groundedAction("rs-unread-action", persona.Name, incident.Name, "rs-unread-persona")
 
-		out := driveToRolledBack(degradedController(persona.Name), action, func() {})
+		out := driveToRolledBack(degradedController(persona.Name), action, func() {
+			// The Deployment is deleted and re-created after the ticket: a different
+			// workload (new UID), so Dorgu cannot say whether the one the heal
+			// patched still carries the change.
+			Expect(k8sClient.Delete(ctx, deploy)).To(Succeed())
+			Eventually(func() bool {
+				var gone appsv1.Deployment
+				return apierrors.IsNotFound(k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), &gone))
+			}).Should(BeTrue())
+			healedDeployment("rs-unread-persona", "256Mi")
+		})
 
 		cond := conditionOf(out, ConditionWorkloadDiverged)
 		Expect(cond).NotTo(BeNil())

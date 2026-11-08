@@ -64,9 +64,11 @@ func TestProposer_RulePath_RecordsTheGateDecisionOnStatus(t *testing.T) {
 		"the baseline is the live value")
 	assert.Equal(t, "Pending", stored.Status.Phase)
 
-	// The old spec fields are still populated for one release.
+	// The old spec fields are still populated for one release, except spec.action,
+	// which is a notification with no patch and no snapshot (F7).
 	require.NotNil(t, stored.Spec.WorkloadRef)
-	assert.NotNil(t, stored.Spec.Action.PrePatchState)
+	assert.Nil(t, stored.Spec.Action.PrePatchState)
+	assert.NotNil(t, stored.Spec.Steps[0].PrePatchState)
 }
 
 func TestProposer_VerificationAndRollbackAreTheOperatorsNotThePlans(t *testing.T) {

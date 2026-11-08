@@ -27,6 +27,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -48,7 +49,12 @@ func testDeployment() *appsv1.Deployment {
 			Selector: &metav1.LabelSelector{MatchLabels: labels},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
-				Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "app"}}},
+				Spec: corev1.PodSpec{Containers: []corev1.Container{{
+					Name: "app",
+					Resources: corev1.ResourceRequirements{Limits: corev1.ResourceList{
+						corev1.ResourceMemory: resource.MustParse("256Mi"),
+					}},
+				}}},
 			},
 		},
 	}
@@ -69,6 +75,8 @@ func newTestExecutor(objs ...client.Object) *Executor {
 // the gate's ticket for a 256Mi -> 512Mi memory change. spec.action carries a
 // DIFFERENT value on purpose: the executor applies the ticket, never the spec.
 func baseRemediationAction() *dorguv1.RemediationAction {
+	issued := metav1.NewTime(time.Now())
+	approvedAt := metav1.NewTime(time.Now().Add(-time.Second))
 	return &dorguv1.RemediationAction{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-action",
@@ -92,19 +100,44 @@ func baseRemediationAction() *dorguv1.RemediationAction {
 				PrePatchState: &apiextensionsv1.JSON{Raw: []byte(`{"spec":{"resources":{"limits":{"memory":"256Mi"}}}}`)},
 			},
 			Explanation: "Increase memory limit from 256Mi to 512Mi",
+			Steps: []dorguv1.RemediationStep{{
+				Order: 1, ID: "step-1", Type: dorguv1.StepTypePersonaUpdate, AutoExecutable: true,
+				Patch: &apiextensionsv1.JSON{Raw: []byte(`{"spec":{"resources":{"limits":{"memory":"512Mi"}}}}`)},
+			}},
 		},
 		Status: dorguv1.RemediationActionStatus{
-			Phase: phaseTicketed,
+			Phase:      phaseTicketed,
+			ApprovedAt: &approvedAt,
+			// What the operator wrote on the way here: the Proposed condition at the
+			// spec generation, status.gate as the approval re-check that cleared, and
+			// the ticket the gate derives from steps[].
+			Conditions: []metav1.Condition{{
+				Type: dorguv1.ConditionProposed, Status: metav1.ConditionTrue, Reason: dorguv1.ReasonGateCleared,
+			}},
+			Gate: &dorguv1.GateStatus{
+				Phase: string(gate.PhaseApprovalRecheck), Result: string(gate.ResultPass), EvaluatedAt: issued,
+				Observed:      &dorguv1.GateObserved{WorkloadUID: "uid-1", ObservedAt: &issued},
+				PrePatchState: &apiextensionsv1.JSON{Raw: []byte(`{"spec":{"resources":{"limits":{"memory":"256Mi"}}}}`)},
+			},
 			ApplyTicket: &dorguv1.ApplyTicket{
 				WorkloadUID:             "uid-1",
 				Container:               "app",
 				Patch:                   &apiextensionsv1.JSON{Raw: []byte(`{"spec":{"resources":{"limits":{"memory":"512Mi"}}}}`)},
 				ObservedResourceVersion: "42",
-				ExpiresAt:               metav1.NewTime(time.Now().Add(5 * time.Minute)),
+				IssuedAt:                &issued,
+				ExpiresAt:               metav1.NewTime(issued.Add(5 * time.Minute)),
 			},
 		},
 	}
 }
+
+// What the executor fixtures' ticket changes memory to, and the cpu limit nothing
+// touches.
+const (
+	ticketMemory  = "512Mi"
+	personaMemory = "256Mi"
+	personaCPU    = "250m"
+)
 
 func baseApplicationPersona() *dorguv1.ApplicationPersona {
 	return &dorguv1.ApplicationPersona{
@@ -142,12 +175,12 @@ func TestExecutor_Apply_ValidPatch(t *testing.T) {
 		t.Fatalf("failed to get updated persona: %v", err)
 	}
 
-	if updated.Spec.Resources.Limits.Memory != "512Mi" {
+	if updated.Spec.Resources.Limits.Memory != ticketMemory {
 		t.Errorf("expected memory=512Mi, got %s", updated.Spec.Resources.Limits.Memory)
 	}
 
 	// CPU should remain unchanged.
-	if updated.Spec.Resources.Limits.CPU != "250m" {
+	if updated.Spec.Resources.Limits.CPU != personaCPU {
 		t.Errorf("expected cpu=250m, got %s", updated.Spec.Resources.Limits.CPU)
 	}
 }
@@ -166,7 +199,7 @@ func TestExecutor_Apply_AppliesTheTicketNotTheSpecAction(t *testing.T) {
 	if err := executor.client.Get(context.Background(), client.ObjectKeyFromObject(persona), &updated); err != nil {
 		t.Fatalf("failed to get updated persona: %v", err)
 	}
-	if updated.Spec.Resources.Limits.Memory != "512Mi" {
+	if updated.Spec.Resources.Limits.Memory != ticketMemory {
 		t.Errorf("expected the ticket's 512Mi, got %s", updated.Spec.Resources.Limits.Memory)
 	}
 }
@@ -235,7 +268,7 @@ func TestExecutor_Apply_RefusesWithoutAValidTicket(t *testing.T) {
 			if getErr := executor.client.Get(context.Background(), client.ObjectKeyFromObject(persona), &untouched); getErr != nil {
 				t.Fatal(getErr)
 			}
-			if untouched.Spec.Resources.Limits.Memory != "256Mi" {
+			if untouched.Spec.Resources.Limits.Memory != personaMemory {
 				t.Errorf("a refused apply wrote to the persona: %s", untouched.Spec.Resources.Limits.Memory)
 			}
 		})
@@ -273,6 +306,8 @@ func TestExecutor_Apply_AnUnreadableWorkloadIsARefusalNotAPass(t *testing.T) {
 	}
 }
 
+// A persona that is gone is the gate's refusal at apply (the re-run finds no
+// persona to land the change on), not a failure half way through.
 func TestExecutor_Apply_MissingPersona(t *testing.T) {
 	action := baseRemediationAction()
 
@@ -280,12 +315,12 @@ func TestExecutor_Apply_MissingPersona(t *testing.T) {
 	executor := newTestExecutor()
 
 	err := executor.Apply(context.Background(), action)
-	if err == nil {
-		t.Fatal("expected error for missing persona")
+	var precondition *PreconditionError
+	if !errors.As(err, &precondition) {
+		t.Fatalf("expected a PreconditionError for a missing persona, got %v", err)
 	}
-
-	if want := "getting target persona"; !containsStr(err.Error(), want) {
-		t.Errorf("expected error containing %q, got: %v", want, err)
+	if precondition.Guardrail != gate.GuardrailPersona {
+		t.Errorf("guardrail = %q, want %q", precondition.Guardrail, gate.GuardrailPersona)
 	}
 }
 

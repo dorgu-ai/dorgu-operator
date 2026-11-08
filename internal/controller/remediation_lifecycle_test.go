@@ -141,15 +141,24 @@ func lcRecordProposal(ra *dorguv1.RemediationAction) {
 		ObservedGeneration: ra.Generation, LastTransitionTime: now,
 	})
 
+	if ra.Status.Phase == RemediationPhaseApproved {
+		approved := metav1.NewTime(time.Now().Add(-time.Second))
+		ra.Status.ApprovedAt = &approved
+	}
+
 	switch ra.Status.Phase {
 	case RemediationPhaseTicketed, RemediationPhaseApplying, RemediationPhaseVerifying, RemediationPhaseCompleted, RemediationPhaseRolledBack:
 		ra.Status.Gate.Phase = string(gate.PhaseApprovalRecheck)
+		approved := metav1.NewTime(time.Now().Add(-time.Second))
+		ra.Status.ApprovedAt = &approved
 		ra.Status.Gate.PrePatchState = &apiextensionsv1.JSON{Raw: []byte(`{"spec":{"resources":{"limits":{"memory":"256Mi"}}}}`)}
+		ra.Status.Gate.Observed.LiveValues = &dorguv1.ObservedResources{Limits: &dorguv1.ResourceValues{Memory: lcBaseline}}
 		ra.Status.ApplyTicket = &dorguv1.ApplyTicket{
 			WorkloadUID: lcDeploymentUID, Container: lcPersona,
 			Patch:                   &apiextensionsv1.JSON{Raw: []byte(`{"spec":{"resources":{"limits":{"memory":"512Mi"}}}}`)},
 			ObservedResourceVersion: lcDeploymentRV,
-			ExpiresAt:               metav1.NewTime(time.Now().Add(gate.TicketTTL)),
+			IssuedAt:                &now,
+			ExpiresAt:               metav1.NewTime(now.Add(gate.TicketTTL)),
 		}
 		applied := metav1.NewTime(time.Now().Add(-11 * time.Minute))
 		if ra.Status.Phase != RemediationPhaseTicketed {
@@ -382,21 +391,11 @@ func lcDeployment(liveMemory string) *appsv1.Deployment {
 	}
 }
 
-func lcGrounded(ra *dorguv1.RemediationAction) {
-	ra.Spec.WorkloadRef = &dorguv1.WorkloadRef{
-		Kind: "Deployment", Name: lcPersona, Namespace: lcNamespace, Container: lcPersona,
-		ManagedBy: dorguv1.ManagedByUnmanaged,
-		ObservedResources: &dorguv1.ObservedResources{
-			Limits: &dorguv1.ResourceValues{Memory: lcBaseline},
-		},
-	}
-}
-
 func TestRollback_DivergedWorkloadIsRecordedAsPartial(t *testing.T) {
 	// Degraded: the signal is still firing. The CLI had put 512Mi on the
 	// Deployment; the operator can restore the persona but not the workload.
 	rc, c := lcController(t,
-		[]client.Object{lcPersonaObj(lcApplied), lcIncidentObj(), lcDeployment(lcApplied), lcRA("Verifying", lcGrounded)},
+		[]client.Object{lcPersonaObj(lcApplied), lcIncidentObj(), lcDeployment(lcApplied), lcRA("Verifying")},
 		lcOOMSignal())
 
 	_, got := lcReconcile(t, rc, lcRA("Verifying"))
@@ -421,7 +420,7 @@ func TestRollback_DivergedWorkloadIsRecordedAsPartial(t *testing.T) {
 
 func TestRollback_RestoredWorkloadIsRecordedAsRollback(t *testing.T) {
 	rc, c := lcController(t,
-		[]client.Object{lcPersonaObj(lcApplied), lcIncidentObj(), lcDeployment(lcBaseline), lcRA("Verifying", lcGrounded)},
+		[]client.Object{lcPersonaObj(lcApplied), lcIncidentObj(), lcDeployment(lcBaseline), lcRA("Verifying")},
 		lcOOMSignal())
 
 	_, got := lcReconcile(t, rc, lcRA("Verifying"))

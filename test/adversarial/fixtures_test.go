@@ -256,6 +256,7 @@ func proposeAsOperator(t *testing.T, ra *dorguv1.RemediationAction) {
 		Target: ra.Spec.PersonaRef, Namespace: ra.Namespace, Name: ra.Name,
 		Source: ra.Spec.PlanSource, IncidentRef: ra.Spec.IncidentRef,
 		Steps: ra.Spec.Steps, Final: true,
+		Facts: gate.Facts{SuggestedAction: gate.ClassResourceAdjustment},
 	}, gate.PhaseProposal)
 	if err != nil {
 		t.Fatalf("running the proposal gate on %s: %v", ra.Name, err)

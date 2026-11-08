@@ -354,8 +354,8 @@ func healthyController(t *testing.T, ra *dorguv1.RemediationAction, objs ...clie
 }
 
 func TestVerifyingHealthy_CleanWhenTheWorkloadMatchesTheTicket(t *testing.T) {
-	ra := lcRA("Verifying")
-	rc, c := healthyController(t, ra)
+	ra := lcRA("Verifying", lcPatchedByTheCLI)
+	rc, c := healthyController(t, ra, lcDeploymentAtGeneration(2))
 
 	_, got := lcReconcile(t, rc, ra)
 
@@ -426,8 +426,8 @@ func TestVerifyingHealthy_PartialWhenSomeoneElseEditedTheWorkload(t *testing.T) 
 }
 
 func TestVerifyingHealthy_TheCLIsOwnPatchIsNotDivergence(t *testing.T) {
-	ra := lcRA("Verifying")
-	dep := lcDeployment(lcApplied)
+	ra := lcRA("Verifying", lcPatchedByTheCLI)
+	dep := lcDeploymentAtGeneration(2)
 	dep.ResourceVersion = "9" // the CLI's patch moved it
 	rc, c := healthyController(t, ra, dep)
 	patched := interceptor.NewClient(c, interceptor.Funcs{
@@ -543,5 +543,167 @@ func TestStatusGateRefusalReasonsAreConditionSafe(t *testing.T) {
 		if reason == "" || strings.ContainsAny(reason, "- _") || reason[0] < 'A' || reason[0] > 'Z' {
 			t.Errorf("ReasonEnum(%q) = %q is not a CamelCase condition reason", guardrail, reason)
 		}
+	}
+}
+
+// --- B5 fix round (F1, F4, F10) -----------------------------------------------
+
+// lcPatchedByTheCLI is what a heal leaves behind: the CLI's WorkloadPatched
+// condition on the action, and a Deployment whose generation moved past the
+// ticket's observed one.
+func lcPatchedByTheCLI(ra *dorguv1.RemediationAction) {
+	ra.Status.ApplyTicket.ObservedGeneration = 1
+	ra.Status.Conditions = append(ra.Status.Conditions, metav1.Condition{
+		Type: "WorkloadPatched", Status: metav1.ConditionTrue, Reason: "CLIAppliedResourceChange",
+		Message: "dorgu CLI applied resources.limits.memory=512Mi", LastTransitionTime: metav1.Now(),
+	})
+}
+
+func lcDeploymentAtGeneration(generation int64) *appsv1.Deployment {
+	dep := lcDeployment(lcApplied)
+	dep.Generation = generation
+	return dep
+}
+
+func TestF1_ATicketOnAnActionNobodyApprovedIsRefusedWithAReasonEnum(t *testing.T) {
+	ra := lcRA("Ticketed", func(ra *dorguv1.RemediationAction) { ra.Status.ApprovedAt = nil })
+	rc, c := lcController(t, []client.Object{lcPersonaObj(lcBaseline), lcIncidentObj(), ra.DeepCopy()})
+
+	_, got := lcReconcile(t, rc, ra)
+
+	if got.Status.Phase != RemediationPhaseFailed {
+		t.Fatalf("phase = %q, want Failed", got.Status.Phase)
+	}
+	refused := lcCondition(got, dorguv1.ConditionGateRefused)
+	if refused == nil || refused.Status != metav1.ConditionTrue || refused.Reason != gate.ReasonEnum(gate.GuardrailNotApproved) {
+		t.Fatalf("GateRefused = %+v, want True with reason %s", refused, gate.ReasonEnum(gate.GuardrailNotApproved))
+	}
+	applied := lcCondition(got, ConditionApplied)
+	if applied == nil || applied.Reason != dorguv1.ReasonPreconditionRejected {
+		t.Errorf("Applied = %+v, want PreconditionRejected (nothing applied, no cooldown)", applied)
+	}
+	if mem := lcPersonaMemory(t, c); mem != lcBaseline {
+		t.Errorf("persona memory = %s: a forged ticket was applied", mem)
+	}
+}
+
+func TestF1_AForgedTicketPatchOnAnApprovedActionIsNotApplied(t *testing.T) {
+	// The action was properly proposed and approved, then a status writer replaced
+	// the ticket's patch with 999Gi and a century of validity.
+	ra := lcRA("Ticketed", func(ra *dorguv1.RemediationAction) {
+		ra.Status.ApplyTicket.Patch = &apiextensionsv1.JSON{Raw: []byte(`{"spec":{"resources":{"limits":{"memory":"999Gi"}}}}`)}
+		ra.Status.ApplyTicket.ExpiresAt = metav1.NewTime(time.Now().Add(100 * 365 * 24 * time.Hour))
+	})
+	rc, c := lcController(t, []client.Object{lcPersonaObj(lcBaseline), lcIncidentObj(), ra.DeepCopy()})
+
+	_, got := lcReconcile(t, rc, ra)
+
+	if got.Status.Phase != RemediationPhaseFailed {
+		t.Fatalf("phase = %q, want Failed", got.Status.Phase)
+	}
+	if mem := lcPersonaMemory(t, c); mem != lcBaseline {
+		t.Errorf("persona memory = %s: the forged patch was applied", mem)
+	}
+}
+
+func TestF3_ApplyAtTheControllerRefusesAnObserveModeFlippedAfterApproval(t *testing.T) {
+	ra := lcRA("Ticketed")
+	observe := &dorguv1.ClusterPersona{
+		ObjectMeta: metav1.ObjectMeta{Name: "cluster"},
+		Spec: dorguv1.ClusterPersonaSpec{Name: "cluster", Policies: &dorguv1.ClusterPolicies{
+			SelfHealing: &dorguv1.SelfHealingPolicy{Mode: dorguv1.SelfHealingModeObserve},
+		}},
+	}
+	rc, c := lcController(t, []client.Object{lcPersonaObj(lcBaseline), lcIncidentObj(), observe, ra.DeepCopy()})
+
+	_, got := lcReconcile(t, rc, ra)
+
+	if got.Status.Phase != RemediationPhaseFailed {
+		t.Fatalf("phase = %q, want Failed", got.Status.Phase)
+	}
+	if refused := lcCondition(got, dorguv1.ConditionGateRefused); refused == nil || refused.Reason != gate.ReasonEnum(gate.GuardrailSelfHealingMode) {
+		t.Errorf("GateRefused = %+v", refused)
+	}
+	if mem := lcPersonaMemory(t, c); mem != lcBaseline {
+		t.Errorf("persona memory = %s", mem)
+	}
+}
+
+func TestF4_ARollbackLeavesAHumansEditAndSaysSo(t *testing.T) {
+	ra := lcRA("Verifying")
+	// Dorgu wrote 512Mi; somebody then set the persona to 2Gi. The signal is still
+	// there, so verification degrades and the change is rolled back.
+	rc, c := lcController(t, []client.Object{lcPersonaObj("2Gi"), lcIncidentObj(), ra.DeepCopy()}, lcOOMSignal())
+
+	_, got := lcReconcile(t, rc, ra)
+
+	if got.Status.Phase != RemediationPhaseRolledBack {
+		t.Fatalf("phase = %q, want RolledBack", got.Status.Phase)
+	}
+	if mem := lcPersonaMemory(t, c); mem != "2Gi" {
+		t.Errorf("persona memory = %s: the rollback overwrote a human's edit", mem)
+	}
+	if out := lcIncidentOutcome(t, c); out != IncidentOutcomePartial {
+		t.Errorf("incident outcome = %q, want partial", out)
+	}
+	cond := lcCondition(got, ConditionPersonaEdited)
+	if cond == nil || cond.Status != metav1.ConditionTrue || cond.Reason != gate.ReasonRollbackHumanEdited ||
+		!strings.Contains(cond.Message, "spec.resources.limits.memory") {
+		t.Errorf("%s = %+v, want True / HumanEdited naming the field", ConditionPersonaEdited, cond)
+	}
+}
+
+func TestF10_NothingPatchedAndTheIncidentResolvesIsSelfResolved(t *testing.T) {
+	ra := lcRA("Verifying") // no WorkloadPatched: --no-heal, or a declined prompt
+	rc, c := healthyController(t, ra)
+
+	_, got := lcReconcile(t, rc, ra)
+
+	if got.Status.Phase != RemediationPhaseCompleted {
+		t.Fatalf("phase = %q, want Completed", got.Status.Phase)
+	}
+	if out := lcIncidentOutcome(t, c); out != IncidentOutcomeSelfResolved {
+		t.Errorf("incident outcome = %q, want %s: nothing was patched, so Dorgu did not heal it", out, IncidentOutcomeSelfResolved)
+	}
+	cond := lcCondition(got, ConditionHealCredited)
+	if cond == nil || cond.Status != metav1.ConditionFalse || cond.Reason != ReasonNothingPatched {
+		t.Errorf("%s = %+v, want False / %s", ConditionHealCredited, cond, ReasonNothingPatched)
+	}
+	var im dorguv1.IncidentMemory
+	if err := c.Get(context.Background(), client.ObjectKey{Name: lcIncident, Namespace: lcNamespace}, &im); err != nil {
+		t.Fatal(err)
+	}
+	if im.Status.Phase != PhaseResolved {
+		t.Errorf("incident phase = %q: a self-resolved incident is still resolved", im.Status.Phase)
+	}
+}
+
+func TestF10_AWorkloadThePatchedByTheCLIIsADorguHeal(t *testing.T) {
+	ra := lcRA("Verifying", lcPatchedByTheCLI)
+	rc, c := healthyController(t, ra, lcDeploymentAtGeneration(2))
+
+	_, got := lcReconcile(t, rc, ra)
+
+	if out := lcIncidentOutcome(t, c); out != IncidentOutcomeResolved {
+		t.Errorf("incident outcome = %q, want resolved", out)
+	}
+	if cond := lcCondition(got, ConditionHealCredited); cond == nil || cond.Status != metav1.ConditionTrue {
+		t.Errorf("%s = %+v, want True", ConditionHealCredited, cond)
+	}
+}
+
+func TestF10_APatchedClaimWithAnUnchangedGenerationIsNotCredited(t *testing.T) {
+	// The CLI recorded a patch, but the Deployment's spec never moved: the patch
+	// changed nothing (an unchanged workload), so the recovery was not Dorgu's.
+	ra := lcRA("Verifying", lcPatchedByTheCLI)
+	rc, c := healthyController(t, ra, lcDeploymentAtGeneration(1))
+
+	_, got := lcReconcile(t, rc, ra)
+
+	if out := lcIncidentOutcome(t, c); out != IncidentOutcomeSelfResolved {
+		t.Errorf("incident outcome = %q, want %s", out, IncidentOutcomeSelfResolved)
+	}
+	if cond := lcCondition(got, ConditionHealCredited); cond == nil || cond.Status != metav1.ConditionFalse {
+		t.Errorf("%s = %+v, want False", ConditionHealCredited, cond)
 	}
 }

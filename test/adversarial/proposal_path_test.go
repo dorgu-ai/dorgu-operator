@@ -448,6 +448,7 @@ func gateRun(t *testing.T, g *gate.Gate, ra *dorguv1.RemediationAction) *gate.De
 		IncidentRef: ra.Spec.IncidentRef,
 		Steps:       ra.Spec.Steps,
 		Action:      ra.Spec.Action,
+		Facts:       gate.Facts{SuggestedAction: gate.ClassResourceAdjustment},
 	}, gate.PhaseProposal)
 	if err != nil {
 		t.Fatalf("running the gate for %s/%s: %v", ra.Namespace, ra.Name, err)
