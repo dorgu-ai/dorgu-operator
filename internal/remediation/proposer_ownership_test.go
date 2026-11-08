@@ -75,7 +75,7 @@ func memoryFixPlan() *planner.RemediationPlan {
 				Description: "Raise the memory limit on the Deployment to 64Mi",
 				Rationale:   "the pod needs headroom",
 				Risk:        "medium",
-				Command:     "kubectl patch deployment my-app -n default --type=json -p []",
+				Command:     "kubectl set resources deployment my-app -n default --limits=memory=128Mi",
 			},
 			{
 				Order:       3,
@@ -129,7 +129,7 @@ func TestProposer_NoWorkloadWriteCommandForOwnedWorkload(t *testing.T) {
 			require.Equal(t, owner, action.Spec.WorkloadRef.ManagedBy)
 
 			for _, step := range action.Spec.Steps {
-				assert.NotContains(t, step.Command, "kubectl patch",
+				assert.NotContains(t, step.Command, "kubectl set resources",
 					"step %d still hands over a workload patch", step.Order)
 				assert.False(t, gate.WritesWorkload(step.Command),
 					"step %d command writes to an owned workload: %q", step.Order, step.Command)
@@ -148,7 +148,7 @@ func TestProposer_NoWorkloadWriteCommandForOwnedWorkload(t *testing.T) {
 func TestProposer_UnmanagedKeepsTheDirectCommand(t *testing.T) {
 	action := proposeAgainst(t, dorguv1.ManagedByUnmanaged)
 	require.Equal(t, dorguv1.ManagedByUnmanaged, action.Spec.WorkloadRef.ManagedBy)
-	assert.Equal(t, "kubectl patch deployment my-app -n default --type=json -p []",
+	assert.Equal(t, "kubectl set resources deployment my-app -n default --limits=memory=128Mi",
 		action.Spec.Steps[1].Command)
 }
 
@@ -165,7 +165,7 @@ func TestProposer_PlanTextDiffersByOwner(t *testing.T) {
 			owner:       dorguv1.ManagedByHelm,
 			wantInStep:  []string{"resources.limits.memory: 64Mi", `Helm release "frontend"`, "helm upgrade"},
 			wantInWhy:   "field-manager conflict",
-			wantMissing: "kubectl patch",
+			wantMissing: "kubectl set resources",
 		},
 		{
 			owner:       dorguv1.ManagedByArgoCD,
@@ -444,7 +444,7 @@ func TestProposer_OwnerInstructionQuotesThePermittedValue(t *testing.T) {
 				Patch: json.RawMessage(`{"spec":{"resources":{"limits":{"memory":"128Mi"}}}}`)},
 			{Order: 2, Type: "workload-apply", Description: "Raise the memory limit to 128Mi",
 				Rationale: "the pod cannot start", Risk: "medium",
-				Command: "kubectl patch deployment my-app -n default --type=merge -p {}"},
+				Command: "kubectl set resources deployment my-app -n default --limits=memory=128Mi"},
 		},
 	}
 

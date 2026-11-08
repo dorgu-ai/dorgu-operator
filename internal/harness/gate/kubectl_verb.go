@@ -102,7 +102,7 @@ func WritesWorkload(command string) bool {
 // after it.
 func isKubectlInvocation(command string) bool {
 	fields := strings.Fields(command)
-	return len(fields) >= 2 && fields[0] == "kubectl"
+	return len(fields) >= 2 && fields[0] == kubectlBinary
 }
 
 // Global kubectl flags, split by whether they consume the token after them.
@@ -189,7 +189,7 @@ func readsOnly(command string) bool {
 // value-taking flag with nothing after it, or no verb at all.
 func kubectlVerb(command string) (verb string, arguments []string, found bool) {
 	fields := strings.Fields(command)
-	if len(fields) < 2 || fields[0] != "kubectl" {
+	if len(fields) < 2 || fields[0] != kubectlBinary {
 		return "", nil, false
 	}
 
@@ -241,4 +241,76 @@ func subcommandReadsOnly(arguments []string, readOnlySubcommands map[string]bool
 		return false
 	}
 	return readOnlySubcommands[arguments[0]]
+}
+
+// kubectlBinary is the one program name a suggested command may start with.
+const kubectlBinary = "kubectl"
+
+// maxCommandLength bounds a suggested command. Nothing a single kubectl
+// invocation needs comes near it.
+const maxCommandLength = 1024
+
+// plainCommandByte reports whether a byte may appear in a plain kubectl command:
+// letters, digits, a single space, and the punctuation resource names, flags and
+// selectors use. Quotes, $, `, ;, &, |, <, >, (, ), \, *, ?, ~, #, newlines and
+// every non-ASCII byte are not in it: each is how one command becomes two, or one
+// command becomes something other than what it reads as.
+func plainCommandByte(c byte) bool {
+	switch {
+	case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		return true
+	}
+	switch c {
+	case ' ', '-', '_', '.', '/', '=', ':', ',', '@', '+':
+		return true
+	}
+	return false
+}
+
+// deniedGlobalFlags redirect kubectl to another cluster, server or identity. A
+// command a plan suggests is for the cluster the reader is already pointed at;
+// naming another is not a step of this remediation.
+var deniedGlobalFlags = map[string]bool{
+	"-s": true, "--server": true,
+	"--kubeconfig": true, "--context": true, "--cluster": true, "--user": true,
+	"--token": true, "--username": true, "--password": true,
+	"--as": true, "--as-group": true, "--as-uid": true,
+	"--certificate-authority": true, "--client-certificate": true, "--client-key": true,
+	"--insecure-skip-tls-verify": true, "--tls-server-name": true,
+}
+
+// IsPlainKubectlCommand reports whether command is one plain kubectl invocation:
+// the single word kubectl, then arguments, on one line, made only of the
+// characters a resource name, a flag or a selector needs, with single spaces and
+// no flag that points kubectl somewhere else.
+//
+// It is a shape check, not a classification: a plain command may still write (the
+// Ownership stage decides whether a writing command may stay on this workload).
+// What it rules out is everything WritesWorkload cannot see: a wrapper (sudo, an
+// absolute path, env assignments), a second command (&&, ;, |, a newline), a
+// substitution ($(), backticks), a redirect, another program (helm), and a flag
+// that retargets the cluster.
+func IsPlainKubectlCommand(command string) bool {
+	if command == "" || len(command) > maxCommandLength {
+		return false
+	}
+	for i := 0; i < len(command); i++ {
+		if !plainCommandByte(command[i]) {
+			return false
+		}
+	}
+	fields := strings.Split(command, " ")
+	if len(fields) < 2 || fields[0] != kubectlBinary {
+		return false
+	}
+	for _, token := range fields[1:] {
+		if token == "" {
+			return false // a doubled, leading or trailing space
+		}
+		name, _, _ := strings.Cut(token, "=")
+		if deniedGlobalFlags[name] {
+			return false
+		}
+	}
+	return true
 }

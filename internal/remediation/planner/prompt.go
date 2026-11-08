@@ -111,7 +111,10 @@ Rules you MUST follow:
    value from the Live workload section (e.g. "kubectl set image
    deployment/web web=nginx:1.27-alpine -n demo"). A reader should be able to
    paste it and be done. Constraints: a single line, starting with "kubectl ",
-   and containing none of ; & | < > $ or backticks. If no single command does
+   made only of letters, digits, single spaces and - _ . / = : , @ + (no
+   quotes, braces, ; & | < > $ or backticks), and never naming another cluster
+   or identity (--kubeconfig, --context, --server, --token, --as). The harness
+   refuses a plan whose command breaks this. If no single command does
    the job, the workload is owned, or you would have to guess at a name, omit
    "command" and say what to do in the description instead. Never guess.
 5. Respect the cluster's self-healing policy and trust level. Size resource
@@ -181,7 +184,7 @@ func planToolSchema() map[string]any {
 						},
 						"command": map[string]any{
 							"type":        "string",
-							"description": "For advisory steps only: one ready-to-run kubectl command that carries out this step, fully resolved with real names, e.g. \"kubectl set image deployment/web web=nginx:1.27-alpine -n demo\". Single line, must start with \"kubectl \", must not contain ; & | < > $ or backticks. Omit when no single command does the job or a name would have to be guessed.",
+							"description": "For advisory steps only: one ready-to-run kubectl command that carries out this step, fully resolved with real names, e.g. \"kubectl set image deployment/web web=nginx:1.27-alpine -n demo\". Single line, must start with \"kubectl \", only letters, digits, single spaces and - _ . / = : , @ + (no quotes or braces), no --kubeconfig, --context, --server, --token or --as. Omit when no single command does the job or a name would have to be guessed.",
 						},
 					},
 					"required": []string{"order", "type", "description", "rationale", "risk"},

@@ -18,8 +18,10 @@ package gate
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"slices"
+	"strings"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -53,6 +55,12 @@ func (validateStage) Run(_ context.Context, cand *Candidate, d *Decision) error 
 	}
 
 	if !validateStepTypes(cand, d) {
+		return nil
+	}
+
+	// Shape before content: a command or patch the gate cannot parse with
+	// certainty is refused, not interpreted (R9, R10).
+	if !validateStepCommands(d) || !validatePatchShapes(d) {
 		return nil
 	}
 
@@ -270,4 +278,80 @@ func boundVerification(cand *Candidate, d *Decision) {
 	d.clamp(StageValidate, GuardrailVerifyBounds,
 		"verification and rollback are operator-owned: the plan's own healthCheckAfter and rollback settings were ignored",
 		numbers)
+}
+
+// validateStepCommands refuses a plan whose step carries a command that is not one
+// plain kubectl invocation (R9). The gate checks this itself: it does not rely on
+// the planner's sanitizer having run, because the model's text is not trusted to
+// have been cleaned by the code that happens to precede the gate. It reports
+// whether the plan may continue.
+func validateStepCommands(d *Decision) bool {
+	for i := range d.Steps {
+		step := &d.Steps[i]
+		if step.Command == "" || IsPlainKubectlCommand(step.Command) {
+			continue
+		}
+		// The command is model-supplied and may be hostile, so it is not echoed.
+		d.refuse(StageValidate, GuardrailStepCommand,
+			fmt.Sprintf("step %d carries a command that is not a single plain kubectl invocation", step.Order),
+			map[string]string{"step": fmt.Sprint(step.Order)})
+		return false
+	}
+	return true
+}
+
+// validatePatchShapes refuses a persona patch that is not a JSON object, or that
+// has a key containing a dot (R10). Leaf paths are dot-joined, so a key
+// "limits.memory" is indistinguishable from the nested path limits -> memory:
+// it was reported as removed while staying in the patch, or collided with a real
+// path. Both ends of that are refused rather than interpreted. It reports whether
+// the plan may continue.
+func validatePatchShapes(d *Decision) bool {
+	for i := range d.Steps {
+		step := &d.Steps[i]
+		if step.Type != dorguv1.StepTypePersonaUpdate || step.Patch == nil || len(step.Patch.Raw) == 0 {
+			continue
+		}
+		if reason := patchShapeProblem(step.Patch.Raw); reason != "" {
+			d.refuse(StageValidate, GuardrailPatchShape,
+				fmt.Sprintf("step %d: the persona patch %s", step.Order, reason),
+				map[string]string{"step": fmt.Sprint(step.Order)})
+			return false
+		}
+	}
+	if d.Action.Type == dorguv1.ActionTypePersonaUpdate && d.Action.Patch != nil && len(d.Action.Patch.Raw) > 0 {
+		if reason := patchShapeProblem(d.Action.Patch.Raw); reason != "" {
+			d.refuse(StageValidate, GuardrailPatchShape, "the persona patch "+reason, nil)
+			return false
+		}
+	}
+	return true
+}
+
+// patchShapeProblem says what is wrong with the shape of a merge patch, or "".
+func patchShapeProblem(raw []byte) string {
+	var root any
+	if err := json.Unmarshal(raw, &root); err != nil {
+		return "is not valid JSON"
+	}
+	object, ok := root.(map[string]any)
+	if !ok || len(object) == 0 {
+		return "is not a JSON object with content"
+	}
+	if hasDottedKey(object) {
+		return "has a key containing a dot, which cannot be told apart from a nested path"
+	}
+	return ""
+}
+
+func hasDottedKey(node map[string]any) bool {
+	for key, value := range node {
+		if strings.Contains(key, ".") {
+			return true
+		}
+		if child, ok := value.(map[string]any); ok && hasDottedKey(child) {
+			return true
+		}
+	}
+	return false
 }
