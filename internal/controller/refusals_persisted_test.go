@@ -573,16 +573,115 @@ func TestB6Fix_AConflictedStatusWriteDoesNotCountTheVerificationTwice(t *testing
 }
 
 // lcControllerIntercepted is lcController over a client with interceptors.
-func lcControllerIntercepted(t *testing.T, objs []client.Object, funcs interceptor.Funcs) *RemediationController {
+func lcControllerIntercepted(t *testing.T, objs []client.Object, funcs interceptor.Funcs, signals ...detection.Signal) *RemediationController {
 	t.Helper()
 	base := fake.NewClientBuilder().WithScheme(lcScheme(t)).WithObjects(objs...).
 		WithStatusSubresource(&dorguv1.RemediationAction{}, &dorguv1.IncidentMemory{}, &dorguv1.ApplicationPersona{}).Build()
 	c := interceptor.NewClient(base, funcs)
 	log := logr.Discard()
-	engine := detection.NewEngine(log, &stubCollector{name: "lc"})
+	engine := detection.NewEngine(log, &stubCollector{name: "lc", signals: signals})
 	g := gate.New(c, log)
 	return &RemediationController{
 		Client: c, Gate: g, Executor: remediation.NewExecutor(c, g, log),
 		Verifier: remediation.NewVerifier(engine, c, log), Rollback: remediation.NewRollback(c, log), Logger: log,
 	}
+}
+
+// ---------------------------------------------------------------------------
+// B6 fix round 2 (re-review of #59).
+
+// A refusal that stood while the incident had no proposal is answered once a
+// proposal is outstanding: the incident must not keep saying it was refused.
+func TestB6R2_ADeferralClearsAStandingRefusal(t *testing.T) {
+	proposer := refusedProposal(gate.StageModePolicy, gate.GuardrailSelfHealingMode)
+	r, _, incident := handoffWithIncident(t, proposer)
+	diag, _ := handoffFixtures()
+	r.proposeRemediation(context.Background(), diag, incident)
+	require.Equal(t, metav1.ConditionTrue, incidentCondition(t, r, incident).Status)
+
+	proposer.result = &remediation.ProposalResult{
+		SkipReason: "active remediation already exists", Stage: remediation.StageDeferred, Reason: gate.GuardrailActiveAction,
+	}
+	r.proposeRemediation(context.Background(), diag, incident)
+
+	cond := incidentCondition(t, r, incident)
+	require.NotNil(t, cond)
+	assert.Equal(t, metav1.ConditionFalse, cond.Status, "a proposal is outstanding, so the earlier refusal is stale")
+}
+
+// A refusal that was true of an open incident does not outlive its healing.
+func TestB6R2_ResolvingAnIncidentClearsAStandingRefusal(t *testing.T) {
+	standing := func() *dorguv1.IncidentMemory {
+		im := lcIncidentObj()
+		im.Status.Conditions = []metav1.Condition{{
+			Type: dorguv1.ConditionProposalRefused, Status: metav1.ConditionTrue,
+			Reason: "ModePolicy_SelfHealingMode", LastTransitionTime: metav1.Now(),
+		}}
+		return im
+	}
+	reason := func(t *testing.T, c client.Client) (metav1.ConditionStatus, string) {
+		var im dorguv1.IncidentMemory
+		require.NoError(t, c.Get(context.Background(), client.ObjectKey{Name: lcIncident, Namespace: lcNamespace}, &im))
+		for _, cond := range im.Status.Conditions {
+			if cond.Type == dorguv1.ConditionProposalRefused {
+				return cond.Status, cond.Reason
+			}
+		}
+		t.Fatal("the condition vanished")
+		return "", ""
+	}
+
+	t.Run("healed by a Dorgu fix", func(t *testing.T) {
+		ra := lcRA("Verifying", lcPatchedByTheCLI)
+		rc, c := lcController(t, []client.Object{lcPersonaObj(lcApplied), standing(), ra.DeepCopy(), lcDeploymentAtGeneration(2)})
+		lcReconcile(t, rc, ra)
+		status, why := reason(t, c)
+		assert.Equal(t, metav1.ConditionFalse, status)
+		assert.Equal(t, dorguv1.ReasonIncidentResolved, why)
+	})
+
+	t.Run("cleared on its own by the health cycle", func(t *testing.T) {
+		im := openIncident("platform", "checkout", "im-platform-checkout-crash")
+		im.Status.Conditions = standing().Status.Conditions
+		r, c := resolverFor(t, im, deploymentFor("platform", "checkout", 0))
+		require.NoError(t, r.resolveCleared(context.Background(), map[string]bool{}))
+		var got dorguv1.IncidentMemory
+		require.NoError(t, c.Get(context.Background(), client.ObjectKeyFromObject(im), &got))
+		cond := findCondition(got.Status.Conditions, dorguv1.ConditionProposalRefused)
+		require.NotNil(t, cond)
+		assert.Equal(t, metav1.ConditionFalse, cond.Status)
+		assert.Equal(t, dorguv1.ReasonIncidentResolved, cond.Reason)
+	})
+}
+
+// N-2: the rollback is counted once its status write succeeded.
+func TestB6R2_AConflictedRolledBackWriteDoesNotCountTheRollbackTwice(t *testing.T) {
+	ra := lcRA("Verifying")
+	conflicts := 1
+	rc := lcControllerIntercepted(t, []client.Object{lcPersonaObj(lcApplied), lcIncidentObj(), ra.DeepCopy(), lcDeployment(lcBaseline)},
+		interceptor.Funcs{SubResourceUpdate: func(ctx context.Context, c client.Client, sub string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+			if _, ok := obj.(*dorguv1.RemediationAction); ok && conflicts > 0 {
+				conflicts--
+				return apierrors.NewConflict(schema.GroupResource{Group: "dorgu.io", Resource: "remediationactions"}, obj.GetName(), errors.New("raced"))
+			}
+			return c.SubResource(sub).Update(ctx, obj, opts...)
+		}},
+		lcOOMSignal())
+	// The second pass finds the persona already restored by the first, so the
+	// label depends on what it reads; both passes are summed across the labels.
+	total := func() float64 {
+		return metricValue(t, "dorgu_rollbacks_total", map[string]string{"workload_diverged": "false"}) +
+			metricValue(t, "dorgu_rollbacks_total", map[string]string{"workload_diverged": "true"}) +
+			metricValue(t, "dorgu_rollbacks_total", map[string]string{"workload_diverged": "unknown"})
+	}
+	before := total()
+	req := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(ra)}
+
+	_, err := rc.Reconcile(context.Background(), req)
+	require.NoError(t, err)
+	assert.Equal(t, before, total(), "the RolledBack write conflicted: not rolled back yet")
+
+	_, err = rc.Reconcile(context.Background(), req)
+	require.NoError(t, err)
+	assert.Equal(t, before+1, total(), "counted once, after the write that succeeded")
 }

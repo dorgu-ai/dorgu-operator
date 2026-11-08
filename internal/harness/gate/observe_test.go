@@ -255,8 +255,11 @@ func TestObserve_EveryRefusalSiteIsInTheCatalog(t *testing.T) {
 				if !ok {
 					return true
 				}
-				if sel.Sel.Name == "add" && base != "types.go" && mentionsRefuseVerdict(x) {
-					t.Errorf("%s: a refusal verdict is written with add(); use refuse() so it is in the catalog", base)
+				if sel.Sel.Name == "add" && base != "types.go" && len(x.Args) >= 4 {
+					// Decision.add takes (stage, guardrail, verdict, reason, numbers). The verdict
+					// may be a constant or a variable; either way it bypasses pass/clamp/refuse(),
+					// so a refusal written this way would not be in the catalog.
+					t.Errorf("%s: a verdict is written with add(); use pass(), clamp() or refuse() so a refusal is in the catalog", base)
 				}
 				if sel.Sel.Name != "refuse" || len(x.Args) < 2 || base == "types.go" {
 					return true
@@ -324,23 +327,6 @@ func TestObserve_EveryRefusalSiteIsInTheCatalog(t *testing.T) {
 		"a TicketProblem with a variable guardrail must be the declared re-derivation and nothing else")
 	assert.Greater(t, sites, 30, "the scan found suspiciously few refusal sites")
 	assert.Greater(t, ticketSites, 20, "the scan found suspiciously few ticket problem sites")
-}
-
-// mentionsRefuseVerdict reports whether any argument is GateVerdictRefuse.
-func mentionsRefuseVerdict(call *ast.CallExpr) bool {
-	found := false
-	for _, arg := range call.Args {
-		ast.Inspect(arg, func(n ast.Node) bool {
-			switch x := n.(type) {
-			case *ast.Ident:
-				found = found || x.Name == "GateVerdictRefuse"
-			case *ast.SelectorExpr:
-				found = found || x.Sel.Name == "GateVerdictRefuse"
-			}
-			return true
-		})
-	}
-	return found
 }
 
 // --- helpers for the audit ---------------------------------------------------
@@ -490,4 +476,56 @@ func TestObserve_AnAdvisoryApprovalIsStillAllowedAndCarriesNoTicket(t *testing.T
 	sealApproval(&advisory, d)
 
 	assert.True(t, d.Allowed(), "a plan that asked for no change has nothing to ticket and nothing wrong")
+}
+
+// N-4: Gate.Run, not just sealApproval, seals an approval. A candidate that asks
+// for a change through a legacy action (no steps) has no persona patch to ticket;
+// the run itself must come back refused, with no-plan, and be counted once as such.
+// Removing the sealApproval call from Run fails this.
+func TestObserve_RunRefusesAnApprovalThatCannotBeTicketed(t *testing.T) {
+	refused := func() float64 { return decisions(t, "ApprovalRecheck", StageGuardrails, "refuse", GuardrailNoPlan) }
+	passed := func() float64 { return decisions(t, "ApprovalRecheck", StageComplete, "pass", ReasonNone) }
+	before, passedBefore := refused(), passed()
+
+	d := run(t, standardGate(t), legacyCandidate(memPatch("384Mi")), PhaseApprovalRecheck)
+
+	assert.Equal(t, ResultRefuse, d.Result, "an approval that cannot be ticketed is not cleared")
+	_, guardrail := d.RefusedBy()
+	assert.Equal(t, GuardrailNoPlan, guardrail)
+	assert.Equal(t, before+1, refused())
+	assert.Equal(t, passedBefore, passed(), "and it is not also counted as a pass")
+}
+
+// N-1: at proposal, a concurrent in-flight sibling that answers THIS incident is a
+// deferral; one that belongs to another incident and changes another field stays
+// a refusal.
+func TestObserve_AnInFlightSiblingOfTheSameIncidentIsDeferredNotConcurrent(t *testing.T) {
+	for _, phase := range []string{"Approved", "Ticketed", "Applying", "Verifying"} {
+		t.Run(phase, func(t *testing.T) {
+			own := sibling("own", phase, func(ra *dorguv1.RemediationAction) { ra.Spec.IncidentRef.Name = incidentOne })
+			deferred0 := decisions(t, "Proposal", StageDedupCooldown, "deferred", GuardrailActiveAction)
+			concurrent0 := decisions(t, "Proposal", StageGuardrails, "refuse", GuardrailConcurrent)
+
+			d := run(t, dedupGate(t, own), dedupCandidate(), PhaseProposal)
+
+			require.False(t, d.Allowed())
+			assert.True(t, d.Deferred())
+			assert.Equal(t, deferred0+1, decisions(t, "Proposal", StageDedupCooldown, "deferred", GuardrailActiveAction))
+			assert.Equal(t, concurrent0, decisions(t, "Proposal", StageGuardrails, "refuse", GuardrailConcurrent))
+		})
+	}
+}
+
+func TestObserve_AnInFlightSiblingOfAnotherIncidentOnAnotherFieldStaysARefusal(t *testing.T) {
+	other := sibling("other", "Ticketed", func(ra *dorguv1.RemediationAction) {
+		ra.Spec.IncidentRef.Name = "another-incident"
+		ra.Spec.Action = dorguv1.RemediationActionDetail{Type: dorguv1.ActionTypePersonaUpdate, Patch: jsonOf(`{"spec":{"resources":{"limits":{"cpu":"500m"}}}}`)}
+	})
+	d := run(t, dedupGate(t, other), dedupCandidate(), PhaseProposal)
+
+	require.False(t, d.Allowed())
+	assert.False(t, d.Deferred())
+	stage, guardrail := d.RefusedBy()
+	assert.Equal(t, StageGuardrails, stage)
+	assert.Equal(t, GuardrailConcurrent, guardrail)
 }

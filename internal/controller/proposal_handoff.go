@@ -65,6 +65,10 @@ func (r *HealthCheckReconciler) proposeRemediation(
 		if gate.IsStage(result.Stage) {
 			r.recordProposalRefusal(ctx, incident, result)
 		}
+		// A proposal that is outstanding answers any earlier refusal.
+		if result.Stage == remediation.StageDeferred {
+			r.clearProposalRefusal(ctx, incident)
+		}
 	}
 }
 

@@ -267,4 +267,9 @@ const (
 	// ReasonProposalMade is the ConditionProposalRefused reason (status False) once a
 	// RemediationAction was proposed.
 	ReasonProposalMade = "ProposalMade"
+
+	// ReasonIncidentResolved is the ConditionProposalRefused reason (status False)
+	// once the incident was resolved: a refusal that was true of an open incident
+	// does not outlive it.
+	ReasonIncidentResolved = "IncidentResolved"
 )

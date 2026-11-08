@@ -717,7 +717,6 @@ func (r *RemediationController) rollBack(
 	// "RolledBack" and walk away from a cluster that had not rolled back.
 	outcome := r.recordRollbackScope(ctx, logger, action)
 	edited := recordPersonaEdits(action, restoration, persona)
-	metrics.RecordRollback(rollbackDivergedLabel(outcome))
 
 	setCondition(&action.Status.Conditions, ConditionRolledBack, metav1.ConditionTrue, reason,
 		cause+" "+rollbackScopeSentence(outcome, persona))
@@ -725,6 +724,8 @@ func (r *RemediationController) rollBack(
 	if err := r.Status().Update(ctx, action); err != nil {
 		return ctrl.Result{}, fmt.Errorf("updating status to RolledBack: %w", err)
 	}
+	// Counted once the write succeeded: a conflict requeues and the rollback runs again.
+	metrics.RecordRollback(rollbackDivergedLabel(outcome))
 
 	// A rollback that left the workload changed is partial, not a rollback.
 	resolution := IncidentOutcomeRollback
@@ -967,6 +968,7 @@ func (r *RemediationController) updateIncidentResolution(ctx context.Context, ac
 				return err
 			}
 			incident.Status.Phase = PhaseResolved
+			resolveProposalRefusal(&incident.Status.Conditions)
 			return r.Status().Update(ctx, &incident)
 		})
 		if statusErr != nil {

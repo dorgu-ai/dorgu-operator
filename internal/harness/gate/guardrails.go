@@ -205,6 +205,16 @@ func (s guardrailsStage) concurrent(cand *Candidate, d *Decision, siblings []dor
 		default:
 			continue
 		}
+		// At proposal, a sibling that answers THIS incident (or changes the same field
+		// of the same persona) is the proposal already made, being worked: the same
+		// thing DedupCooldown reports for a Pending one, one lifecycle step later.
+		// It is a deferral, not the persona being busy with someone else's fix.
+		if d.Phase == PhaseProposal && cand.Facts.Incident != nil {
+			if reason := activeRemediationReason(cand, siblings[i:i+1]); reason != "" {
+				d.refuse(StageDedupCooldown, GuardrailActiveAction, reason, nil)
+				return
+			}
+		}
 		d.refuse(StageGuardrails, GuardrailConcurrent,
 			fmt.Sprintf("concurrent remediation %s is in phase %s for persona %s/%s",
 				sib.Name, sib.Status.Phase, personaKey(cand).Namespace, cand.Target.Name),

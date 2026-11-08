@@ -207,6 +207,7 @@ func (r *HealthCheckReconciler) markResolved(
 			return err
 		}
 		im.Status.Phase = PhaseResolved
+		resolveProposalRefusal(&im.Status.Conditions)
 		return r.Client.Status().Update(ctx, im)
 	})
 	if statusErr != nil {

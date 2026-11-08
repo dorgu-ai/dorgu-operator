@@ -340,7 +340,7 @@ func PreRegisteredDecisionSeries() []metrics.GateSeries {
 }
 
 func init() {
-	var stagePairs []metrics.GateStagePair
+	stagePairs := make([]metrics.GateStagePair, 0, 3*(len(stageNames)+1))
 	for _, phase := range []string{string(PhaseProposal), string(PhaseApprovalRecheck), MetricPhaseApply} {
 		for _, stage := range append(slices.Clone(stageNames), ReasonOther) {
 			stagePairs = append(stagePairs, metrics.GateStagePair{Phase: phase, Stage: stage})

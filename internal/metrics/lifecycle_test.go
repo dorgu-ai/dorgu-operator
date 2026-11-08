@@ -17,6 +17,7 @@ limitations under the License.
 package metrics
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -123,21 +124,25 @@ func TestPreRegisteredCountersExistAndStartAtZero(t *testing.T) {
 }
 
 func TestPreRegisterGateCreatesTheSeriesItIsGiven(t *testing.T) {
-	labels := map[string]string{"phase": "Proposal", "stage": "Validate", "result": "deferred", "reason": "synthetic-reason"}
+	// A reason unique to this run: the registry is process-wide and a series cannot
+	// be unregistered, so a fixed name would make the test fail under -count=2.
+	reason := fmt.Sprintf("synthetic-%d", time.Now().UnixNano())
+	guardrail := "guardrail-" + reason
+	labels := map[string]string{"phase": "Proposal", "stage": "Validate", "result": "deferred", "reason": reason}
 	if _, present := seriesValue(t, "dorgu_gate_decisions_total", labels); present {
 		t.Fatal("the synthetic series exists before it was registered")
 	}
 
-	PreRegisterGate([]GateSeries{{Phase: "Proposal", Stage: "Validate", Result: "deferred", Reason: "synthetic-reason"}},
-		[]GateStagePair{{Phase: "Proposal", Stage: "Validate"}}, []string{"synthetic-guardrail"})
+	PreRegisterGate([]GateSeries{{Phase: "Proposal", Stage: "Validate", Result: "deferred", Reason: reason}},
+		[]GateStagePair{{Phase: "Proposal", Stage: "Validate"}}, []string{guardrail})
 
 	if got, present := seriesValue(t, "dorgu_gate_decisions_total", labels); !present || got != 0 {
 		t.Fatalf("after PreRegisterGate the series is present=%v value=%v, want present at 0", present, got)
 	}
-	if _, present := seriesValue(t, "dorgu_guardrail_verdicts_total", map[string]string{"guardrail": "synthetic-guardrail", "verdict": "refuse"}); !present {
+	if _, present := seriesValue(t, "dorgu_guardrail_verdicts_total", map[string]string{"guardrail": guardrail, "verdict": "refuse"}); !present {
 		t.Error("the guardrail verdict series were not registered")
 	}
-	RecordGateDecision("Proposal", "Validate", "deferred", "synthetic-reason")
+	RecordGateDecision("Proposal", "Validate", "deferred", reason)
 	if got, _ := seriesValue(t, "dorgu_gate_decisions_total", labels); got != 1 {
 		t.Errorf("after one decision the series = %v, want 1", got)
 	}

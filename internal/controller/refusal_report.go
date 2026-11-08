@@ -220,3 +220,14 @@ func truncateRunes(s string, max int) string {
 	}
 	return s[:cut]
 }
+
+// resolveProposalRefusal marks a standing ProposalRefused condition as no longer
+// true because the incident was resolved.
+func resolveProposalRefusal(conditions *[]metav1.Condition) {
+	cond := findCondition(*conditions, dorguv1.ConditionProposalRefused)
+	if cond == nil || cond.Status != metav1.ConditionTrue {
+		return
+	}
+	setCondition(conditions, dorguv1.ConditionProposalRefused, metav1.ConditionFalse,
+		dorguv1.ReasonIncidentResolved, "the incident was resolved")
+}
