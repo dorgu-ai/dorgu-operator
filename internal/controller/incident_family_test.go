@@ -183,6 +183,32 @@ func TestFamily_PreviousOccurrencesIncludesTheEscalatedIncident(t *testing.T) {
 	diag.PersonaRef = &dorguv1.PersonaReference{Kind: "ApplicationPersona", Name: recurrencePersona, Namespace: recurrenceNS}
 	diag.Category = "health"
 	diag.Contributing[0].Signal.Type = detection.SignalCrashLoopBackOff
+	diag.AffectedResources = []dorguv1.ResourceReference{e.pod}
 	got := e.r.previousOccurrences(personaSubject(*diag.PersonaRef))(context.Background(), *diag)
 	assert.EqualValues(t, 2, got, "the prompt must not call an escalating fault a first sighting")
+}
+
+// An application's pods are not one fault. Two pods failing in different ways are
+// two incidents; the merge is for ONE pod's fault as it worsens.
+func TestFamily_DifferentPodsAreDifferentFaults(t *testing.T) {
+	e := newRecurrenceEnv(t, noiseClient(t, recurrencePersonaObject()))
+	e.setCrashLoop()
+	e.cycle()
+
+	e.pod = dorguv1.ResourceReference{Kind: "Pod", Name: "api-other", Namespace: recurrenceNS}
+	e.setReadiness()
+	e.cycle()
+
+	assert.Len(t, e.incidents(), 2, "got %s", incidentSignals(e.incidents()))
+}
+
+func TestFamily_ThePodSurvivesAcrossTheShapes(t *testing.T) {
+	e := newRecurrenceEnv(t, noiseClient(t, recurrencePersonaObject()))
+	e.setReadiness()
+	e.cycle()
+	e.setCrashLoop()
+	e.cycle()
+	im := e.onlyOpen()
+	require.NotEmpty(t, im.Spec.Detection.AffectedResources)
+	assert.Equal(t, e.pod.Name, im.Spec.Detection.AffectedResources[0].Name)
 }

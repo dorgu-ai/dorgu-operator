@@ -42,7 +42,8 @@ import (
 //
 // The signals of that progression form a family, ranked by how far along the fault
 // is. When a diagnosis arrives whose signal is in the family and the application
-// already has an open incident of another signal in it:
+// already has an open incident of another signal in it that names a pod the
+// diagnosis also names:
 //
 //   - a higher rank ESCALATES the open incident: its signal, category and severity
 //     become the new ones, and the incident keeps its name, firstSeen, count and
@@ -52,13 +53,16 @@ import (
 //     fault does not get less serious because one container is, for a moment, at an
 //     earlier rung.
 //
-// Per-container identity was the alternative. It was rejected: an incident has
-// never been per container (it is per application and signal and lists the pods it
-// affects), so a per-container key would change what every other signal means, and
-// a pod replaced during a rollout would mint a new identity for a fault that has
-// not moved. The cost of merging per application is that two unrelated faults of
-// one application in this family read as one incident; the incident lists every
-// pod affected and escalates to the worst, which is what its reader needs first.
+// The identity of a fault is therefore the application, the pod and the family.
+// The alternative, a pod-and-container key replacing the incident name, was
+// rejected: incident names, lineages and every cooldown are keyed on the
+// application and signal, so a new key would have to be threaded through all of
+// them, and an incident has never recorded containers. Merging at the incident,
+// by shared pod, gets the same result without touching identity: two pods of one
+// application failing in different ways are still two incidents (a pod that is not
+// the one named is a different fault), while one pod's fault, whichever shape it
+// is in, is one. Containers of one pod share a pod, so they merge; a pod replaced
+// by a rollout starts a new fault, as it always did.
 //
 // A known consequence: an outstanding proposal stays the incident's proposal when
 // it escalates, so the proposal for the worse shape waits for the earlier one to be
@@ -111,11 +115,29 @@ func (r *HealthCheckReconciler) findFamilyPeer(
 		if !inFamily || isResolvedIncident(im) || !subject.matchesIncident(im) || im.Spec.Detection.Signal == string(signal) {
 			continue
 		}
+		if !sharesPod(im.Spec.Detection.AffectedResources, diag.AffectedResources) {
+			continue
+		}
 		if rank > bestRank {
 			best, bestRank = im, rank
 		}
 	}
 	return best, nil
+}
+
+// sharesPod reports whether two resource lists name a pod in common.
+func sharesPod(a, b []dorguv1.ResourceReference) bool {
+	for i := range a {
+		if a[i].Kind != "Pod" {
+			continue
+		}
+		for j := range b {
+			if b[j].Kind == "Pod" && b[j].Name == a[i].Name && b[j].Namespace == a[i].Namespace {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // mergeIntoPeer folds a diagnosis into the open incident of the same fault, and
