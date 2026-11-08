@@ -518,21 +518,28 @@ func (r *RemediationController) handleVerifying(ctx context.Context, logger logr
 	}
 
 	action.Status.VerificationResult = string(result)
-	recordVerification(action, result)
 
+	var res ctrl.Result
 	switch result {
 	case remediation.VerificationHealthy:
-		return r.handleVerificationHealthy(ctx, logger, action)
+		err = r.handleVerificationHealthy(ctx, logger, action)
 
 	case remediation.VerificationDegraded:
-		return r.handleVerificationDegraded(ctx, logger, action)
+		res, err = r.handleVerificationDegraded(ctx, logger, action)
 
 	case remediation.VerificationUnknown:
-		return r.handleVerificationUnknown(ctx, logger, action)
+		res, err = r.handleVerificationUnknown(ctx, logger, action)
 
 	default:
 		return ctrl.Result{}, r.transitionToFailed(ctx, action, fmt.Sprintf("unexpected verification result: %s", result))
 	}
+	// Counted once the handler's status write has succeeded. A conflict requeues
+	// the reconcile and the verification runs again; counting before the write
+	// would count it twice.
+	if err == nil {
+		recordVerification(action, result)
+	}
+	return res, err
 }
 
 // handleVerificationHealthy completes the remediation and updates the incident.
@@ -543,7 +550,7 @@ func (r *RemediationController) handleVerifying(ctx context.Context, logger logr
 // is recorded as partial with the WorkloadDiverged reason. The phase stays
 // Completed, since verification did pass; the condition and the incident outcome
 // are what a KPI reads to tell a clean heal from an unattributable one.
-func (r *RemediationController) handleVerificationHealthy(ctx context.Context, logger logr.Logger, action *dorguv1.RemediationAction) (ctrl.Result, error) {
+func (r *RemediationController) handleVerificationHealthy(ctx context.Context, logger logr.Logger, action *dorguv1.RemediationAction) error {
 	outcome := r.recordTicketDivergence(ctx, logger, action)
 	if outcome == IncidentOutcomeResolved {
 		outcome = r.creditOrSelfResolve(ctx, logger, action)
@@ -553,7 +560,7 @@ func (r *RemediationController) handleVerificationHealthy(ctx context.Context, l
 	setCondition(&action.Status.Conditions, ConditionVerified, metav1.ConditionTrue, "HealthRestored", "Verification confirmed health restored")
 
 	if err := r.Status().Update(ctx, action); err != nil {
-		return ctrl.Result{}, fmt.Errorf("updating status to Completed: %w", err)
+		return fmt.Errorf("updating status to Completed: %w", err)
 	}
 	recordHealCredit(action, outcome)
 
@@ -563,7 +570,7 @@ func (r *RemediationController) handleVerificationHealthy(ctx context.Context, l
 	}
 
 	logger.Info("remediation completed", "incidentOutcome", outcome)
-	return ctrl.Result{}, nil
+	return nil
 }
 
 // recordTicketDivergence compares the live workload to the ticket and returns the

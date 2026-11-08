@@ -182,44 +182,58 @@ func TestObserve_ReasonsOutsideTheCatalogAreBoundedToOther(t *testing.T) {
 	assert.Equal(t, ReasonOther, reason)
 }
 
-func TestObserve_TheMetricIsPreRegisteredForEveryCatalogedRefusal(t *testing.T) {
-	families, err := ctrlmetrics.Registry.Gather()
-	require.NoError(t, err)
+// F-11: the series list the gate pre-registers is checked as data, not by reading
+// a registry earlier tests have already populated. The registry itself is checked
+// from a clean binary in internal/metrics/startup.
+func TestObserve_ThePreRegisteredSeriesCoverEveryCatalogedRefusal(t *testing.T) {
 	have := map[string]bool{}
-	for _, f := range families {
-		if f.GetName() != "dorgu_gate_decisions_total" {
-			continue
-		}
-		for _, m := range f.GetMetric() {
-			parts := map[string]string{}
-			for _, l := range m.GetLabel() {
-				parts[l.GetName()] = l.GetValue()
-			}
-			have[parts["phase"]+"/"+parts["stage"]+"/"+parts["result"]+"/"+parts["reason"]] = true
-		}
+	for _, s := range PreRegisteredDecisionSeries() {
+		have[s.Phase+"/"+s.Stage+"/"+s.Result+"/"+s.Reason] = true
 	}
 	for _, site := range refusalCatalog {
+		result := resultRefuse
+		if site.deferred {
+			result = "deferred"
+		}
 		for _, phase := range site.phases() {
-			key := string(phase) + "/" + site.Stage + "/refuse/" + site.Guardrail
+			key := string(phase) + "/" + site.Stage + "/" + result + "/" + site.Guardrail
 			assert.True(t, have[key], "series %s is not pre-registered: a dashboard would show no data until it first fires", key)
 		}
 	}
-	assert.True(t, have["Apply/"+StageTicket+"/refuse/"+GuardrailTicketExpired])
+	for _, reason := range applyReasons() {
+		assert.True(t, have["Apply/"+StageTicket+"/refuse/"+reason], "apply reason %s is not pre-registered", reason)
+	}
+	assert.True(t, have["Proposal/"+StageDedupCooldown+"/deferred/"+GuardrailActiveAction], "the deferral series")
+	assert.False(t, have["Proposal/"+StageDedupCooldown+"/refuse/"+GuardrailActiveAction],
+		"an outstanding proposal must not be pre-registered as a refusal")
+}
+
+// dynamicRefusalSites are the refusals whose guardrail is a variable, with every
+// value the variable can take. The scan fails when the count of such sites in a
+// file changes, so a new variable site cannot slip in, and requires each value to
+// be in the catalog at that stage.
+var dynamicRefusalSites = map[string]struct {
+	stage  string
+	values []string
+	count  int
+}{
+	// guardrails.go: deny-list, or operator-namespace when the namespace is unknown.
+	"guardrails.go": {StageGuardrails, []string{GuardrailDenyList, GuardrailOperatorNamespace}, 1},
+	// stage_ground.go: the prior record's guardrail (operatorRecord).
+	"stage_ground.go": {StageGround, []string{GuardrailNoProposalRecord, GuardrailSpecChanged}, 1},
 }
 
 // TestObserve_EveryRefusalSiteIsInTheCatalog is the audit, as a test. It reads
 // this package's source and requires that every d.refuse(Stage, Guardrail, ...)
-// names a stage and guardrail pair the catalog lists, and that every
-// TicketProblem built at apply names a guardrail the Apply catalog lists. A new
-// refusal that forgets the catalog fails here, not in a dashboard.
+// names a stage and guardrail pair the catalog lists, that variable-guardrail
+// sites are exactly the declared ones with values in the catalog, that every
+// TicketProblem built at apply (positional or keyed) names a guardrail the Apply
+// catalog lists, and that no refusal verdict is written around refuse() with a raw
+// d.add(..., GateVerdictRefuse, ...). A new refusal that forgets the catalog fails
+// here, not in a dashboard.
 func TestObserve_EveryRefusalSiteIsInTheCatalog(t *testing.T) {
 	consts := packageStringConsts(t)
 	files := sourceFiles(t)
-
-	// Sites whose guardrail is a variable, covered by their own behavioural tests:
-	// guardrails.go (deny-list or operator-namespace) and stage_ground.go
-	// (the prior record's guardrail).
-	dynamic := map[string]bool{"guardrails.go": true, "stage_ground.go": true}
 
 	listed := map[string]bool{}
 	for _, s := range refusalCatalog {
@@ -230,46 +244,103 @@ func TestObserve_EveryRefusalSiteIsInTheCatalog(t *testing.T) {
 		ticket[g] = true
 	}
 
-	sites := 0
-	{
-		for base, file := range files {
-			ast.Inspect(file, func(n ast.Node) bool {
-				switch x := n.(type) {
-				case *ast.CallExpr:
-					sel, ok := x.Fun.(*ast.SelectorExpr)
-					if !ok || sel.Sel.Name != "refuse" || len(x.Args) < 2 || base == "types.go" {
-						return true
-					}
-					sites++
-					stage, sok := constValue(consts, x.Args[0])
-					guardrail, gok := constValue(consts, x.Args[1])
-					if !sok {
-						t.Errorf("%s: refuse() stage is not a constant", base)
-						return true
-					}
-					if !gok {
-						assert.True(t, dynamic[base], "%s: refuse() with a variable guardrail must be listed as dynamic", base)
-						return true
-					}
-					assert.True(t, listed[stage+"/"+guardrail], "%s: refuse(%s, %s) is not in the refusal catalog", base, stage, guardrail)
-				case *ast.CompositeLit:
-					id, ok := x.Type.(*ast.Ident)
-					if !ok || id.Name != "TicketProblem" || len(x.Elts) == 0 {
-						return true
-					}
-					sites++
-					if _, keyed := x.Elts[0].(*ast.KeyValueExpr); keyed {
-						return true
-					}
-					if g, ok := constValue(consts, x.Elts[0]); ok {
-						assert.True(t, ticket[g], "%s: TicketProblem{%s} is not in the Apply catalog", base, g)
-					}
+	sites, ticketSites := 0, 0
+	variableSites := map[string]int{}
+	variableTickets := map[string]int{}
+	for base, file := range files {
+		ast.Inspect(file, func(n ast.Node) bool {
+			switch x := n.(type) {
+			case *ast.CallExpr:
+				sel, ok := x.Fun.(*ast.SelectorExpr)
+				if !ok {
+					return true
 				}
-				return true
-			})
+				if sel.Sel.Name == "add" && base != "types.go" && mentionsRefuseVerdict(x) {
+					t.Errorf("%s: a refusal verdict is written with add(); use refuse() so it is in the catalog", base)
+				}
+				if sel.Sel.Name != "refuse" || len(x.Args) < 2 || base == "types.go" {
+					return true
+				}
+				sites++
+				stage, sok := constValue(consts, x.Args[0])
+				guardrail, gok := constValue(consts, x.Args[1])
+				if !sok {
+					t.Errorf("%s: refuse() stage is not a constant", base)
+					return true
+				}
+				if !gok {
+					variableSites[base]++
+					return true
+				}
+				assert.True(t, listed[stage+"/"+guardrail], "%s: refuse(%s, %s) is not in the refusal catalog", base, stage, guardrail)
+			case *ast.CompositeLit:
+				id, ok := x.Type.(*ast.Ident)
+				if !ok || id.Name != "TicketProblem" || len(x.Elts) == 0 {
+					return true
+				}
+				ticketSites++
+				guardrailExpr := x.Elts[0]
+				if kv, keyed := x.Elts[0].(*ast.KeyValueExpr); keyed {
+					guardrailExpr = nil
+					for _, elt := range x.Elts {
+						if kv, ok := elt.(*ast.KeyValueExpr); ok {
+							if k, ok := kv.Key.(*ast.Ident); ok && k.Name == "Guardrail" {
+								guardrailExpr = kv.Value
+							}
+						}
+					}
+					_ = kv
+				}
+				if guardrailExpr == nil {
+					t.Errorf("%s: a TicketProblem with no Guardrail", base)
+					return true
+				}
+				if g, ok := constValue(consts, guardrailExpr); ok {
+					assert.True(t, ticket[g], "%s: TicketProblem{%s} is not in the Apply catalog", base, g)
+				} else {
+					variableTickets[base]++
+				}
+			}
+			return true
+		})
+	}
+
+	for base, got := range variableSites {
+		want, declared := dynamicRefusalSites[base]
+		if !assert.True(t, declared, "%s has a refuse() with a variable guardrail that is not declared in dynamicRefusalSites", base) {
+			continue
+		}
+		assert.Equal(t, want.count, got, "%s: the number of variable-guardrail refuse() sites changed; declare the new one", base)
+		for _, v := range want.values {
+			assert.True(t, listed[want.stage+"/"+v], "%s: the variable guardrail can be %s, which is not in the catalog at %s", base, v, want.stage)
 		}
 	}
-	assert.Greater(t, sites, 40, "the scan found suspiciously few refusal sites")
+	for base := range dynamicRefusalSites {
+		assert.Equal(t, dynamicRefusalSites[base].count, variableSites[base], "%s: a declared variable site disappeared", base)
+	}
+	// The re-run of the approval re-check at apply returns whichever guardrail
+	// refused (approval.go); every one of them is in applyReasons by construction.
+	assert.Equal(t, map[string]int{"approval.go": 1}, variableTickets,
+		"a TicketProblem with a variable guardrail must be the declared re-derivation and nothing else")
+	assert.Greater(t, sites, 30, "the scan found suspiciously few refusal sites")
+	assert.Greater(t, ticketSites, 20, "the scan found suspiciously few ticket problem sites")
+}
+
+// mentionsRefuseVerdict reports whether any argument is GateVerdictRefuse.
+func mentionsRefuseVerdict(call *ast.CallExpr) bool {
+	found := false
+	for _, arg := range call.Args {
+		ast.Inspect(arg, func(n ast.Node) bool {
+			switch x := n.(type) {
+			case *ast.Ident:
+				found = found || x.Name == "GateVerdictRefuse"
+			case *ast.SelectorExpr:
+				found = found || x.Sel.Name == "GateVerdictRefuse"
+			}
+			return true
+		})
+	}
+	return found
 }
 
 // --- helpers for the audit ---------------------------------------------------
@@ -352,4 +423,71 @@ func constValue(consts map[string]string, expr ast.Expr) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// --- B6 fix round (review of #59) -------------------------------------------
+
+// F-1: an outstanding proposal is deferred, not refused: still not allowed, but
+// counted as result="deferred" and answerable by Decision.Deferred, so nothing
+// persists it as a refusal.
+func TestObserve_AnOutstandingProposalIsDeferredNotRefused(t *testing.T) {
+	dup := sibling("dup", "Pending", func(ra *dorguv1.RemediationAction) { ra.Spec.IncidentRef.Name = incidentOne })
+	deferred := func() float64 {
+		return decisions(t, "Proposal", StageDedupCooldown, "deferred", GuardrailActiveAction)
+	}
+	refused := func() float64 {
+		return decisions(t, "Proposal", StageDedupCooldown, "refuse", GuardrailActiveAction)
+	}
+	deferred0, refused0 := deferred(), refused()
+
+	d := run(t, dedupGate(t, dup), dedupCandidate(), PhaseProposal)
+
+	require.False(t, d.Allowed(), "a deferral still stops the proposal")
+	assert.True(t, d.Deferred())
+	assert.Equal(t, deferred0+1, deferred())
+	assert.Equal(t, refused0, refused(), "an outstanding proposal is not counted as a refusal")
+}
+
+func TestObserve_ARejectionCooldownAndEveryOtherRefusalAreNotDeferred(t *testing.T) {
+	d := run(t, observeModeGate(t), planCandidate(personaUpdateStep(memPatch("384Mi"))), PhaseProposal)
+	require.Equal(t, ResultRefuse, d.Result)
+	assert.False(t, d.Deferred())
+
+	rejection := &Decision{Result: ResultRefuse, refusing: &dorguv1.GateVerdict{Stage: StageDedupCooldown, Guardrail: GuardrailRejection}}
+	assert.False(t, rejection.Deferred(), "a rejection cooldown is a refusal")
+}
+
+// F-6: a plan the clamps left nothing to ticket is counted once, as a refusal, and
+// not first as a pass or clamp.
+func TestObserve_ANoPlanApprovalIsCountedOnlyAsARefusal(t *testing.T) {
+	cand := legacyCandidate(memPatch("384Mi")) // asks for a change
+	cleared := &Decision{Phase: PhaseApprovalRecheck, Result: ResultPass}
+	require.Empty(t, cleared.Steps, "the decision carries no persona patch to ticket")
+	counts := func() (float64, float64, float64) {
+		return decisions(t, "ApprovalRecheck", StageComplete, "pass", ReasonNone),
+			decisions(t, "ApprovalRecheck", StageComplete, "clamp", ReasonOther),
+			decisions(t, "ApprovalRecheck", StageGuardrails, "refuse", GuardrailNoPlan)
+	}
+	pass0, clamp0, refuse0 := counts()
+
+	sealApproval(&cand, cleared)
+	recordDecision("ApprovalRecheck", cleared)
+
+	pass1, clamp1, refuse1 := counts()
+	assert.Equal(t, ResultRefuse, cleared.Result)
+	assert.Equal(t, refuse0+1, refuse1)
+	assert.Equal(t, pass0, pass1, "the refusal must not also be counted as a pass")
+	assert.Equal(t, clamp0, clamp1)
+	stage, guardrail := cleared.RefusedBy()
+	assert.Equal(t, StageGuardrails, stage)
+	assert.Equal(t, GuardrailNoPlan, guardrail)
+}
+
+func TestObserve_AnAdvisoryApprovalIsStillAllowedAndCarriesNoTicket(t *testing.T) {
+	advisory := Candidate{Target: target(), Namespace: testNS, Name: "ra-a"}
+	d := &Decision{Phase: PhaseApprovalRecheck, Result: ResultPass}
+
+	sealApproval(&advisory, d)
+
+	assert.True(t, d.Allowed(), "a plan that asked for no change has nothing to ticket and nothing wrong")
 }

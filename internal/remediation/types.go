@@ -28,6 +28,13 @@ import (
 // refusal: the diagnosis names no persona, or there is no change to make.
 const StagePropose = "Propose"
 
+// StageDeferred is the Stage of a proposal the gate held back only because one for
+// the same incident or fix is already outstanding (gate.Decision.Deferred). It is
+// not a gate stage and not a refusal: nothing is recorded against the incident,
+// no Warning Event is emitted, and it stays out of the refusal mix. The Reason is
+// the gate's guardrail (active-remediation).
+const StageDeferred = "Deferred"
+
 // Reasons a proposal was skipped without the gate refusing it.
 const (
 	// SkipNoPersonaRef: the diagnosis names no persona to change.

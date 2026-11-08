@@ -204,6 +204,9 @@ func proposerSkip(sentence, reason string, pre *gate.Decision) *ProposalResult {
 // skipped converts a refusal into the result callers act on.
 func skipped(dec *gate.Decision) *ProposalResult {
 	stage, guardrail := dec.RefusedBy()
+	if dec.Deferred() {
+		stage = StageDeferred
+	}
 	return &ProposalResult{
 		SkipReason: dec.SkipReason(),
 		Stage:      stage,

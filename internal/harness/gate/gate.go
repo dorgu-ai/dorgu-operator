@@ -163,6 +163,9 @@ func (g *Gate) Run(ctx context.Context, cand Candidate, phase Phase) (*Decision,
 	if err != nil {
 		return nil, err
 	}
+	if phase == PhaseApprovalRecheck {
+		sealApproval(&cand, d)
+	}
 	recordDecision(string(phase), d)
 	return d, nil
 }

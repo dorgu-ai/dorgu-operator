@@ -2,18 +2,26 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
+	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/tools/record"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
+	"github.com/dorgu-ai/dorgu-operator/internal/detection"
 	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
 	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
 	"github.com/dorgu-ai/dorgu-operator/internal/metrics"
@@ -421,15 +429,14 @@ func TestB6_AClearedPlanWithNothingLeftIsRefusedByName(t *testing.T) {
 	ra := lcRA("Approved")
 	rc, c := lcController(t, []client.Object{lcPersonaObj(lcBaseline), lcIncidentObj(), ra.DeepCopy()})
 	rec := withRecorder(rc)
-	labels := map[string]string{"phase": "ApprovalRecheck", "stage": gate.StageGuardrails, "result": "refuse", "reason": gate.GuardrailNoPlan}
-	before := metricValue(t, "dorgu_gate_decisions_total", labels)
 
 	var fresh dorguv1.RemediationAction
 	require.NoError(t, c.Get(context.Background(), client.ObjectKeyFromObject(ra), &fresh))
 	allowed := &gate.Decision{Result: gate.ResultPass, Phase: gate.PhaseApprovalRecheck}
 	require.NoError(t, rc.refuseAtApproval(context.Background(), rc.Logger, &fresh, allowed))
 
-	assert.Equal(t, before+1, metricValue(t, "dorgu_gate_decisions_total", labels))
+	// The count is the gate's, once, in Gate.Run (TestObserve_ANoPlanApprovalIsCountedOnlyAsARefusal);
+	// this is the controller's fallback for an allowed decision with no ticket.
 	cond := lcCondition(&fresh, dorguv1.ConditionGateRefused)
 	require.NotNil(t, cond)
 	assert.Equal(t, gate.ReasonEnum(gate.GuardrailNoPlan), cond.Reason)
@@ -443,4 +450,139 @@ func TestB6_AClearedPlanWithNothingLeftIsRefusedByName(t *testing.T) {
 	}
 	assert.Equal(t, gate.StageGuardrails, stage, "status.gate must name the refusing stage, which is how a client reads it")
 	assert.Equal(t, gate.GuardrailNoPlan, guardrail)
+}
+
+// ---------------------------------------------------------------------------
+// B6 fix round (review of #59).
+
+// F-1: an outstanding proposal is not a refusal. The gate holds the second
+// proposal back, but nothing is wrong, so nothing is recorded against the
+// incident, no Warning Event goes out, and it is counted as deferred.
+func TestB6Fix_AnOutstandingProposalIsNotPersistedAsARefusal(t *testing.T) {
+	r, rec, incident := handoffWithIncident(t, &stubProposer{result: &remediation.ProposalResult{
+		SkipReason: "active remediation already exists for incident im-1",
+		Stage:      remediation.StageDeferred, Reason: gate.GuardrailActiveAction,
+	}})
+	diag, _ := handoffFixtures()
+	deferred := map[string]string{"source": metrics.SourceDorgu, "action_type": diag.SuggestedAction, "result": metrics.ProposalDeferred}
+	before := metricValue(t, "dorgu_proposals_total", deferred)
+
+	r.proposeRemediation(context.Background(), diag, incident)
+
+	assert.Nil(t, incidentCondition(t, r, incident), "waiting for a human is not a refusal")
+	assert.Empty(t, drainEvents(rec), "no Warning Event for a proposal that is simply outstanding")
+	assert.Equal(t, before+1, metricValue(t, "dorgu_proposals_total", deferred))
+}
+
+// F-3: detect-to-proposal is the machine's latency to its FIRST proposal for an
+// incident. A later RemediationAction for the same incident (after a failure or a
+// rejection) is not a second sample.
+func TestB6Fix_DetectToProposalIsMeasuredOncePerIncident(t *testing.T) {
+	labels := map[string]string{"stage": metrics.StageDetectToProposal}
+	proposed := func(name string) *remediation.ProposalResult {
+		return &remediation.ProposalResult{Proposed: true, Action: &dorguv1.RemediationAction{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "shop"}}}
+	}
+	ra := func(name string) *dorguv1.RemediationAction {
+		return &dorguv1.RemediationAction{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "shop"},
+			Spec:       dorguv1.RemediationActionSpec{IncidentRef: dorguv1.IncidentReference{Name: "im-1", Namespace: "shop"}},
+		}
+	}
+	proposer := &stubProposer{result: proposed("ra-first")}
+	r, _, incident := handoffWithIncident(t, proposer)
+	incident.Spec.Detection.FirstSeen = metav1.NewTime(time.Now().Add(-45 * time.Second))
+	diag, _ := handoffFixtures()
+	require.NoError(t, r.Client.Create(context.Background(), ra("ra-first")))
+	before := metricValue2(t, labels)
+
+	r.proposeRemediation(context.Background(), diag, incident)
+	assert.Equal(t, before+1, metricValue2(t, labels), "the first proposal for the incident is measured")
+
+	// The first one failed; Dorgu proposes again hours later.
+	require.NoError(t, r.Client.Create(context.Background(), ra("ra-retry")))
+	proposer.result = proposed("ra-retry")
+	r.proposeRemediation(context.Background(), diag, incident)
+	assert.Equal(t, before+1, metricValue2(t, labels), "a retry must not add the hours since first detection to a machine latency")
+}
+
+func metricValue2(t *testing.T, labels map[string]string) uint64 {
+	t.Helper()
+	return metricstest.HistogramCount(t, "dorgu_stage_duration_seconds", labels)
+}
+
+// F-15: a long Event message is cut on a rune boundary.
+func TestB6Fix_AnEventMessageIsNeverCutMidRune(t *testing.T) {
+	rec := record.NewFakeRecorder(1)
+	emit(rec, &dorguv1.IncidentMemory{}, "Warning", "DorguGroundRefused", strings.Repeat("é", maxEventMessage))
+
+	got := <-rec.Events
+	assert.True(t, utf8.ValidString(got), "the Event message must stay valid UTF-8")
+	assert.LessOrEqual(t, len(strings.TrimPrefix(got, "Warning DorguGroundRefused ")), maxEventMessage)
+}
+
+// F-16: a refusal is still recorded when the incident is not in the cache yet.
+func TestB6Fix_AProposalRefusalSurvivesACacheThatLagsTheIncident(t *testing.T) {
+	r, rec, incident := handoffWithIncident(t, refusedProposal(gate.StageModePolicy, gate.GuardrailSelfHealingMode))
+	base := r.Client
+	misses := 1
+	r.Client = interceptor.NewClient(base.(client.WithWatch), interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if _, ok := obj.(*dorguv1.IncidentMemory); ok && misses > 0 {
+				misses--
+				return apierrors.NewNotFound(schema.GroupResource{Group: "dorgu.io", Resource: "incidentmemories"}, key.Name)
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+	})
+	diag, _ := handoffFixtures()
+
+	r.proposeRemediation(context.Background(), diag, incident)
+
+	assert.NotNil(t, incidentCondition(t, r, incident), "one cache miss must cost a retry, not the record")
+	assert.True(t, hasEvent(drainEvents(rec), "Warning", "DorguModePolicyRefused"))
+}
+
+// F-9: a verification is counted only once its status write succeeded; a conflict
+// that requeues the reconcile must not count it twice.
+func TestB6Fix_AConflictedStatusWriteDoesNotCountTheVerificationTwice(t *testing.T) {
+	ra := lcRA("Verifying", lcPatchedByTheCLI)
+	conflicts := 1
+	rc := lcControllerIntercepted(t, []client.Object{lcPersonaObj(lcApplied), lcIncidentObj(), ra.DeepCopy(), lcDeploymentAtGeneration(2)},
+		interceptor.Funcs{SubResourceUpdate: func(ctx context.Context, c client.Client, sub string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+			if _, ok := obj.(*dorguv1.RemediationAction); ok && conflicts > 0 {
+				conflicts--
+				return apierrors.NewConflict(schema.GroupResource{Group: "dorgu.io", Resource: "remediationactions"}, obj.GetName(), errors.New("raced"))
+			}
+			return c.SubResource(sub).Update(ctx, obj, opts...)
+		}})
+	healthy := map[string]string{"result": metrics.VerificationHealthy}
+	credit := map[string]string{"credited": "true", "reason": metrics.HealReasonWorkloadPatched}
+	v0, c0 := metricValue(t, "dorgu_verifications_total", healthy), metricValue(t, "dorgu_heal_credit_total", credit)
+	req := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(ra)}
+
+	_, err := rc.Reconcile(context.Background(), req)
+	require.NoError(t, err, "a conflict is requeued quietly")
+	assert.Equal(t, v0, metricValue(t, "dorgu_verifications_total", healthy), "the write conflicted, so nothing was verified yet")
+	assert.Equal(t, c0, metricValue(t, "dorgu_heal_credit_total", credit))
+
+	_, err = rc.Reconcile(context.Background(), req)
+	require.NoError(t, err)
+	assert.Equal(t, v0+1, metricValue(t, "dorgu_verifications_total", healthy), "counted once, after the write that succeeded")
+	assert.Equal(t, c0+1, metricValue(t, "dorgu_heal_credit_total", credit))
+}
+
+// lcControllerIntercepted is lcController over a client with interceptors.
+func lcControllerIntercepted(t *testing.T, objs []client.Object, funcs interceptor.Funcs) *RemediationController {
+	t.Helper()
+	base := fake.NewClientBuilder().WithScheme(lcScheme(t)).WithObjects(objs...).
+		WithStatusSubresource(&dorguv1.RemediationAction{}, &dorguv1.IncidentMemory{}, &dorguv1.ApplicationPersona{}).Build()
+	c := interceptor.NewClient(base, funcs)
+	log := logr.Discard()
+	engine := detection.NewEngine(log, &stubCollector{name: "lc"})
+	g := gate.New(c, log)
+	return &RemediationController{
+		Client: c, Gate: g, Executor: remediation.NewExecutor(c, g, log),
+		Verifier: remediation.NewVerifier(engine, c, log), Rollback: remediation.NewRollback(c, log), Logger: log,
+	}
 }

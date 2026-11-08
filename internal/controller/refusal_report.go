@@ -4,12 +4,12 @@ import (
 	"context"
 	"fmt"
 	"time"
+	"unicode/utf8"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
-	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
@@ -56,7 +56,7 @@ func emit(rec record.EventRecorder, obj runtime.Object, eventType, reason, messa
 		return
 	}
 	if len(message) > maxEventMessage {
-		message = message[:maxEventMessage-1] + "…"
+		message = truncateRunes(message, maxEventMessage-len("…")) + "…"
 	}
 	rec.Event(obj, eventType, reason, message)
 }
@@ -75,7 +75,7 @@ func (r *HealthCheckReconciler) recordProposalRefusal(
 ) {
 	reason := proposalRefusalReason(result.Stage, result.Reason)
 	changed := false
-	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	err := retryIncidentWrite(func(int) error {
 		var fresh dorguv1.IncidentMemory
 		if err := r.Client.Get(ctx, client.ObjectKeyFromObject(incident), &fresh); err != nil {
 			return err
@@ -101,7 +101,7 @@ func (r *HealthCheckReconciler) recordProposalRefusal(
 // clearProposalRefusal marks a standing refusal as answered once a proposal was
 // made, so the incident does not keep saying it was refused.
 func (r *HealthCheckReconciler) clearProposalRefusal(ctx context.Context, incident *dorguv1.IncidentMemory) {
-	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	err := retryIncidentWrite(func(int) error {
 		var fresh dorguv1.IncidentMemory
 		if err := r.Client.Get(ctx, client.ObjectKeyFromObject(incident), &fresh); err != nil {
 			return err
@@ -207,4 +207,16 @@ func rollbackDivergedLabel(outcome remediation.RollbackOutcome) string {
 	default:
 		return "false"
 	}
+}
+
+// truncateRunes cuts s to at most max bytes without splitting a UTF-8 rune.
+func truncateRunes(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	cut := max
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
 }

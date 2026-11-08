@@ -20,6 +20,8 @@ import (
 	"context"
 	"time"
 
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
 	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
@@ -50,7 +52,9 @@ func (r *HealthCheckReconciler) proposeRemediation(
 		r.Logger.Error(proposeErr, "failed to propose remediation", "incident", incident.Name)
 	case result.Proposed:
 		r.Logger.Info("remediation proposed", "action", result.Action.Name, "incident", incident.Name)
-		metrics.RecordStageDuration(metrics.StageDetectToProposal, time.Since(incident.Spec.Detection.FirstSeen.Time))
+		if r.firstProposalFor(ctx, incident, result.Action) {
+			metrics.RecordStageDuration(metrics.StageDetectToProposal, time.Since(incident.Spec.Detection.FirstSeen.Time))
+		}
 		r.clearProposalRefusal(ctx, incident)
 	case result.SkipReason != "":
 		r.Logger.V(1).Info("remediation skipped", "reason", result.SkipReason, "incident", incident.Name,
@@ -71,9 +75,34 @@ func proposalOutcome(result *remediation.ProposalResult, err error) string {
 		return metrics.ProposalError
 	case result != nil && result.Suppressed:
 		return metrics.ProposalSuppressed
+	case result != nil && result.Stage == remediation.StageDeferred:
+		return metrics.ProposalDeferred
 	case result != nil && result.Proposed:
 		return metrics.ProposalProposed
 	default:
 		return metrics.ProposalSkipped
 	}
+}
+
+// firstProposalFor reports whether action is the first RemediationAction ever
+// proposed for the incident. detect-to-proposal is the machine's latency from
+// first detection to its first proposal (KPI Q1): a second action for the same
+// incident, hours later after a failure or a rejection, is not that latency and
+// adds no sample. When the RemediationActions cannot be listed nothing is
+// guessed and nothing is observed.
+func (r *HealthCheckReconciler) firstProposalFor(
+	ctx context.Context, incident *dorguv1.IncidentMemory, action *dorguv1.RemediationAction,
+) bool {
+	var actions dorguv1.RemediationActionList
+	if err := r.Client.List(ctx, &actions, client.InNamespace(incident.Namespace)); err != nil {
+		logFailure(r.Logger, err, "could not list RemediationActions to time the first proposal", "incident", incident.Name)
+		return false
+	}
+	for i := range actions.Items {
+		other := &actions.Items[i]
+		if other.Name != action.Name && other.Spec.IncidentRef.Name == incident.Name {
+			return false
+		}
+	}
+	return true
 }

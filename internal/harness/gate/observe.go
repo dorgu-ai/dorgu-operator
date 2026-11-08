@@ -35,6 +35,14 @@ const (
 	// failed). The caller treats it as "do not proceed".
 	ReasonGateError = "gate-error"
 
+	// resultRefuse, resultDeferred, resultPass, resultClamp and resultError are the
+	// values of the result label of dorgu_gate_decisions_total.
+	resultRefuse   = "refuse"
+	resultDeferred = "deferred"
+	resultPass     = "pass"
+	resultClamp    = "clamp"
+	resultError    = "error"
+
 	// ReasonOther bounds a stage or reason the catalog does not list, so a new
 	// refusal that forgot the catalog cannot mint an unbounded label.
 	ReasonOther = "other"
@@ -49,6 +57,11 @@ type refusalSite struct {
 	// site with neither can occur in both.
 	approvalOnly bool
 	proposalOnly bool
+
+	// deferred marks a refusal that is not a refusal in the sense of the KPIs: the
+	// plan is not wrong, something Dorgu already did stands in for it. It is counted
+	// as result="deferred", never "refuse", and is not persisted as a refusal.
+	deferred bool
 }
 
 func (s refusalSite) phases() []Phase {
@@ -101,7 +114,7 @@ var refusalCatalog = []refusalSite{
 	{Stage: StageModePolicy, Guardrail: GuardrailPolicyUnreadable},
 	{Stage: StageModePolicy, Guardrail: GuardrailUnknownMode},
 
-	{Stage: StageDedupCooldown, Guardrail: GuardrailActiveAction},
+	{Stage: StageDedupCooldown, Guardrail: GuardrailActiveAction, deferred: true},
 	{Stage: StageDedupCooldown, Guardrail: GuardrailRejection},
 }
 
@@ -178,17 +191,33 @@ func allGuardrails() []string {
 	return all
 }
 
+// Deferred reports whether the plan was held back only because a proposal for the
+// same incident or fix is already outstanding (DedupCooldown/active-remediation).
+// The decision is still not Allowed, so nothing proceeds, but it is not a
+// refusal: the first proposal is waiting for a human, and the same answer comes
+// back on every health-check cycle until it is decided. It is counted as
+// result="deferred", is not persisted as ProposalRefused, and stays out of the
+// refusal mix. A rejection cooldown, by contrast, is a refusal.
+func (d *Decision) Deferred() bool {
+	stage, guardrail := d.RefusedBy()
+	return d.Result == ResultRefuse && stage == StageDedupCooldown && guardrail == GuardrailActiveAction
+}
+
 // recordDecision counts one finished run under a metric phase.
 func recordDecision(phase string, d *Decision) {
 	switch d.Result {
 	case ResultRefuse:
 		stage, guardrail := d.RefusedBy()
 		stage, reason := normalizeRefusal(stage, guardrail)
-		metrics.RecordGateDecision(phase, stage, "refuse", reason)
+		result := resultRefuse
+		if d.Deferred() {
+			result = resultDeferred
+		}
+		metrics.RecordGateDecision(phase, stage, result, reason)
 	case ResultClamp:
-		metrics.RecordGateDecision(phase, StageComplete, "clamp", clampReason(d))
+		metrics.RecordGateDecision(phase, StageComplete, resultClamp, clampReason(d))
 	default:
-		metrics.RecordGateDecision(phase, StageComplete, "pass", ReasonNone)
+		metrics.RecordGateDecision(phase, StageComplete, resultPass, ReasonNone)
 	}
 	for _, v := range d.Verdicts {
 		metrics.RecordGuardrailVerdict(knownGuardrail(v.Guardrail), v.Verdict)
@@ -205,16 +234,45 @@ func clampReason(d *Decision) string {
 	return ReasonOther
 }
 
-// RefuseNoPlan turns a cleared approval whose clamps left nothing to issue a
-// ticket for into a refusal: the verdict is recorded on the decision (so
-// status.gate shows who refused and why, like any other refusal) and counted under
-// the same labels. The controller finds this out from Ticket, which is the
-// gate's own answer to "is there anything to issue", and reports it here so the
-// refusal is not a special case downstream.
+// noPlanReason is the sentence on the verdict of a cleared approval that has
+// nothing left to ticket.
+const noPlanReason = "the gate cleared the plan but nothing is left to apply after it was clamped"
+
+// RefuseNoPlan records the no-plan refusal on a decision that was allowed but
+// carries nothing to issue a ticket for, so status.gate shows who refused and why
+// like any other refusal. It adds the verdict only and does not count: Gate.Run
+// already turns this into a refusal, and counts it once, for a candidate that had
+// a change; this is for the caller that reaches an allowed decision with no ticket
+// for any other reason (the controller's own advisory check).
 func (d *Decision) RefuseNoPlan() {
-	d.refuse(StageGuardrails, GuardrailNoPlan,
-		"the gate cleared the plan but nothing is left to apply after it was clamped", nil)
-	metrics.RecordGateDecision(string(d.Phase), StageGuardrails, "refuse", GuardrailNoPlan)
+	d.refuse(StageGuardrails, GuardrailNoPlan, noPlanReason, nil)
+}
+
+// hasAutoApplicableChange reports whether the candidate asks for a change that
+// would write the persona: an auto-executable persona-update step with a patch, or
+// a legacy persona-update action with one.
+func hasAutoApplicableChange(cand *Candidate) bool {
+	for i := range cand.Steps {
+		step := &cand.Steps[i]
+		if step.AutoExecutable && step.Type == dorguv1.StepTypePersonaUpdate && step.Patch != nil && len(step.Patch.Raw) > 0 {
+			return true
+		}
+	}
+	return len(cand.Steps) == 0 && cand.Action.Type == dorguv1.ActionTypePersonaUpdate &&
+		cand.Action.Patch != nil && len(cand.Action.Patch.Raw) > 0
+}
+
+// sealApproval makes an approval that was cleared but cannot be ticketed a
+// refusal before it is counted: a plan that asked for a change, and whose clamps
+// left no persona patch to issue, was not cleared for anything. An advisory plan
+// (it asked for no change) stays allowed and carries no ticket.
+func sealApproval(cand *Candidate, d *Decision) {
+	if !d.Allowed() || !hasAutoApplicableChange(cand) {
+		return
+	}
+	if _, err := d.Ticket(); err != nil {
+		d.RefuseNoPlan()
+	}
 }
 
 // recordGateError counts a run that could not decide, at the stage that failed.
@@ -222,22 +280,22 @@ func recordGateError(phase, stage string) {
 	if !slices.Contains(stageNames, stage) {
 		stage = ReasonOther
 	}
-	metrics.RecordGateDecision(phase, stage, "error", ReasonGateError)
+	metrics.RecordGateDecision(phase, stage, resultError, ReasonGateError)
 }
 
 // recordApply counts one apply-time ticket check.
 func recordApply(problem *TicketProblem, err error) {
 	switch {
 	case err != nil:
-		metrics.RecordGateDecision(MetricPhaseApply, StageTicket, "error", ReasonGateError)
+		metrics.RecordGateDecision(MetricPhaseApply, StageTicket, resultError, ReasonGateError)
 	case problem != nil:
 		reason := problem.Guardrail
 		if !slices.Contains(applyReasons(), reason) {
 			reason = ReasonOther
 		}
-		metrics.RecordGateDecision(MetricPhaseApply, StageTicket, "refuse", reason)
+		metrics.RecordGateDecision(MetricPhaseApply, StageTicket, resultRefuse, reason)
 	default:
-		metrics.RecordGateDecision(MetricPhaseApply, StageComplete, "pass", ReasonNone)
+		metrics.RecordGateDecision(MetricPhaseApply, StageComplete, resultPass, ReasonNone)
 	}
 }
 
@@ -246,41 +304,52 @@ func observeStage(phase, stage string, started time.Time) {
 	metrics.RecordGateStageDuration(phase, stage, time.Since(started))
 }
 
-func init() {
+// PreRegisteredDecisionSeries is every dorgu_gate_decisions_total series created
+// at zero at start-up. Exposed so a test in its own binary can check the registry
+// has them before anything has run.
+func PreRegisteredDecisionSeries() []metrics.GateSeries {
 	series := make([]metrics.GateSeries, 0, 256)
-	var stagePairs []metrics.GateStagePair
 	phases := []string{string(PhaseProposal), string(PhaseApprovalRecheck), MetricPhaseApply}
 
 	for _, phase := range phases {
-		for _, stage := range append(slices.Clone(stageNames), ReasonOther) {
-			stagePairs = append(stagePairs, metrics.GateStagePair{Phase: phase, Stage: stage})
-		}
 		series = append(series,
-			metrics.GateSeries{Phase: phase, Stage: StageComplete, Result: "pass", Reason: ReasonNone},
-			metrics.GateSeries{Phase: phase, Stage: StageTicket, Result: "error", Reason: ReasonGateError})
+			metrics.GateSeries{Phase: phase, Stage: StageComplete, Result: resultPass, Reason: ReasonNone},
+			metrics.GateSeries{Phase: phase, Stage: StageTicket, Result: resultError, Reason: ReasonGateError})
 	}
 	for _, phase := range []string{string(PhaseProposal), string(PhaseApprovalRecheck)} {
 		for _, reason := range append(slices.Clone(clampReasons), ReasonOther) {
-			series = append(series, metrics.GateSeries{Phase: phase, Stage: StageComplete, Result: "clamp", Reason: reason})
+			series = append(series, metrics.GateSeries{Phase: phase, Stage: StageComplete, Result: resultClamp, Reason: reason})
 		}
 		for _, stage := range stageNames {
-			series = append(series, metrics.GateSeries{Phase: phase, Stage: stage, Result: "error", Reason: ReasonGateError})
+			series = append(series, metrics.GateSeries{Phase: phase, Stage: stage, Result: resultError, Reason: ReasonGateError})
 		}
 	}
 	for _, site := range refusalCatalog {
+		result := resultRefuse
+		if site.deferred {
+			result = resultDeferred
+		}
 		for _, phase := range site.phases() {
-			series = append(series, metrics.GateSeries{
-				Phase: string(phase), Stage: site.Stage, Result: "refuse", Reason: site.Guardrail,
-			})
+			series = append(series, metrics.GateSeries{Phase: string(phase), Stage: site.Stage, Result: result, Reason: site.Guardrail})
 		}
 	}
 	for _, reason := range applyReasons() {
-		series = append(series, metrics.GateSeries{Phase: MetricPhaseApply, Stage: StageTicket, Result: "refuse", Reason: reason})
+		series = append(series, metrics.GateSeries{Phase: MetricPhaseApply, Stage: StageTicket, Result: resultRefuse, Reason: reason})
 	}
-	metrics.PreRegisterGate(series, stagePairs, append(allGuardrails(), ReasonOther))
+	return series
+}
+
+func init() {
+	var stagePairs []metrics.GateStagePair
+	for _, phase := range []string{string(PhaseProposal), string(PhaseApprovalRecheck), MetricPhaseApply} {
+		for _, stage := range append(slices.Clone(stageNames), ReasonOther) {
+			stagePairs = append(stagePairs, metrics.GateStagePair{Phase: phase, Stage: stage})
+		}
+	}
+	metrics.PreRegisterGate(PreRegisteredDecisionSeries(), stagePairs, append(allGuardrails(), ReasonOther))
 }
 
 // IsStage reports whether name is a stage of the pipeline. A caller that gets a
 // refusal as (stage, reason) uses it to tell a gate refusal from a skip that is
-// the proposer's own.
+// the proposer's own, or a deferral.
 func IsStage(name string) bool { return slices.Contains(stageNames, name) }

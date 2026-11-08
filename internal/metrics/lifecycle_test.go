@@ -70,34 +70,76 @@ func TestEveryHarnessFamilyIsPreRegisteredAtZero(t *testing.T) {
 	}
 }
 
-func TestPreRegisteredCountersStartAtZero(t *testing.T) {
-	for name, series := range map[string]float64{
-		"incidents resolved": testutil.ToFloat64(incidentsResolvedTotal.WithLabelValues("resolved")),
-		"tickets issued":     testutil.ToFloat64(ticketsTotal.WithLabelValues(TicketIssued)),
-		"heal credited":      testutil.ToFloat64(healCreditTotal.WithLabelValues("true", "WorkloadPatchedByTicket")),
-		"verify healthy":     testutil.ToFloat64(verificationsTotal.WithLabelValues(VerificationHealthy)),
+// seriesValue reads a counter series from the registry WITHOUT creating it, so
+// "present" means pre-registered and not "this assertion made it".
+func seriesValue(t *testing.T, name string, labels map[string]string) (float64, bool) {
+	t.Helper()
+	families, err := ctrlmetrics.Registry.Gather()
+	if err != nil {
+		t.Fatalf("gathering: %v", err)
+	}
+	for _, f := range families {
+		if f.GetName() != name {
+			continue
+		}
+	next:
+		for _, m := range f.GetMetric() {
+			if len(m.GetLabel()) != len(labels) {
+				continue
+			}
+			for _, l := range m.GetLabel() {
+				if labels[l.GetName()] != l.GetValue() {
+					continue next
+				}
+			}
+			return m.GetCounter().GetValue(), true
+		}
+	}
+	return 0, false
+}
+
+// F-11: the series are read from the registry, not created by the read. These
+// are series no test in this package increments, so they must still be zero.
+func TestPreRegisteredCountersExistAndStartAtZero(t *testing.T) {
+	for name, tc := range map[string]struct {
+		metric string
+		labels map[string]string
+	}{
+		"incidents resolved": {"dorgu_incidents_resolved_total", map[string]string{"outcome": "acknowledged"}},
+		"tickets refused":    {"dorgu_tickets_total", map[string]string{"result": TicketRefusedAtApproval}},
+		"heal not credited":  {"dorgu_heal_credit_total", map[string]string{"credited": "false", "reason": HealReasonWorkloadUnreadable}},
+		"verify unknown":     {"dorgu_verifications_total", map[string]string{"result": VerificationUnknown}},
+		"proposal deferred":  {"dorgu_proposals_total", map[string]string{"source": SourceDorgu, "action_type": "restart", "result": ProposalDeferred}},
+		"transition":         {"dorgu_remediation_transitions_total", map[string]string{"from": "Approved", "to": "Ticketed"}},
+		"llm cache":          {"dorgu_llm_cache_total", map[string]string{"purpose": LLMPurposeDiagnosis, "result": LLMCacheMiss}},
 	} {
-		if series != 0 {
-			t.Errorf("%s = %v before anything happened, want 0", name, series)
+		got, present := seriesValue(t, tc.metric, tc.labels)
+		if !present {
+			t.Errorf("%s: %s %v is not pre-registered", name, tc.metric, tc.labels)
+		} else if got != 0 {
+			t.Errorf("%s = %v before anything happened, want 0", name, got)
 		}
 	}
 }
 
-func TestRecordGateDecisionAndPreRegister(t *testing.T) {
-	PreRegisterGate([]GateSeries{
-		{Phase: "Proposal", Stage: "Ground", Result: "refuse", Reason: "workload-gone"},
-	}, []GateStagePair{{Phase: "Proposal", Stage: "Ground"}}, []string{"blast-radius"})
+func TestPreRegisterGateCreatesTheSeriesItIsGiven(t *testing.T) {
+	labels := map[string]string{"phase": "Proposal", "stage": "Validate", "result": "deferred", "reason": "synthetic-reason"}
+	if _, present := seriesValue(t, "dorgu_gate_decisions_total", labels); present {
+		t.Fatal("the synthetic series exists before it was registered")
+	}
 
-	if got := gathered(t)["dorgu_gate_decisions_total"]; got == 0 {
-		t.Fatal("dorgu_gate_decisions_total has no series after PreRegisterGate")
+	PreRegisterGate([]GateSeries{{Phase: "Proposal", Stage: "Validate", Result: "deferred", Reason: "synthetic-reason"}},
+		[]GateStagePair{{Phase: "Proposal", Stage: "Validate"}}, []string{"synthetic-guardrail"})
+
+	if got, present := seriesValue(t, "dorgu_gate_decisions_total", labels); !present || got != 0 {
+		t.Fatalf("after PreRegisterGate the series is present=%v value=%v, want present at 0", present, got)
 	}
-	series := gateDecisionsTotal.WithLabelValues("Proposal", "Ground", "refuse", "workload-gone")
-	if v := testutil.ToFloat64(series); v != 0 {
-		t.Fatalf("pre-registered series = %v, want 0", v)
+	if _, present := seriesValue(t, "dorgu_guardrail_verdicts_total", map[string]string{"guardrail": "synthetic-guardrail", "verdict": "refuse"}); !present {
+		t.Error("the guardrail verdict series were not registered")
 	}
-	RecordGateDecision("Proposal", "Ground", "refuse", "workload-gone")
-	if v := testutil.ToFloat64(series); v != 1 {
-		t.Errorf("series after one decision = %v, want 1", v)
+	RecordGateDecision("Proposal", "Validate", "deferred", "synthetic-reason")
+	if got, _ := seriesValue(t, "dorgu_gate_decisions_total", labels); got != 1 {
+		t.Errorf("after one decision the series = %v, want 1", got)
 	}
 }
 

@@ -243,7 +243,7 @@ func preRegister() {
 // phase transitions the RemediationAction state machine can make.
 func preRegisterProposals() {
 	for _, a := range proposalActionTypes {
-		for _, r := range []string{ProposalProposed, ProposalSkipped, ProposalSuppressed, ProposalError} {
+		for _, r := range []string{ProposalProposed, ProposalSkipped, ProposalSuppressed, ProposalDeferred, ProposalError} {
 			proposalsTotal.WithLabelValues(SourceDorgu, a, r)
 		}
 	}
