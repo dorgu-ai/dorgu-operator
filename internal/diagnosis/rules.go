@@ -396,7 +396,7 @@ func diagnoseNodePressure(signals []detection.Signal) *Diagnosis {
 	// Filter evictions to same nodes as pressure signals.
 	nodeNames := make(map[string]bool)
 	for _, s := range pressureSignals {
-		if s.Resource.Kind == "Node" {
+		if s.Resource.Kind == detection.KindNode {
 			nodeNames[s.Resource.Name] = true
 		}
 	}

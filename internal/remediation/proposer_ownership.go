@@ -17,12 +17,12 @@ limitations under the License.
 package remediation
 
 import (
-	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
+	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
 )
 
 // applyOwnershipShaping makes the plan match whoever owns the Deployment.
@@ -55,33 +55,17 @@ func applyOwnershipShaping(action *dorguv1.RemediationAction, ref *dorguv1.Workl
 		if step.Type == dorguv1.StepTypePersonaUpdate {
 			continue
 		}
-		if !writesWorkload(step.Command) {
+		if !gate.WritesWorkload(step.Command) {
 			continue
 		}
 		step.Command = ""
 		step.Description = ownerInstruction(ref, changes, step.Description)
-		step.Rationale = appendNote(step.Rationale, reason)
+		step.Rationale = gate.AppendNote(step.Rationale, reason)
 		shaped = true
 	}
 
 	if shaped {
-		action.Spec.PlanSummary = appendNote(action.Spec.PlanSummary, reason)
-	}
-}
-
-// stripWorkloadWriteCommands is the last gate before persistence: no step on an
-// owned workload keeps a command that writes to the cluster, whatever path it
-// arrived by. applyOwnershipShaping rewrites those steps properly; this exists
-// so a future code path that forgets to call it still cannot emit a
-// `kubectl patch` against a Helm release.
-func stripWorkloadWriteCommands(action *dorguv1.RemediationAction, ref *dorguv1.WorkloadRef) {
-	if action == nil || !ref.IsOwned() {
-		return
-	}
-	for i := range action.Spec.Steps {
-		if writesWorkload(action.Spec.Steps[i].Command) {
-			action.Spec.Steps[i].Command = ""
-		}
+		action.Spec.PlanSummary = gate.AppendNote(action.Spec.PlanSummary, reason)
 	}
 }
 
@@ -104,8 +88,8 @@ func proposedResourceChanges(action *dorguv1.RemediationAction) []resourceChange
 		if len(raw) == 0 {
 			return
 		}
-		for path, value := range patchLeafValues(raw) {
-			if !isResourcePath(path) {
+		for path, value := range gate.PatchLeafValues(raw) {
+			if !gate.IsResourcePath(path) {
 				continue
 			}
 			seen[strings.TrimPrefix(path, "spec.")] = value
@@ -166,7 +150,7 @@ func describeChanges(changes []resourceChange) string {
 	for _, c := range changes {
 		parts = append(parts, fmt.Sprintf("%s: %s", c.Key, c.Value))
 	}
-	return "Set " + humanFieldList(parts)
+	return "Set " + gate.HumanFieldList(parts)
 }
 
 // ownerSourceOfTruth names where an owned workload's desired state actually
@@ -203,7 +187,7 @@ func ownerSourceOfTruth(ref *dorguv1.WorkloadRef) (where, how string) {
 		return "your kustomize overlay for this Deployment", "re-apply the overlay"
 
 	default:
-		if !resolved(ref) {
+		if !gate.Resolved(ref) {
 			return "whatever manages this application (Dorgu could not resolve its Deployment)", ""
 		}
 		// An unknown owner is often still a named one: detection records the
@@ -251,7 +235,7 @@ func whyDorguWillNotPatch(ref *dorguv1.WorkloadRef) string {
 		return "Dorgu will not patch this Deployment because a kustomize overlay owns it: a direct patch is overwritten the next time the overlay is applied."
 
 	default:
-		if !resolved(ref) {
+		if !gate.Resolved(ref) {
 			return "Dorgu could not resolve the Deployment for this application, so it cannot tell what owns it and will not suggest a command that writes to it. Unresolved is treated as owned."
 		}
 		if detail := strings.TrimSpace(ref.ManagedByDetail); detail != "" {
@@ -261,36 +245,4 @@ func whyDorguWillNotPatch(ref *dorguv1.WorkloadRef) string {
 		}
 		return "Dorgu could not identify what manages this Deployment, so it will not patch it. Unknown is treated as owned, because a patch that collides with an unseen owner breaks their next deploy."
 	}
-}
-
-// patchLeafValues walks a JSON merge patch and returns every leaf string value
-// keyed by its dot-joined path. Non-string leaves are skipped: the resource
-// fields this is used for are always strings.
-func patchLeafValues(raw []byte) map[string]string {
-	out := make(map[string]string)
-	if len(raw) == 0 {
-		return out
-	}
-	var root map[string]any
-	if err := json.Unmarshal(raw, &root); err != nil {
-		return out
-	}
-
-	var walk func(prefix string, node map[string]any)
-	walk = func(prefix string, node map[string]any) {
-		for key, val := range node {
-			path := key
-			if prefix != "" {
-				path = prefix + "." + key
-			}
-			switch typed := val.(type) {
-			case map[string]any:
-				walk(path, typed)
-			case string:
-				out[path] = typed
-			}
-		}
-	}
-	walk("", root)
-	return out
 }

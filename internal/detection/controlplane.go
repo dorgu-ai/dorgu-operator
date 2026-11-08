@@ -96,7 +96,7 @@ func (cp *ControlPlaneCollector) checkHealthEndpoints(ctx context.Context, now t
 				Source:   controlPlaneCollectorName,
 				Message:  fmt.Sprintf("API server %s check failed: %v", endpoint, err),
 				Resource: dorguv1.ResourceReference{
-					Kind: "ComponentStatus",
+					Kind: KindComponentStatus,
 					Name: "kube-apiserver",
 				},
 				DetectedAt: now,

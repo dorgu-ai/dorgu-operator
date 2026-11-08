@@ -32,6 +32,7 @@ import (
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
 	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
+	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
 )
 
 // evictionDiagnosis is the node-pressure shape the rules produce: one diagnosis
@@ -94,7 +95,7 @@ func TestProposer_PlannerNeverSeesAProtectedNamespaceInAMixedDiagnosis(t *testin
 				WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
 
 			model := &countingPlanner{}
-			p := NewProposer(c, NewSafetyChecker(c, testLogger(), WithProtectedNamespaces("dorgu-system")),
+			p := NewProposer(c, gate.New(c, testLogger(), gate.WithProtectedNamespaces("dorgu-system")),
 				testLogger(), WithPlanner(model))
 
 			_, err := p.Propose(context.Background(), evictionDiagnosis("apps", tt.other), incident)
@@ -114,7 +115,7 @@ func TestProposer_WithheldDiagnosisStillGetsTheRuleBasedProposal(t *testing.T) {
 		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
 
 	model := &countingPlanner{}
-	p := NewProposer(c, NewSafetyChecker(c, testLogger(), WithProtectedNamespaces("dorgu-system")),
+	p := NewProposer(c, gate.New(c, testLogger(), gate.WithProtectedNamespaces("dorgu-system")),
 		testLogger(), WithPlanner(model))
 
 	diag := newOOMDiagnosis("apps", "my-app", detection.SeverityCritical)
@@ -127,14 +128,14 @@ func TestProposer_WithheldDiagnosisStillGetsTheRuleBasedProposal(t *testing.T) {
 }
 
 func TestSafetyChecker_NilReceiverFailsClosed(t *testing.T) {
-	var checker *SafetyCheckerImpl
+	var checker *gate.Gate
 	assert.NotPanics(t, func() {
 		assert.True(t, checker.NamespaceProtected(context.Background(), "apps"))
 		assert.NotNil(t, checker.NamespaceDenied(context.Background(), "apps"))
 	})
 	// The shape a typed nil takes inside the interface the provider holds.
-	var gate diagnosis.NamespaceGate = checker
-	assert.NotPanics(t, func() { assert.True(t, gate.NamespaceProtected(context.Background(), "apps")) })
+	var nsGate diagnosis.NamespaceGate = checker
+	assert.NotPanics(t, func() { assert.True(t, nsGate.NamespaceProtected(context.Background(), "apps")) })
 }
 
 // A persistent failure to read the deny-list turns AI off for every namespace.
@@ -153,7 +154,7 @@ func TestProposer_UnreadableDenyListIsLoudAndExplained(t *testing.T) {
 		}).Build()
 
 	var logs []string
-	p := NewProposer(c, NewSafetyChecker(c, capturingLogger(&logs)), testLogger())
+	p := NewProposer(c, gate.New(c, capturingLogger(&logs)), testLogger())
 
 	result, err := p.Propose(context.Background(), newOOMDiagnosis("apps", "my-app", detection.SeverityCritical), incident)
 	require.NoError(t, err)

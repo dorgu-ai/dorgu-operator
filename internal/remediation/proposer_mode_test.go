@@ -32,6 +32,7 @@ import (
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
+	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation/planner"
 )
 
@@ -97,8 +98,8 @@ func TestProposer_SelfHealingModeGate(t *testing.T) {
 			name:          "observe_creates_no_remediation_action",
 			clusterMode:   dorguv1.SelfHealingModeObserve,
 			wantProposed:  false,
-			wantSkip:      skipReasonObserveMode,
-			wantLogSubstr: skipReasonObserveMode,
+			wantSkip:      gate.SkipReasonObserveMode,
+			wantLogSubstr: gate.SkipReasonObserveMode,
 		},
 		{
 			name:         "propose_creates_a_remediation_action",
@@ -112,9 +113,9 @@ func TestProposer_SelfHealingModeGate(t *testing.T) {
 			wantLogSubstr: "not implemented",
 		},
 		{
-			name:          "unrecognized_mode_falls_back_to_propose",
+			name:          "unrecognized_mode_fails_closed",
 			clusterMode:   "yolo",
-			wantProposed:  true,
+			wantProposed:  false,
 			wantLogSubstr: "unrecognized selfHealing.mode",
 		},
 		{
@@ -141,7 +142,7 @@ func TestProposer_SelfHealingModeGate(t *testing.T) {
 
 			var logs []string
 			logger := capturingLogger(&logs)
-			proposer := NewProposer(c, NewSafetyChecker(c, logger), logger)
+			proposer := NewProposer(c, gate.New(c, logger), logger)
 
 			diag := newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical)
 			result, err := proposer.Propose(context.Background(), diag, incident)
@@ -186,64 +187,13 @@ func TestProposer_ObserveModeSkipsBeforePlanner(t *testing.T) {
 		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
 
 	aiPlanner := &countingPlanner{}
-	proposer := NewProposer(c, NewSafetyChecker(c, testLogger()), testLogger(), WithPlanner(aiPlanner))
+	proposer := NewProposer(c, gate.New(c, testLogger()), testLogger(), WithPlanner(aiPlanner))
 
 	diag := newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical)
 	result, err := proposer.Propose(context.Background(), diag, incident)
 
 	require.NoError(t, err)
 	assert.False(t, result.Proposed)
-	assert.Equal(t, skipReasonObserveMode, result.SkipReason)
+	assert.Equal(t, gate.SkipReasonObserveMode, result.SkipReason)
 	assert.Zero(t, aiPlanner.calls, "observe must not invoke the AI planner")
-}
-
-// TestProposer_SelfHealingMode covers the ClusterPersona lookup in isolation,
-// including personas that declare no mode at all.
-func TestProposer_SelfHealingMode(t *testing.T) {
-	tests := []struct {
-		name     string
-		personas []runtime.Object
-		want     string
-	}{
-		{
-			name: "no_cluster_persona",
-			want: dorguv1.SelfHealingModePropose,
-		},
-		{
-			name:     "persona_with_observe",
-			personas: []runtime.Object{newTestClusterPersona("dorgu-cluster", dorguv1.SelfHealingModeObserve)},
-			want:     dorguv1.SelfHealingModeObserve,
-		},
-		{
-			name: "persona_without_policies_falls_back",
-			personas: []runtime.Object{&dorguv1.ClusterPersona{
-				ObjectMeta: metav1.ObjectMeta{Name: "bare"},
-				Spec:       dorguv1.ClusterPersonaSpec{Name: "bare", Environment: "development"},
-			}},
-			want: dorguv1.SelfHealingModePropose,
-		},
-		{
-			name:     "persona_with_empty_mode_falls_back",
-			personas: []runtime.Object{newTestClusterPersona("dorgu-cluster", "")},
-			want:     dorguv1.SelfHealingModePropose,
-		},
-		{
-			name: "first_persona_declaring_a_mode_wins",
-			personas: []runtime.Object{
-				newTestClusterPersona("a-no-mode", ""),
-				newTestClusterPersona("b-observe", dorguv1.SelfHealingModeObserve),
-			},
-			want: dorguv1.SelfHealingModeObserve,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			c := fake.NewClientBuilder().WithScheme(newTestScheme()).
-				WithRuntimeObjects(tt.personas...).Build()
-			proposer := NewProposer(c, NewSafetyChecker(c, testLogger()), testLogger())
-
-			assert.Equal(t, tt.want, proposer.selfHealingMode(context.Background()))
-		})
-	}
 }

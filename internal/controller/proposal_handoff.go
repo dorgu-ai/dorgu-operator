@@ -39,23 +39,9 @@ func (r *HealthCheckReconciler) proposeRemediation(
 		return
 	}
 
-	// Honour a rejection before spending anything. Proposing runs an AI
-	// planning call, so re-asking a question the user already answered bills
-	// them for saying no (F-07).
-	suppressed, rejectionErr := r.rejectionSuppressesProposal(ctx, diag, incident)
-	if rejectionErr != nil {
-		// Fail closed. Guessing "no rejection" when we cannot tell is the
-		// expensive direction to be wrong in.
-		r.Logger.Error(rejectionErr, "could not read the rejection history; not proposing a remediation",
-			"incident", incident.Name)
-		return
-	}
-	if suppressed != "" {
-		metrics.RecordProposal(metrics.SourceDorgu, diag.SuggestedAction, metrics.ProposalSuppressed)
-		r.Logger.V(1).Info("remediation not proposed", "reason", suppressed, "incident", incident.Name)
-		return
-	}
-
+	// A rejection, a cooldown, observe mode, a protected namespace and every other
+	// reason not to propose are the gate's, and are decided inside Propose before
+	// anything is spent on a planning call.
 	result, proposeErr := r.Proposer.Propose(ctx, *diag, incident)
 	metrics.RecordProposal(metrics.SourceDorgu, diag.SuggestedAction, proposalOutcome(result, proposeErr))
 	switch {
@@ -93,6 +79,8 @@ func proposalOutcome(result *remediation.ProposalResult, err error) string {
 	switch {
 	case err != nil:
 		return metrics.ProposalError
+	case result != nil && result.Suppressed:
+		return metrics.ProposalSuppressed
 	case result != nil && result.Proposed:
 		return metrics.ProposalProposed
 	default:

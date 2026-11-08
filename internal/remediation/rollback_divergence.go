@@ -27,6 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
+	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
 )
 
 // CR5-02, clean-room run #5: `RolledBack` rolled back half the world.
@@ -175,8 +176,8 @@ func compareToPreRemediation(
 	}
 
 	paths := make([]string, 0, 4)
-	for path := range patchLeafValues(action.Spec.Action.Patch.Raw) {
-		if isResourcePath(path) {
+	for path := range gate.PatchLeafValues(action.Spec.Action.Patch.Raw) {
+		if gate.IsResourcePath(path) {
 			paths = append(paths, path)
 		}
 	}
@@ -223,7 +224,7 @@ func (o RollbackOutcome) Message() string {
 			"Container %q on Deployment %s/%s still carries the remediation: %s. "+
 			"%s",
 		o.Ref.Container, o.Ref.Namespace, o.Ref.Name,
-		humanFieldList(fields),
+		gate.HumanFieldList(fields),
 		o.revertInstruction())
 }
 

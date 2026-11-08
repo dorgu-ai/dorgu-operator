@@ -30,6 +30,7 @@ import (
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
+	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation/planner"
 )
 
@@ -91,7 +92,7 @@ func memhogWorld(t *testing.T) (*Proposer, *dorguv1.IncidentMemory) {
 		WithRuntimeObjects(persona, deploy).
 		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
 
-	return NewProposer(c, NewSafetyChecker(c, testLogger()), testLogger()), incident
+	return NewProposer(c, gate.New(c, testLogger()), testLogger()), incident
 }
 
 // TestProposer_AIPath_CR01_UnappliablePlanIsMadeAppliable is the clean-room
@@ -224,7 +225,7 @@ func TestProposer_AIPath_CR01_InvariantHoldsAcrossPlanShapes(t *testing.T) {
 			require.NoError(t, err)
 			require.True(t, result.Proposed)
 
-			require.NoError(t, assertAppliableWhenResourceDiagnosed(result.Action, diag, false),
+			require.NoError(t, assertAppliable(result.Action, diag, false),
 				"a resource change was diagnosed, so something in the plan has to be able to change a resource")
 			require.True(t, result.Action.HasAutoApplicableChange())
 			require.NoError(t, result.Action.ValidateAutoExecutable())
@@ -248,7 +249,7 @@ func TestProposer_AIPath_CR01_NoPhantomPersonaUpdateStep(t *testing.T) {
 		WithRuntimeObjects(persona, deploy).
 		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
 
-	p := NewProposer(c, NewSafetyChecker(c, testLogger()), testLogger(),
+	p := NewProposer(c, gate.New(c, testLogger()), testLogger(),
 		WithPlanner(&stubPlanner{plan: cleanRoomOOMPlan()}))
 
 	diag := newOOMDiagnosis(defaultNamespace, groundedPersona, detection.SeverityCritical)
@@ -304,7 +305,7 @@ func TestProposer_AIPath_CR04_ClampIsStructuredNotProse(t *testing.T) {
 		}},
 	}
 
-	p := NewProposer(c, NewSafetyChecker(c, testLogger()), testLogger(), WithPlanner(&stubPlanner{plan: plan}))
+	p := NewProposer(c, gate.New(c, testLogger()), testLogger(), WithPlanner(&stubPlanner{plan: plan}))
 
 	diag := newOOMDiagnosis(defaultNamespace, groundedPersona, detection.SeverityCritical)
 	result, err := p.Propose(context.Background(), diag, incident)
@@ -409,11 +410,11 @@ func TestAssertAppliableWhenResourceDiagnosed(t *testing.T) {
 	nonResource := newOOMDiagnosis(defaultNamespace, groundedPersona, detection.SeverityCritical)
 	nonResource.Contributing[0].Signal.Type = detection.SignalImagePullBackOff
 
-	assert.Error(t, assertAppliableWhenResourceDiagnosed(advisory, oom, false))
-	assert.NoError(t, assertAppliableWhenResourceDiagnosed(appliable, oom, false))
-	assert.NoError(t, assertAppliableWhenResourceDiagnosed(advisory, nonResource, false),
+	assert.Error(t, assertAppliable(advisory, oom, false))
+	assert.NoError(t, assertAppliable(appliable, oom, false))
+	assert.NoError(t, assertAppliable(advisory, nonResource, false),
 		"a non-resource diagnosis may be answered with advice alone")
-	assert.NoError(t, assertAppliableWhenResourceDiagnosed(advisory, oom, true),
+	assert.NoError(t, assertAppliable(advisory, oom, true),
 		"advisory is the considered outcome when the rule engine declines too")
 }
 
@@ -457,52 +458,16 @@ func TestDropPatchlessPersonaUpdates(t *testing.T) {
 func TestPrunePatchPaths(t *testing.T) {
 	both := mustJSON(`{"spec":{"resources":{"limits":{"memory":"128Mi"},"requests":{"memory":"64Mi"}}}}`)
 
-	kept := prunePatchPaths(both, []string{"spec.resources.requests.memory"})
+	kept := gate.PrunePatchPaths(both, []string{"spec.resources.requests.memory"})
 	require.NotNil(t, kept)
 	assert.JSONEq(t, `{"spec":{"resources":{"limits":{"memory":"128Mi"}}}}`, string(kept.Raw))
 
-	assert.Nil(t, prunePatchPaths(both, []string{
+	assert.Nil(t, gate.PrunePatchPaths(both, []string{
 		"spec.resources.limits.memory", "spec.resources.requests.memory",
 	}), "an emptied patch is nil, not an empty object that reads as a change")
 
-	assert.Equal(t, both, prunePatchPaths(both, nil), "no paths means no change")
-	assert.Nil(t, prunePatchPaths(nil, []string{"spec.x"}))
-}
-
-// TestRefuseStepFields covers the refusal in isolation: structured verdict, the
-// field gone from the patch, and Dorgu owning both sentences on the step.
-func TestRefuseStepFields(t *testing.T) {
-	step := &dorguv1.RemediationStep{
-		Order: 1, ID: "step-1", Type: dorguv1.StepTypePersonaUpdate, AutoExecutable: true,
-		Description: "Raise the limit to 128Mi, well within a 2x ceiling",
-		Rationale:   "the persona's recorded intent is 128Mi",
-		Patch:       mustJSON(`{"spec":{"resources":{"limits":{"memory":"128Mi"}}}}`),
-		PrePatchState: mustJSON(
-			`{"spec":{"resources":{"limits":{"memory":"8Mi"}}}}`),
-	}
-
-	refuseStepFields(step, []SafetyViolation{{
-		Rule:    "blast-radius",
-		Message: "resource change for spec.resources.limits.memory exceeds maximum: 16.0x increase (max 2.0x)",
-		BlastRadius: &BlastRadiusViolation{
-			Field: "spec.resources.limits.memory", Baseline: "8Mi", Requested: "128Mi",
-			Ratio: 16, MaxRatio: 2,
-		},
-	}})
-
-	assert.False(t, step.AutoExecutable)
-	assert.Nil(t, step.Patch, "a refused field leaves nothing to apply")
-	assert.Nil(t, step.PrePatchState)
-
-	require.Len(t, step.Safety, 1)
-	assert.Equal(t, dorguv1.SafetyVerdictRejected, step.Safety[0].Verdict)
-	assert.Equal(t, "16.0x", step.Safety[0].Ratio)
-	assert.Equal(t, "2.0x", step.Safety[0].MaxRatio)
-	assert.Empty(t, step.Safety[0].Permitted)
-
-	assert.Equal(t, "This step applies nothing. "+step.Safety[0].Message, step.Description)
-	assert.NotContains(t, step.Description, "well within a 2x ceiling")
-	assert.NotContains(t, step.Rationale, "128Mi")
+	assert.Equal(t, both, gate.PrunePatchPaths(both, nil), "no paths means no change")
+	assert.Nil(t, gate.PrunePatchPaths(nil, []string{"spec.x"}))
 }
 
 // TestProposer_AIPath_DerivedPatchKeepsWhatThePlanGotRight is the near-miss
@@ -542,13 +507,13 @@ func TestMergePatches(t *testing.T) {
 
 	assert.JSONEq(t,
 		`{"spec":{"resources":{"limits":{"memory":"128Mi"},"requests":{"memory":"48Mi"}}}}`,
-		string(mergePatches(base, overlay).Raw))
+		string(gate.MergePatches(base, overlay).Raw))
 
 	assert.JSONEq(t, `{"spec":{"a":"2"}}`,
-		string(mergePatches(mustJSON(`{"spec":{"a":"1"}}`), mustJSON(`{"spec":{"a":"2"}}`)).Raw),
+		string(gate.MergePatches(mustJSON(`{"spec":{"a":"1"}}`), mustJSON(`{"spec":{"a":"2"}}`)).Raw),
 		"the overlay wins where both set a path")
 
-	assert.Equal(t, overlay, mergePatches(nil, overlay))
-	assert.Equal(t, base, mergePatches(base, nil))
-	assert.Equal(t, overlay, mergePatches(mustJSON(`not json`), overlay))
+	assert.Equal(t, overlay, gate.MergePatches(nil, overlay))
+	assert.Equal(t, base, gate.MergePatches(base, nil))
+	assert.Equal(t, overlay, gate.MergePatches(mustJSON(`not json`), overlay))
 }

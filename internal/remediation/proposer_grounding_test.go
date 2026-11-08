@@ -33,6 +33,7 @@ import (
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
+	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
 )
 
 // newWorkloadScheme is newTestScheme plus apps/v1, so a fake client can serve
@@ -127,7 +128,7 @@ func TestProposer_GroundsMemoryInLiveWorkload(t *testing.T) {
 		WithRuntimeObjects(persona, deploy).
 		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
 
-	proposer := NewProposer(c, NewSafetyChecker(c, testLogger()), testLogger())
+	proposer := NewProposer(c, gate.New(c, testLogger()), testLogger())
 	diag := newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical)
 
 	result, err := proposer.Propose(context.Background(), diag, incident)
@@ -158,7 +159,7 @@ func TestProposer_WorkloadRefRecordsLiveState(t *testing.T) {
 		WithRuntimeObjects(persona, deploy).
 		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
 
-	proposer := NewProposer(c, NewSafetyChecker(c, testLogger()), testLogger())
+	proposer := NewProposer(c, gate.New(c, testLogger()), testLogger())
 	result, err := proposer.Propose(context.Background(),
 		newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical), incident)
 	require.NoError(t, err)
@@ -195,7 +196,7 @@ func TestProposer_NeverIntroducesAbsentResourceKey(t *testing.T) {
 		WithRuntimeObjects(persona, deploy).
 		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
 
-	proposer := NewProposer(c, NewSafetyChecker(c, testLogger()), testLogger())
+	proposer := NewProposer(c, gate.New(c, testLogger()), testLogger())
 	diag := newCPUDiagnosis(defaultNamespace, "my-app", detection.SeverityWarning)
 
 	result, err := proposer.Propose(context.Background(), diag, incident)
@@ -217,7 +218,7 @@ func TestProposer_FallsBackToPersonaWhenWorkloadUnreadable(t *testing.T) {
 		WithRuntimeObjects(persona).
 		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
 
-	proposer := NewProposer(c, NewSafetyChecker(c, testLogger()), testLogger())
+	proposer := NewProposer(c, gate.New(c, testLogger()), testLogger())
 	result, err := proposer.Propose(context.Background(),
 		newOOMDiagnosis(defaultNamespace, "solo-app", detection.SeverityCritical), incident)
 	require.NoError(t, err)

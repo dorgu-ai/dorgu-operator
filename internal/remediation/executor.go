@@ -20,12 +20,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"maps"
 
 	"github.com/go-logr/logr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
+	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
 )
 
 // PreconditionError reports that a RemediationAction was refused before the
@@ -189,42 +189,7 @@ func jsonMergePatch(target, patch []byte) ([]byte, error) {
 		return nil, fmt.Errorf("unmarshalling patch: %w", err)
 	}
 
-	merged := mergeMaps(targetMap, patchMap)
+	merged := gate.MergeMaps(targetMap, patchMap)
 
 	return json.Marshal(merged)
-}
-
-// mergeMaps recursively merges patch into target following JSON merge patch semantics.
-func mergeMaps(target, patch map[string]any) map[string]any {
-	result := make(map[string]any, len(target))
-	maps.Copy(result, target)
-
-	for k, patchVal := range patch {
-		if patchVal == nil {
-			delete(result, k)
-			continue
-		}
-
-		patchMap, patchIsMap := patchVal.(map[string]any)
-		if !patchIsMap {
-			result[k] = patchVal
-			continue
-		}
-
-		targetVal, targetExists := result[k]
-		if !targetExists {
-			result[k] = patchVal
-			continue
-		}
-
-		targetMap, targetIsMap := targetVal.(map[string]any)
-		if !targetIsMap {
-			result[k] = patchVal
-			continue
-		}
-
-		result[k] = mergeMaps(targetMap, patchMap)
-	}
-
-	return result
 }

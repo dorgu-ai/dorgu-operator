@@ -10,6 +10,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Upgrade notes
 
 > **A RemediationAction nobody approves now expires.** A `Pending` proposal older than 24 hours becomes `Expired`: terminal, nothing applied, no rejection or failure cooldown, and Dorgu may propose again if the problem persists. Tune it with `--remediation-pending-ttl` / the Helm value `remediation.pendingTTL` (`0` disables the TTL). A proposal's own `spec.approval.deadline` can shorten the window but never extend it. An action approved after its deadline is refused (`Expired`), not applied.
+>
+> **`RemediationAction` gains `status.gate`; apply the CRDs.** Helm does not upgrade CRDs, so run `kubectl apply -f charts/dorgu-operator/crds/dorgu.io_remediationactions.yaml` (or reinstall) before the new operator starts proposing. Nothing reads the field yet, and older operators ignore it. The spec fields it overlaps (`spec.workloadRef`, `spec.steps[].safety`, `spec.action.prePatchState`) are still written for one release; where they disagree, trust `status.gate`.
+>
+> **A persona the operator cannot clear is now refused when the rate limit cannot be read.** If the ClusterPersona list fails (lost RBAC, missing CRD), proposals are refused until it recovers, where before the limit silently reverted to the default of 5/h.
+>
+> **With the operator's own namespace unknown (`POD_NAMESPACE` unset), the gate now refuses every proposal, rule-based ones included, and AI diagnosis and AI planning are off** (the ClusterPersona carries an `OperatorNamespaceKnown=False` condition). The Helm chart always sets it; set it yourself when running the operator outside a cluster.
+>
+> **`ClusterPersona.spec.policies.selfHealing.excludeNamespaces` items are now validated by the CRD as DNS-1123 labels (at most 63 characters).** Apply the CRDs. An existing object with an entry such as `Shop` or `*` is rejected on its next update; fix the entry (it never matched anything).
 
 ### Fixed
 
@@ -20,11 +28,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 
 - **Pending proposals expire (harness P1, task 1.9; adversarial OP-14).** New phase behaviour for the existing `Expired` phase, new `Expired` condition (reason `ApprovalTimedOut`), new flag `--remediation-pending-ttl` (default `24h`) and Helm value `remediation.pendingTTL`.
+- **`internal/harness/gate`: one pipeline every remediation passes through (harness P1, tasks 1.1 and 1.2).** `Validate -> Ground -> Ownership -> Guardrails -> ModePolicy -> Dedup/Cooldown`, run by `gate.Run(ctx, candidate, phase)` with `phase` Proposal or ApprovalRecheck. The proposer now builds a candidate (rule engine or AI planner), asks the gate, and writes what the gate allows. The safety checker, the self-healing mode, the proposal dedup, the rejection cooldown, the absent-field and blast-radius clamps and the owned-workload command rule all moved into it. ApprovalRecheck is implemented and unit-tested; the controller does not call it yet.
+- **`status.gate` on RemediationAction:** the live facts the gate read (`observed`: workload UID and resourceVersion, persona generation, live values), the resolved `ownership`, every guardrail `verdict` with its numbers, and the `prePatchState` the cap was measured against, which is always computed from the live workload and never taken from the plan.
+- **Persona-update field allowlist.** A persona-update may only set CPU or memory quantities under `resources`; a path under `policies.*`, a `null` (a merge-patch delete), a boolean or a non-positive quantity is removed from the plan and recorded.
+- **Operator-owned verification and rollback.** The plan's own `healthCheckAfter` and rollback settings are ignored in favour of the operator's (10 minutes, rollback on).
+- **ClusterPersona conditions `OperatorNamespaceKnown` and `ExcludeNamespacesValid`.** The second reports `excludeNamespaces` entries that are not valid namespace names (a wildcard, a capital letter); the CRD now rejects them too.
 
 ### Changed
 
+- **Review fixes to the gate (independent adversarial review of #54, R1 to R12).** The gate measures the `Action` the executor applies as well as the steps (a benign step beside a 999Gi `Action.Patch` no longer passes). A workload that is deleted or ambiguous at approval, a persona that does not exist (at proposal too), an unreadable Deployment list, and a field with no baseline to measure against all refuse or clamp, each with its own reason (`workload-gone`, `workload-ambiguous`, `persona`, `no-baseline`). With several ClusterPersonas the most restrictive `mode` and the lowest `maxRemediationsPerHour` win, and an unreadable or unrecognized mode refuses. `excludeNamespaces` is compared trimmed and lowercased. A step `command` must be one plain `kubectl` invocation (no wrapper, absolute path, `&&`, pipe, substitution, quotes, or flag that names another cluster or identity), and a persona patch must be a JSON object without dotted keys (`step-command`, `patch-shape`). A Deployment with a controller ownerReference reads as owned; only Dorgu's own field managers (`dorgu`, `dorgu-operator`) and kubectl's client-side Update managers are benign, so a server-side `kubectl apply` pipeline reads as owned. `status.gate` is now the decision of the final seal run on the plan that was written, and a RemediationAction whose status cannot be written is deleted and reported as an error instead of `Proposed`.
+- **Known gaps carried to B5:** the proposer's rate-limit and dedup reads go through the cached client, so two proposals in the same cache window can both pass; and a client-side `kubectl apply` from CI is indistinguishable from a human's (`kubectl-client-side-apply` Update entry), so such a Deployment still reads as unmanaged.
 - **Internal: the health-check reconciler is split into cohesive files, with no behaviour change (harness P1, task 1.11).** `healthcheck_reconciler.go` (1,245 lines) is now the cycle only; the incident store (`incident_store.go`), incident subject and attribution (`incident_subject.go`), resolution (`incident_resolution.go`), the DorguEvent and Kubernetes Event writers (`incident_events.go`) and the proposal hand-off (`proposal_handoff.go`) each have their own file. Lifecycle broadcasts go through a new `Notifier` interface (`notifier.go`); the `WebSocket` field still works.
 - **Internal: the deny-list, diagnosis providers, AI planner and proposer are assembled by a testable `buildHealthPipeline` instead of inline in `main()`.** A wiring test fails if the AI diagnosis provider is gated by a checker that lacks the operator namespace, closing the #51 follow-up.
+- **Guardrails select sibling RemediationActions by `spec.personaRef`, not by labels, and exclude the candidate itself (adversarial OP-02).** A creator who left the labels off used to be invisible to the rate limit, the concurrency check and the failure cooldown.
+- **Rate limit, concurrency, deny-list and cooldown now run before the planner is asked,** not after the plan is written, so a refused persona no longer costs an AI call.
+- **`getMaxRemediationsPerHour` fails closed** on a ClusterPersona list error (#51 follow-up).
+- **One list of cluster-scoped kinds:** `detection.IsClusterScopedKind`, used by the detectors and by the diagnosis deny-list enumeration (#51 follow-up).
+- Skip reasons from the gate keep their `safety check failed: [[rule] message]` form; a same-incident duplicate that is already past approval now reports `[concurrent]` instead of `active remediation already exists`.
 
 ## [0.12.1] - 2026-11-07
 

@@ -42,6 +42,7 @@ import (
 	"github.com/dorgu-ai/dorgu-operator/internal/controller"
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
 	"github.com/dorgu-ai/dorgu-operator/internal/events"
+	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation"
 	dorguws "github.com/dorgu-ai/dorgu-operator/internal/websocket"
 	// +kubebuilder:scaffold:imports
@@ -155,6 +156,12 @@ func main() {
 		os.Exit(1)
 	}
 
+	// The operator's own namespace is what the deny-list must protect. It is read
+	// once, here, because both the ClusterPersona controller (which reports an
+	// unknown one) and the health pipeline (which refuses to talk to a model
+	// without it) depend on the answer.
+	operatorNS := operatorNamespace()
+
 	// Create discovery client for ClusterPersona controller
 	discoveryClient, err := discovery.NewDiscoveryClientForConfig(restConfig)
 	if err != nil {
@@ -187,6 +194,8 @@ func main() {
 		Client:          mgr.GetClient(),
 		Scheme:          mgr.GetScheme(),
 		DiscoveryClient: discoveryClient,
+
+		OperatorNamespaceUnknown: operatorNS == "",
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ClusterPersona")
 		os.Exit(1)
@@ -281,7 +290,7 @@ func main() {
 
 		// 3. Assemble the deny-list, diagnosis providers, AI planner and proposer.
 		// buildHealthPipeline is the one place they are wired together.
-		pipeline := buildHealthPipeline(mgr.GetClient(), cfg, operatorNamespace(), setupLog)
+		pipeline := buildHealthPipeline(mgr.GetClient(), cfg, operatorNS, setupLog)
 		diagnosisEngine := pipeline.DiagnosisEngine
 
 		// 4. Create event pipeline components.
@@ -387,10 +396,11 @@ func main() {
 // operatorNamespace returns the namespace the deny-list must protect as
 // Dorgu's own, and says so when it cannot be determined.
 func operatorNamespace() string {
-	ns := remediation.OperatorNamespace()
+	ns := gate.OperatorNamespace()
 	if ns == "" {
-		setupLog.Info("operator namespace unknown: set " + remediation.OperatorNamespaceEnv +
-			"; the deny-list protects kube-system and --safety-excluded-namespaces only")
+		setupLog.Info("operator namespace unknown: set " + gate.OperatorNamespaceEnv +
+			"; the deny-list protects kube-system and --safety-excluded-namespaces only, " +
+			"so AI diagnosis and AI planning stay off")
 		return ""
 	}
 	setupLog.Info("deny-list protects the operator namespace", "namespace", ns)

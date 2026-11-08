@@ -20,12 +20,11 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
-	"strings"
-	"unicode"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
+	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
 )
 
 // ClampedConfidenceDamping scales a plan's confidence when the blast-radius
@@ -65,7 +64,7 @@ func discloseBlastRadiusClamp(action *dorguv1.RemediationAction) bool {
 		for _, f := range fields {
 			clamped[f] = true
 		}
-		step.Rationale = appendNote(step.Rationale, blastRadiusCaveat(fields))
+		step.Rationale = gate.AppendNote(step.Rationale, blastRadiusCaveat(fields))
 	}
 
 	for _, f := range fieldsAtBlastRadiusCap(action.Spec.Action.Patch, action.Spec.Action.PrePatchState) {
@@ -77,9 +76,9 @@ func discloseBlastRadiusClamp(action *dorguv1.RemediationAction) bool {
 	}
 
 	caveat := blastRadiusCaveat(sortedKeys(clamped))
-	action.Spec.Explanation = appendNote(action.Spec.Explanation, caveat)
+	action.Spec.Explanation = gate.AppendNote(action.Spec.Explanation, caveat)
 	if action.Spec.PlanSummary != "" {
-		action.Spec.PlanSummary = appendNote(action.Spec.PlanSummary, caveat)
+		action.Spec.PlanSummary = gate.AppendNote(action.Spec.PlanSummary, caveat)
 	}
 	action.Spec.Confidence = dampConfidence(action.Spec.Confidence)
 
@@ -94,11 +93,11 @@ func fieldsAtBlastRadiusCap(patch, prePatch *apiextensionsv1.JSON) []string {
 		return nil
 	}
 
-	patchValues, err := parseResourcePatch(patch.Raw)
+	patchValues, err := gate.ParseResourcePatch(patch.Raw)
 	if err != nil {
 		return nil
 	}
-	prePatchValues, err := parseResourcePatch(prePatch.Raw)
+	prePatchValues, err := gate.ParseResourcePatch(prePatch.Raw)
 	if err != nil {
 		return nil
 	}
@@ -113,7 +112,7 @@ func fieldsAtBlastRadiusCap(patch, prePatch *apiextensionsv1.JSON) []string {
 		if oldQty <= 0 {
 			continue
 		}
-		if newVal.AsApproximateFloat64()/oldQty >= MaxBlastRadiusMultiplier-clampEpsilon {
+		if newVal.AsApproximateFloat64()/oldQty >= gate.MaxBlastRadiusMultiplier-clampEpsilon {
 			fields = append(fields, field)
 		}
 	}
@@ -128,19 +127,7 @@ func blastRadiusCaveat(fields []string) string {
 	return fmt.Sprintf(
 		"Clamped by the %.0fx blast-radius guardrail: %s could not be raised further in one step, "+
 			"so this may be insufficient and a second increase may be required.",
-		MaxBlastRadiusMultiplier, humanFieldList(fields))
-}
-
-// humanFieldList renders field paths as prose: "a", "a and b", "a, b and c".
-func humanFieldList(fields []string) string {
-	switch len(fields) {
-	case 0:
-		return "the proposed value"
-	case 1:
-		return fields[0]
-	default:
-		return strings.Join(fields[:len(fields)-1], ", ") + " and " + fields[len(fields)-1]
-	}
+		gate.MaxBlastRadiusMultiplier, gate.HumanFieldList(fields))
 }
 
 // dampConfidence lowers a confidence string by ClampedConfidenceDamping, keeping
@@ -151,39 +138,6 @@ func dampConfidence(confidence string) string {
 		return confidence
 	}
 	return fmt.Sprintf("%.2f", parsed*ClampedConfidenceDamping)
-}
-
-// appendNote joins a note onto existing prose without doubling separators or
-// repeating a note that is already there.
-//
-// A missing full stop is supplied. Without one the two runs together into a
-// single sentence — "…1 applied on approval and 1 advisory Clamped by the 2x
-// blast-radius guardrail…" is what the clean room read — and a reader is not
-// the only casualty: scrubRefusedValues redacts by sentence, so a model
-// sentence fused to a Dorgu-authored note cannot be removed without taking the
-// note with it.
-func appendNote(existing, note string) string {
-	if existing == "" {
-		return note
-	}
-	if strings.Contains(existing, note) {
-		return existing
-	}
-	return endSentence(existing) + " " + note
-}
-
-// endSentence terminates prose that does not terminate itself. Text already
-// ending in punctuation is left exactly as it is.
-func endSentence(text string) string {
-	trimmed := strings.TrimRight(text, " ")
-	if trimmed == "" {
-		return trimmed
-	}
-	last := []rune(trimmed)[len([]rune(trimmed))-1]
-	if unicode.IsLetter(last) || unicode.IsDigit(last) {
-		return trimmed + "."
-	}
-	return trimmed
 }
 
 // sortedKeys returns a set's keys in a stable order.

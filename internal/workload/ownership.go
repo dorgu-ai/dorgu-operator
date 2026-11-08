@@ -62,8 +62,9 @@ const (
 	managerArgoCDApp       = "argocd-application-controller"
 	managerFluxKustomize   = "kustomize-controller"
 	managerFluxHelm        = "helm-controller"
-	managerKubectlPrefix   = "kubectl"
-	managerDorguPrefix     = "dorgu"
+	managerKubectlPrefix   = "kubectl-"
+	managerDorgu           = "dorgu"
+	managerDorguOperator   = "dorgu-operator"
 	managerKubeControllers = "kube-controller-manager"
 )
 
@@ -127,6 +128,13 @@ func DetectOwner(deploy *appsv1.Deployment) Ownership {
 		return o
 	}
 	if o, ok := detectKustomize(labels, annotations); ok {
+		return o
+	}
+
+	// A controller owner reference means a controller reconciles this object:
+	// whatever custom resource owns it will put back what is changed. It is owned
+	// even when no label or field manager says so (R8).
+	if o, ok := controllerOwner(deploy.GetOwnerReferences()); ok {
 		return o
 	}
 
@@ -294,7 +302,7 @@ func hasManager(managers map[string]struct{}, names ...string) bool {
 // entry after patching so no Dorgu claim outlives a heal.
 func foreignFieldOwner(entries []metav1.ManagedFieldsEntry) (Ownership, bool) {
 	for _, e := range entries {
-		if e.Manager == "" || isKnownBenignManager(e.Manager) {
+		if e.Manager == "" || isKnownBenignManager(e) {
 			continue
 		}
 		switch e.Operation {
@@ -315,14 +323,40 @@ func foreignFieldOwner(entries []metav1.ManagedFieldsEntry) (Ownership, bool) {
 	return Ownership{}, false
 }
 
-// isKnownBenignManager reports whether a field manager is one whose presence
-// says nothing about a workload being reconciled: the user's own kubectl,
-// Dorgu, or the Deployment controller.
-func isKnownBenignManager(manager string) bool {
-	lower := strings.ToLower(manager)
-	return strings.HasPrefix(lower, managerKubectlPrefix) ||
-		strings.HasPrefix(lower, managerDorguPrefix) ||
-		lower == managerKubeControllers
+// controllerOwner reports the controller owner reference, if any. The owner is
+// named in the detail; its kind is not one of the managers the CRD enumerates, so
+// it is reported as unknown, which every consumer treats as owned.
+func controllerOwner(refs []metav1.OwnerReference) (Ownership, bool) {
+	for _, ref := range refs {
+		if ref.Controller != nil && *ref.Controller {
+			return Ownership{
+				ManagedBy: dorguv1.ManagedByUnknown,
+				Detail:    fmt.Sprintf("controlled by %s %q", ref.Kind, ref.Name),
+			}, true
+		}
+	}
+	return Ownership{}, false
+}
+
+// isKnownBenignManager reports whether a field manager entry says nothing about a
+// workload being reconciled. Only these are benign (R8):
+//
+//   - Dorgu's own two managers, by exact name. A prefix match let any manager
+//     named "dorgu-something" pass as Dorgu.
+//   - kubectl's client-side managers (kubectl-set, kubectl-patch, kubectl-edit,
+//     kubectl-client-side-apply, ...), which are Update entries: a human with
+//     kubectl, which is what unmanaged means. A kubectl Apply entry is server-side
+//     apply, and a pipeline that does that re-asserts its manifest on every run.
+//   - the Deployment controller.
+func isKnownBenignManager(entry metav1.ManagedFieldsEntry) bool {
+	lower := strings.ToLower(entry.Manager)
+	switch {
+	case lower == managerDorgu || lower == managerDorguOperator || lower == managerKubeControllers:
+		return true
+	case strings.HasPrefix(lower, managerKubectlPrefix):
+		return entry.Operation == metav1.ManagedFieldsOperationUpdate
+	}
+	return false
 }
 
 // argoCDAppFromTrackingID pulls the application name out of an ArgoCD

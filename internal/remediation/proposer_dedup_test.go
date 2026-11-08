@@ -31,6 +31,7 @@ import (
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
 	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
+	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
 )
 
 // existingRA builds a RemediationAction that targets the given incident, carries
@@ -41,7 +42,7 @@ func existingRA(name, personaName, incidentName, phase string) *dorguv1.Remediat
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: namespace,
-			Labels:    map[string]string{labelPersonaName: personaName},
+			Labels:    map[string]string{"dorgu.io/persona-name": personaName},
 		},
 		Spec: dorguv1.RemediationActionSpec{
 			IncidentRef: dorguv1.IncidentReference{Name: incidentName, Namespace: namespace},
@@ -72,14 +73,16 @@ func TestProposer_Dedup_SkipsWhenActiveExists(t *testing.T) {
 				WithRuntimeObjects(persona, ra).
 				WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
 
-			safety := NewSafetyChecker(c, testLogger())
+			safety := gate.New(c, testLogger())
 			// A working planner is wired to prove dedup runs BEFORE the AI path.
 			p := NewProposer(c, safety, testLogger(), WithPlanner(&stubPlanner{plan: threeStepPlan()}))
 
 			result, err := p.Propose(context.Background(), newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical), incident)
 			require.NoError(t, err)
 			assert.False(t, result.Proposed, "must not propose a second remediation")
-			assert.Contains(t, result.SkipReason, "active remediation already exists")
+			// An action already past approval is refused by the concurrency guardrail,
+			// which runs before the dedup stage; a Pending one is a plain duplicate.
+			assert.Regexp(t, "active remediation already exists|\\[concurrent\\]", result.SkipReason)
 
 			var list dorguv1.RemediationActionList
 			require.NoError(t, c.List(context.Background(), &list))
@@ -101,7 +104,7 @@ func TestProposer_Dedup_ProposesWhenPriorTerminal(t *testing.T) {
 		WithRuntimeObjects(persona, ra).
 		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
 
-	safety := NewSafetyChecker(c, testLogger())
+	safety := gate.New(c, testLogger())
 	p := NewProposer(c, safety, testLogger())
 
 	result, err := p.Propose(context.Background(), newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityWarning), incident)
@@ -121,7 +124,7 @@ func TestProposer_Dedup_IgnoresOtherIncident(t *testing.T) {
 		WithRuntimeObjects(persona, other).
 		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
 
-	safety := NewSafetyChecker(c, testLogger())
+	safety := gate.New(c, testLogger())
 	p := NewProposer(c, safety, testLogger())
 
 	result, err := p.Propose(context.Background(), newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityWarning), incident)
@@ -141,7 +144,7 @@ func TestProposer_AIXorRule_ValidPlan(t *testing.T) {
 		WithRuntimeObjects(persona).
 		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
 
-	safety := NewSafetyChecker(c, testLogger())
+	safety := gate.New(c, testLogger())
 	p := NewProposer(c, safety, testLogger(), WithPlanner(&stubPlanner{plan: threeStepPlan()}))
 
 	result, err := p.Propose(context.Background(), newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical), incident)
@@ -166,7 +169,7 @@ func TestProposer_AIXorRule_PlannerError(t *testing.T) {
 		WithRuntimeObjects(persona).
 		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
 
-	safety := NewSafetyChecker(c, testLogger())
+	safety := gate.New(c, testLogger())
 	p := NewProposer(c, safety, testLogger(), WithPlanner(&stubPlanner{err: errors.New("model down")}))
 
 	result, err := p.Propose(context.Background(), newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical), incident)
@@ -188,7 +191,7 @@ func existingResourceRA(personaName, phase string) *dorguv1.RemediationAction {
 		name         = "ra-oom"
 		namespace    = defaultNamespace
 		incidentName = "im-oom"
-		patchPath    = resourcePathMemory
+		patchPath    = gate.ResourcePathMemory
 		value        = "384Mi"
 	)
 	ra := existingRA(name, personaName, incidentName, phase)
@@ -202,7 +205,7 @@ func existingResourceRA(personaName, phase string) *dorguv1.RemediationAction {
 // resourcePatchJSON renders a merge patch for a resource-limit path.
 func resourcePatchJSON(patchPath, value string) string {
 	switch patchPath {
-	case resourcePathCPU:
+	case gate.ResourcePathCPU:
 		return `{"spec":{"resources":{"limits":{"cpu":"` + value + `"}}}}`
 	default:
 		return `{"spec":{"resources":{"limits":{"memory":"` + value + `"}}}}`
@@ -309,7 +312,7 @@ func TestProposer_TargetDedup(t *testing.T) {
 				WithRuntimeObjects(persona, tt.existing).
 				WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
 
-			safety := NewSafetyChecker(c, testLogger())
+			safety := gate.New(c, testLogger())
 			// A working planner proves target dedup runs BEFORE the AI path.
 			p := NewProposer(c, safety, testLogger(), WithPlanner(&stubPlanner{plan: threeStepPlan()}))
 

@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -33,12 +34,12 @@ import (
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
 	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
+	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation"
 )
 
-// countingProposer records how many times the reconciler asked for a proposal.
-// Every call is a billable AI planning round in the real proposer, which is why
-// F-07 (re-proposing a rejected fix 30s later) costs the user money.
+// countingProposer records how many times the reconciler asked for a proposal,
+// for the tests that do not care about the proposer's own decisions.
 type countingProposer struct {
 	calls int
 }
@@ -50,6 +51,35 @@ func (p *countingProposer) Propose(
 ) (*remediation.ProposalResult, error) {
 	p.calls++
 	return &remediation.ProposalResult{SkipReason: "stub proposer"}, nil
+}
+
+// spyProposer wraps the REAL proposer, and with it the real gate, and records
+// what it answered. The rejection cooldown is the gate's: it is decided inside
+// Propose, before any planning call, so these tests ask the real thing whether it
+// would have proposed rather than stubbing the decision out.
+type spyProposer struct {
+	inner remediation.RemediationProposer
+	calls int
+	last  *remediation.ProposalResult
+	err   error
+}
+
+func (p *spyProposer) Propose(
+	ctx context.Context,
+	diag diagnosis.Diagnosis,
+	incident *dorguv1.IncidentMemory,
+) (*remediation.ProposalResult, error) {
+	p.calls++
+	p.last, p.err = p.inner.Propose(ctx, diag, incident)
+	return p.last, p.err
+}
+
+// suppressed reports whether the proposer withheld the proposal for a prior
+// rejection.
+func (p *spyProposer) suppressed() bool { return p.last != nil && p.last.Suppressed }
+
+func newSpyProposer(c client.Client) *spyProposer {
+	return &spyProposer{inner: remediation.NewProposer(c, gate.New(c, logr.Discard()), logr.Discard())}
 }
 
 // rejectedAction builds a RemediationAction the user declined, with the
@@ -90,8 +120,8 @@ func rejectedAction(name string, incident *dorguv1.IncidentMemory, rejectedAt ti
 }
 
 // proposalRun wires a reconciler over the given objects and runs one
-// processDiagnosis cycle, returning how many times the proposer was called.
-func proposalRun(t *testing.T, diag *diagnosis.Diagnosis, objs ...client.Object) (int, error) {
+// processDiagnosis cycle, returning what the real proposer decided.
+func proposalRun(t *testing.T, diag *diagnosis.Diagnosis, objs ...client.Object) (*spyProposer, error) {
 	t.Helper()
 
 	c := fake.NewClientBuilder().
@@ -100,7 +130,7 @@ func proposalRun(t *testing.T, diag *diagnosis.Diagnosis, objs ...client.Object)
 		WithStatusSubresource(&dorguv1.IncidentMemory{}, &dorguv1.RemediationAction{}).
 		Build()
 
-	proposer := &countingProposer{}
+	proposer := newSpyProposer(c)
 	logger, _ := newRecordingLogger()
 	r := &HealthCheckReconciler{
 		Client:       c,
@@ -111,7 +141,7 @@ func proposalRun(t *testing.T, diag *diagnosis.Diagnosis, objs ...client.Object)
 	}
 
 	err := r.processDiagnosis(context.Background(), personaSubject(*diag.PersonaRef), diag, map[string]bool{})
-	return proposer.calls, err
+	return proposer, err
 }
 
 // TestRejectedRemediation_SuppressesReproposal reproduces F-07: declining a
@@ -121,9 +151,9 @@ func TestRejectedRemediation_SuppressesReproposal(t *testing.T) {
 	im := activeIncident()
 	ra := rejectedAction("ra-api-memory-rejected", im, time.Now().Add(-2*time.Minute))
 
-	calls, err := proposalRun(t, aiDiagnosis(), im, ra)
+	proposer, err := proposalRun(t, aiDiagnosis(), im, ra)
 	require.NoError(t, err)
-	assert.Zero(t, calls, "a rejected remediation must suppress re-proposal for the same incident and target")
+	assert.True(t, proposer.suppressed(), "a rejected remediation must suppress re-proposal for the same incident and target")
 }
 
 // TestRejectedRemediation_UnstampedRejectionSuppresses covers the CLI-only path.
@@ -134,9 +164,9 @@ func TestRejectedRemediation_UnstampedRejectionSuppresses(t *testing.T) {
 	im := activeIncident()
 	ra := rejectedAction("ra-api-memory-unstamped", im, time.Time{})
 
-	calls, err := proposalRun(t, aiDiagnosis(), im, ra)
+	proposer, err := proposalRun(t, aiDiagnosis(), im, ra)
 	require.NoError(t, err)
-	assert.Zero(t, calls, "a rejection with no recorded timestamp must not be treated as expired")
+	assert.True(t, proposer.suppressed(), "a rejection with no recorded timestamp must not be treated as expired")
 }
 
 // TestRejectedRemediation_CooldownExpiryAllowsReproposal proves the suppression
@@ -146,9 +176,9 @@ func TestRejectedRemediation_CooldownExpiryAllowsReproposal(t *testing.T) {
 	im := activeIncident()
 	ra := rejectedAction("ra-api-memory-old", im, time.Now().Add(-RejectionCooldown-time.Minute))
 
-	calls, err := proposalRun(t, aiDiagnosis(), im, ra)
+	proposer, err := proposalRun(t, aiDiagnosis(), im, ra)
 	require.NoError(t, err)
-	assert.Equal(t, 1, calls, "an expired rejection cooldown must allow a fresh proposal")
+	assert.False(t, proposer.suppressed(), "an expired rejection cooldown must allow a fresh proposal")
 }
 
 // TestRejectedRemediation_SeverityEscalationAllowsReproposal covers the "until
@@ -163,9 +193,9 @@ func TestRejectedRemediation_SeverityEscalationAllowsReproposal(t *testing.T) {
 	diag := aiDiagnosis()
 	diag.Severity = detection.SeverityCritical
 
-	calls, err := proposalRun(t, diag, im, ra)
+	proposer, err := proposalRun(t, diag, im, ra)
 	require.NoError(t, err)
-	assert.Equal(t, 1, calls, "an escalated signal is a materially different question")
+	assert.False(t, proposer.suppressed(), "an escalated signal is a materially different question")
 }
 
 // TestRejectedRemediation_OtherIncidentDoesNotSuppress keeps the suppression
@@ -180,9 +210,9 @@ func TestRejectedRemediation_OtherIncidentDoesNotSuppress(t *testing.T) {
 	other.Spec.Detection.Signal = string(detection.SignalCrashLoopBackOff)
 	ra := rejectedAction("ra-api-crashloop-rejected", other, time.Now().Add(-2*time.Minute))
 
-	calls, err := proposalRun(t, aiDiagnosis(), im, other, ra)
+	proposer, err := proposalRun(t, aiDiagnosis(), im, other, ra)
 	require.NoError(t, err)
-	assert.Equal(t, 1, calls, "a rejection on another incident must not suppress this one")
+	assert.False(t, proposer.suppressed(), "a rejection on another incident must not suppress this one")
 }
 
 // TestPendingRemediation_DoesNotSuppress guards the boundary: only Rejected
@@ -194,9 +224,9 @@ func TestPendingRemediation_DoesNotSuppress(t *testing.T) {
 	ra.Status.Phase = RemediationPhasePending
 	ra.Status.Conditions = nil
 
-	calls, err := proposalRun(t, aiDiagnosis(), im, ra)
+	proposer, err := proposalRun(t, aiDiagnosis(), im, ra)
 	require.NoError(t, err)
-	assert.Equal(t, 1, calls, "only a Rejected action engages the rejection cooldown")
+	assert.False(t, proposer.suppressed(), "only a Rejected action engages the rejection cooldown")
 }
 
 // TestRejectionCheck_FailsClosed asserts the reconciler declines to propose when
@@ -220,7 +250,7 @@ func TestRejectionCheck_FailsClosed(t *testing.T) {
 		},
 	})
 
-	proposer := &countingProposer{}
+	proposer := newSpyProposer(c)
 	logger, sink := newRecordingLogger()
 	r := &HealthCheckReconciler{
 		Client:       c,
@@ -231,9 +261,11 @@ func TestRejectionCheck_FailsClosed(t *testing.T) {
 	}
 
 	require.NoError(t, r.processDiagnosis(context.Background(), personaSubject(*aiDiagnosis().PersonaRef), aiDiagnosis(), map[string]bool{}))
-	assert.Zero(t, proposer.calls, "an unreadable rejection history must not produce a proposal")
-	assert.True(t, sink.hasError("rejection"),
-		"the skipped proposal must be reported at ERROR, got: %v", sink.messages())
+	assert.False(t, proposer.last != nil && proposer.last.Proposed,
+		"an unreadable rejection history must not produce a proposal")
+	require.Error(t, proposer.err, "the gate cannot decide without the history, and says so")
+	assert.True(t, sink.hasError("propose"),
+		"the failed proposal must be reported at ERROR, got: %v", sink.messages())
 }
 
 // TestRecordRejection_StampsTimestamp proves the operator supplies the missing

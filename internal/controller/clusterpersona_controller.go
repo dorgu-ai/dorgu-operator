@@ -19,11 +19,13 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/discovery"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -48,6 +50,18 @@ const (
 	// Condition types for ClusterPersona
 	conditionTypeDiscovered = "Discovered"
 	conditionTypeHealthy    = "Healthy"
+
+	// ConditionOperatorNamespace reports whether the operator knows the namespace
+	// it runs in. When it does not, the deny-list cannot protect it, so AI
+	// diagnosis and AI planning are switched off (a loud, visible state, not a
+	// silent one).
+	ConditionOperatorNamespace = "OperatorNamespaceKnown"
+
+	// ConditionExcludeNamespaces reports whether every
+	// spec.policies.selfHealing.excludeNamespaces entry is a valid namespace name.
+	// An entry that is not (a wildcard, a capital letter) can never match a real
+	// namespace, so it protects nothing while looking as if it does.
+	ConditionExcludeNamespaces = "ExcludeNamespacesValid"
 )
 
 // ClusterPersonaReconciler reconciles a ClusterPersona object.
@@ -55,6 +69,10 @@ type ClusterPersonaReconciler struct {
 	client.Client
 	Scheme          *runtime.Scheme
 	DiscoveryClient discovery.DiscoveryInterface
+
+	// OperatorNamespaceUnknown is set when POD_NAMESPACE (and the service-account
+	// file) did not say which namespace the operator runs in.
+	OperatorNamespaceUnknown bool
 }
 
 // +kubebuilder:rbac:groups=dorgu.io,resources=clusterpersonas,verbs=get;list;watch;create;update;patch;delete
@@ -154,6 +172,9 @@ func (r *ClusterPersonaReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			"NodesNotReady", fmt.Sprintf("%d/%d nodes ready", countReadyNodes(nodes), len(nodes)))
 	}
 
+	// 10b. Report the safety configuration the operator is actually running with.
+	r.reportSafetyConfiguration(clusterPersona)
+
 	// 11. Persist status
 	if err := r.Status().Update(ctx, clusterPersona); err != nil {
 		return ctrl.Result{}, err
@@ -204,4 +225,71 @@ func (r *ClusterPersonaReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&dorguv1.ClusterPersona{}).
 		Named("clusterpersona").
 		Complete(r)
+}
+
+// reportSafetyConfiguration writes the two conditions that say whether the
+// deny-list can be trusted: whether the operator knows its own namespace, and
+// whether every excludeNamespaces entry is a valid namespace name.
+func (r *ClusterPersonaReconciler) reportSafetyConfiguration(persona *dorguv1.ClusterPersona) {
+	if r.OperatorNamespaceUnknown {
+		upsertCondition(&persona.Status.Conditions, ConditionOperatorNamespace, metav1.ConditionFalse,
+			"OperatorNamespaceUnknown",
+			"The operator does not know its own namespace (POD_NAMESPACE is unset), so the deny-list cannot protect it. "+
+				"AI diagnosis and AI remediation planning are disabled until it is set; detection, rule-based diagnosis and rule-based proposals continue.")
+	} else {
+		upsertCondition(&persona.Status.Conditions, ConditionOperatorNamespace, metav1.ConditionTrue,
+			"OperatorNamespaceKnown", "The deny-list protects the operator's own namespace.")
+	}
+
+	var excluded []string
+	if persona.Spec.Policies != nil && persona.Spec.Policies.SelfHealing != nil {
+		excluded = persona.Spec.Policies.SelfHealing.ExcludeNamespaces
+	}
+	if invalid := invalidNamespaceNames(excluded); len(invalid) > 0 {
+		upsertCondition(&persona.Status.Conditions, ConditionExcludeNamespaces, metav1.ConditionFalse,
+			"InvalidNamespaceName",
+			fmt.Sprintf("spec.policies.selfHealing.excludeNamespaces has %d entr%s that cannot be a namespace name and will never match: %s. "+
+				"Entries are exact namespace names (lowercase letters, digits and '-'); wildcards are not supported.",
+				len(invalid), pluralY(len(invalid)), quotedList(invalid)))
+		return
+	}
+	upsertCondition(&persona.Status.Conditions, ConditionExcludeNamespaces, metav1.ConditionTrue,
+		"AllValid", "Every excludeNamespaces entry is a valid namespace name.")
+}
+
+// invalidNamespaceNames returns the entries that are not DNS-1123 labels, which is
+// what a Kubernetes namespace name must be.
+func invalidNamespaceNames(names []string) []string {
+	var invalid []string
+	for _, name := range names {
+		if len(validation.IsDNS1123Label(name)) > 0 {
+			invalid = append(invalid, name)
+		}
+	}
+	return invalid
+}
+
+func pluralY(n int) string {
+	if n == 1 {
+		return "y"
+	}
+	return "ies"
+}
+
+// quotedList renders at most five entries, quoted, so a long invalid list cannot
+// bloat a condition message.
+func quotedList(values []string) string {
+	const limit = 5
+	shown := values
+	if len(shown) > limit {
+		shown = shown[:limit]
+	}
+	quoted := make([]string, 0, len(shown)+1)
+	for _, v := range shown {
+		quoted = append(quoted, fmt.Sprintf("%q", v))
+	}
+	if len(values) > limit {
+		quoted = append(quoted, fmt.Sprintf("and %d more", len(values)-limit))
+	}
+	return strings.Join(quoted, ", ")
 }

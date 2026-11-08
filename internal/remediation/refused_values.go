@@ -24,6 +24,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
+	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
 )
 
 // This file is the one place a value a guardrail refused is removed from the
@@ -183,7 +184,7 @@ func scrubStep(step *dorguv1.RemediationStep, refused []refusedValue) int {
 	if step.Command != "" && offersRefusedValue(step.Command, refused) {
 		scrubbed++
 		step.Command = ""
-		step.Description = appendNote(step.Description, droppedCommandNote())
+		step.Description = gate.AppendNote(step.Description, droppedCommandNote())
 	}
 
 	messages := stepSafetyMessages(step)
@@ -223,7 +224,7 @@ func pruneRefusedLeaves(patch *apiextensionsv1.JSON, refused []refusedValue) (*a
 		return patch, false
 	}
 
-	values := patchLeafValues(patch.Raw)
+	values := gate.PatchLeafValues(patch.Raw)
 	var paths []string
 	for _, r := range refused {
 		actual, ok := values[r.field]
@@ -234,7 +235,7 @@ func pruneRefusedLeaves(patch *apiextensionsv1.JSON, refused []refusedValue) (*a
 	if len(paths) == 0 {
 		return patch, false
 	}
-	return prunePatchPaths(patch, paths), true
+	return gate.PrunePatchPaths(patch, paths), true
 }
 
 // offersRefusedValue reports whether a command hands the reader a refused

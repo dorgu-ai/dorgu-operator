@@ -31,6 +31,7 @@ import (
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
+	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation/planner"
 )
 
@@ -93,9 +94,9 @@ func patchSurfaces(label string, patch *apiextensionsv1.JSON) []string {
 	if patch == nil || len(patch.Raw) == 0 {
 		return nil
 	}
-	values := patchLeafValues(patch.Raw)
+	values := gate.PatchLeafValues(patch.Raw)
 	out := make([]string, 0, len(values))
-	for _, path := range sortedStringKeys(values) {
+	for _, path := range gate.SortedStringKeys(values) {
 		out = append(out, fmt.Sprintf("%s %s=%s", label, path, values[path]))
 	}
 	return out
@@ -131,7 +132,7 @@ func driftWorld(t *testing.T) (*Proposer, *dorguv1.IncidentMemory) {
 		WithRuntimeObjects(persona, deploy).
 		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
 
-	return NewProposer(c, NewSafetyChecker(c, testLogger()), testLogger()), incident
+	return NewProposer(c, gate.New(c, testLogger()), testLogger()), incident
 }
 
 // cleanRoomDriftPlan is the plan the model produced in clean-room run #5: one
@@ -286,7 +287,7 @@ func TestScrubRefusedValues(t *testing.T) {
 			},
 			assert: func(t *testing.T, a *dorguv1.RemediationAction) {
 				require.NotNil(t, a.Spec.Steps[0].Patch)
-				values := patchLeafValues(a.Spec.Steps[0].Patch.Raw)
+				values := gate.PatchLeafValues(a.Spec.Steps[0].Patch.Raw)
 				assert.Equal(t, "16Mi", values["spec.resources.limits.memory"])
 				assert.NotContains(t, values, "spec.resources.requests.memory")
 				assert.True(t, a.Spec.Steps[0].AutoExecutable, "a step with a surviving field still applies")
@@ -329,10 +330,10 @@ func TestScrubRefusedValues(t *testing.T) {
 			name: "the guardrail's own verdict message keeps the value it is about",
 			build: func() *dorguv1.RemediationAction {
 				entry := clamped
-				entry.Message = blastRadiusClampedMessage(entry)
+				entry.Message = gate.BlastRadiusClampedMessage(entry)
 				return planWith(dorguv1.RemediationStep{
 					Order: 1, Type: dorguv1.StepTypePersonaUpdate,
-					Description: dorguAuthoredDescription("Set spec.resources.limits.memory to 16Mi on the ApplicationPersona.",
+					Description: gate.DorguAuthoredDescription("Set spec.resources.limits.memory to 16Mi on the ApplicationPersona.",
 						[]dorguv1.StepSafety{entry}),
 					Safety: []dorguv1.StepSafety{entry},
 				})

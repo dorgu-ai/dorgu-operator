@@ -20,6 +20,7 @@ import (
 	"context"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
+	"github.com/dorgu-ai/dorgu-operator/internal/detection"
 )
 
 // NamespaceGate decides whether a namespace is protected, meaning nothing about
@@ -32,14 +33,6 @@ type NamespaceGate interface {
 	NamespaceProtected(ctx context.Context, namespace string) bool
 }
 
-// clusterScopedKinds are the resource kinds the detectors report without a
-// namespace because they have none. Every other kind with an empty namespace is
-// one whose namespace could not be determined.
-var clusterScopedKinds = map[string]bool{
-	"Node":            true,
-	"ComponentStatus": true,
-}
-
 // ProtectedNamespace reports whether d may not be sent to a model, and the
 // namespace that decided it. It is the one enumeration of the namespaces a
 // diagnosis touches, used by every path that sends a diagnosis out (the AI
@@ -50,7 +43,7 @@ var clusterScopedKinds = map[string]bool{
 //
 // It fails closed: a nil gate, a persona or namespaced resource with no
 // namespace, or a gate that says so, all withhold the diagnosis. Only the
-// cluster-scoped kinds in clusterScopedKinds may have an empty namespace.
+// cluster-scoped kinds (detection.IsClusterScopedKind) may have an empty namespace.
 func ProtectedNamespace(ctx context.Context, gate NamespaceGate, d Diagnosis) (string, bool) {
 	if gate == nil {
 		return "", true
@@ -66,7 +59,7 @@ func ProtectedNamespace(ctx context.Context, gate NamespaceGate, d Diagnosis) (s
 		refs = append(refs, cs.Signal.Resource)
 	}
 	for _, ref := range refs {
-		if ref.Namespace == "" && clusterScopedKinds[ref.Kind] {
+		if ref.Namespace == "" && detection.IsClusterScopedKind(ref.Kind) {
 			continue
 		}
 		namespaces = append(namespaces, ref.Namespace)

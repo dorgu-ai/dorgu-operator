@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package remediation
+package gate
 
 import (
 	"testing"
@@ -111,14 +111,14 @@ func TestReadsOnlyClassifiesTheVerbPositionally(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			assert.Equal(t, tt.want, readsOnly(tt.command), "readsOnly")
 
-			// writesWorkload is the inverse for anything that is a kubectl
+			// WritesWorkload is the inverse for anything that is a kubectl
 			// invocation. A non-kubectl command is not a workload write here:
 			// SanitizeStepCommand already drops it.
 			wantWrite := !tt.want
 			if !isKubectlInvocation(tt.command) {
 				wantWrite = false
 			}
-			assert.Equal(t, wantWrite, writesWorkload(tt.command), "writesWorkload")
+			assert.Equal(t, wantWrite, WritesWorkload(tt.command), "WritesWorkload")
 		})
 	}
 }

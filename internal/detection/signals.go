@@ -22,6 +22,22 @@ import (
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 )
 
+// Resource kinds the detectors report that have no namespace. They are the ONE
+// list of cluster-scoped kinds: the detectors name their resources with these
+// constants, and everything that must tell "cluster-scoped" from "namespace not
+// determined" asks IsClusterScopedKind rather than keeping a copy.
+const (
+	KindNode            = "Node"
+	KindComponentStatus = "ComponentStatus"
+)
+
+// IsClusterScopedKind reports whether kind is one the detectors report without a
+// namespace because it has none. Any other kind with an empty namespace is one
+// whose namespace could not be determined, and fails closed wherever that matters.
+func IsClusterScopedKind(kind string) bool {
+	return kind == KindNode || kind == KindComponentStatus
+}
+
 // Signal represents a detected health signal from the cluster.
 // Signals are the raw observations — diagnosis turns them into root causes.
 type Signal struct {
