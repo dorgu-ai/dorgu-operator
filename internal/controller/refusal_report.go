@@ -100,7 +100,7 @@ func (r *HealthCheckReconciler) recordProposalRefusal(
 
 // clearProposalRefusal marks a standing refusal as answered once a proposal was
 // made, so the incident does not keep saying it was refused.
-func (r *HealthCheckReconciler) clearProposalRefusal(ctx context.Context, incident *dorguv1.IncidentMemory) {
+func (r *HealthCheckReconciler) clearProposalRefusal(ctx context.Context, incident *dorguv1.IncidentMemory, reason, message string) {
 	err := retryIncidentWrite(func(int) error {
 		var fresh dorguv1.IncidentMemory
 		if err := r.Client.Get(ctx, client.ObjectKeyFromObject(incident), &fresh); err != nil {
@@ -110,8 +110,7 @@ func (r *HealthCheckReconciler) clearProposalRefusal(ctx context.Context, incide
 		if cond == nil || cond.Status != metav1.ConditionTrue {
 			return nil
 		}
-		setCondition(&fresh.Status.Conditions, dorguv1.ConditionProposalRefused, metav1.ConditionFalse,
-			dorguv1.ReasonProposalMade, "a RemediationAction was proposed for this incident")
+		setCondition(&fresh.Status.Conditions, dorguv1.ConditionProposalRefused, metav1.ConditionFalse, reason, message)
 		return r.Client.Status().Update(ctx, &fresh)
 	})
 	if err != nil {

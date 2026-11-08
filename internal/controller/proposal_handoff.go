@@ -55,7 +55,7 @@ func (r *HealthCheckReconciler) proposeRemediation(
 		if r.firstProposalFor(ctx, incident, result.Action) {
 			metrics.RecordStageDuration(metrics.StageDetectToProposal, time.Since(incident.Spec.Detection.FirstSeen.Time))
 		}
-		r.clearProposalRefusal(ctx, incident)
+		r.clearProposalRefusal(ctx, incident, dorguv1.ReasonProposalMade, "a RemediationAction was proposed for this incident")
 	case result.SkipReason != "":
 		r.Logger.V(1).Info("remediation skipped", "reason", result.SkipReason, "incident", incident.Name,
 			"stage", result.Stage, "enum", result.Reason)
@@ -67,7 +67,8 @@ func (r *HealthCheckReconciler) proposeRemediation(
 		}
 		// A proposal that is outstanding answers any earlier refusal.
 		if result.Stage == remediation.StageDeferred {
-			r.clearProposalRefusal(ctx, incident)
+			r.clearProposalRefusal(ctx, incident, dorguv1.ReasonProposalDeferred,
+				"an earlier proposal for this incident is outstanding or cooling down")
 		}
 	}
 }

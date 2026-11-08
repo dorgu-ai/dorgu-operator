@@ -164,7 +164,7 @@ func (s guardrailsStage) personaWide(ctx context.Context, cand *Candidate, d *De
 
 // rateLimit enforces the per-persona hourly cap. It fails closed: a policy that
 // cannot be read is not the default policy, it is an unknown one.
-func (s guardrailsStage) rateLimit(ctx context.Context, _ *Candidate, d *Decision, siblings []dorguv1.RemediationAction) {
+func (s guardrailsStage) rateLimit(ctx context.Context, cand *Candidate, d *Decision, siblings []dorguv1.RemediationAction) {
 	maxPerHour, err := s.g.maxRemediationsPerHour(ctx)
 	if err != nil {
 		s.g.logUnreadable("rateLimit", err, "cannot read the ClusterPersona rate limit; refusing until it is readable")
@@ -176,6 +176,15 @@ func (s guardrailsStage) rateLimit(ctx context.Context, _ *Candidate, d *Decisio
 	cutoff := s.g.now().Add(-time.Hour)
 	recent := 0
 	for i := range siblings {
+		// The incident's own proposal that is still active is the proposal this run
+		// would repeat, not another remediation: counting it makes a limit of 1
+		// "refuse" every incident for the proposal it already has, on each cycle. A
+		// FINISHED proposal of the same incident still counts, which is what stops a
+		// propose, fail, propose loop. The limit is enforced at proposal only, so the
+		// approval phase is unchanged.
+		if ownActiveProposal(cand, &siblings[i]) {
+			continue
+		}
 		if siblings[i].CreationTimestamp.After(cutoff) {
 			recent++
 		}
@@ -190,10 +199,30 @@ func (s guardrailsStage) rateLimit(ctx context.Context, _ *Candidate, d *Decisio
 	d.pass(StageGuardrails, GuardrailRateLimit, "within the hourly limit", numbers)
 }
 
+// ownActiveProposal reports whether sib is an active (pending or in-flight)
+// RemediationAction answering the candidate's own incident.
+func ownActiveProposal(cand *Candidate, sib *dorguv1.RemediationAction) bool {
+	return cand.Facts.Incident != nil && sib.Spec.IncidentRef.Name == cand.Facts.Incident.Name &&
+		slices.Contains(activeRemediationPhases, sib.Status.Phase)
+}
+
 // concurrent allows one remediation in flight per persona. At approval, two plans
 // approved together are ordered by approval time (then name) so exactly one
 // proceeds instead of each refusing the other.
 func (s guardrailsStage) concurrent(cand *Candidate, d *Decision, siblings []dorguv1.RemediationAction) {
+	// At proposal, first look at EVERY sibling for one that already answers this
+	// incident or changes the same field (Pending included): the proposal exists, so
+	// the answer is the deferral, whatever else is in flight and in whatever order
+	// the siblings come back. Only when none does can another incident's fix, on
+	// another field, be what holds the persona.
+	if d.Phase == PhaseProposal && cand.Facts.Incident != nil {
+		for i := range siblings {
+			if reason := activeRemediationReason(cand, siblings[i:i+1]); reason != "" {
+				d.refuse(StageDedupCooldown, GuardrailActiveAction, reason, nil)
+				return
+			}
+		}
+	}
 	for i := range siblings {
 		sib := &siblings[i]
 		switch sib.Status.Phase {
@@ -204,16 +233,6 @@ func (s guardrailsStage) concurrent(cand *Candidate, d *Decision, siblings []dor
 			}
 		default:
 			continue
-		}
-		// At proposal, a sibling that answers THIS incident (or changes the same field
-		// of the same persona) is the proposal already made, being worked: the same
-		// thing DedupCooldown reports for a Pending one, one lifecycle step later.
-		// It is a deferral, not the persona being busy with someone else's fix.
-		if d.Phase == PhaseProposal && cand.Facts.Incident != nil {
-			if reason := activeRemediationReason(cand, siblings[i:i+1]); reason != "" {
-				d.refuse(StageDedupCooldown, GuardrailActiveAction, reason, nil)
-				return
-			}
 		}
 		d.refuse(StageGuardrails, GuardrailConcurrent,
 			fmt.Sprintf("concurrent remediation %s is in phase %s for persona %s/%s",

@@ -343,6 +343,7 @@ func TestB6_AProposalClearsAStandingRefusal(t *testing.T) {
 	cond := incidentCondition(t, r, incident)
 	require.NotNil(t, cond)
 	assert.Equal(t, metav1.ConditionFalse, cond.Status, "a standing refusal must not outlive the proposal that answered it")
+	assert.Equal(t, dorguv1.ReasonProposalMade, cond.Reason, "ProposalMade is for a real proposal")
 }
 
 func TestB6_AProposalIsTimedFromDetection(t *testing.T) {
@@ -607,6 +608,9 @@ func TestB6R2_ADeferralClearsAStandingRefusal(t *testing.T) {
 	cond := incidentCondition(t, r, incident)
 	require.NotNil(t, cond)
 	assert.Equal(t, metav1.ConditionFalse, cond.Status, "a proposal is outstanding, so the earlier refusal is stale")
+	assert.Equal(t, dorguv1.ReasonProposalDeferred, cond.Reason, "nothing was proposed this cycle, so it must not read ProposalMade")
+	assert.Contains(t, cond.Message, "outstanding or cooling down")
+	assert.NotContains(t, cond.Message, "was proposed")
 }
 
 // A refusal that was true of an open incident does not outlive its healing.

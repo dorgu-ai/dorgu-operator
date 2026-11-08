@@ -268,6 +268,12 @@ const (
 	// RemediationAction was proposed.
 	ReasonProposalMade = "ProposalMade"
 
+	// ReasonProposalDeferred is the ConditionProposalRefused reason (status False)
+	// when a later cycle found a proposal for the incident outstanding, or cooling
+	// down after a decision, so the earlier refusal no longer describes it. Nothing
+	// was proposed in that cycle; ProposalMade is only for a real proposal.
+	ReasonProposalDeferred = "ProposalDeferred"
+
 	// ReasonIncidentResolved is the ConditionProposalRefused reason (status False)
 	// once the incident was resolved: a refusal that was true of an open incident
 	// does not outlive it.
