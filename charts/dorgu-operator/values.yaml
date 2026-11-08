@@ -79,6 +79,21 @@ healthCheck:
   livenessRestarts:
     count: 2
     window: 10m
+  # --liveness-restart-window must be at least twice the interval: the restart
+  # history is one observation per cycle, and the operator refuses to start otherwise.
+
+  # A fault that comes back after its incident resolved is a new IncidentMemory.
+  # After recurrence.cap recurrences within recurrence.window the latest incident is
+  # reopened instead (one Event says so), so a flapping fault cannot create an
+  # incident per cycle. 0 disables the cap. Maps to --incident-recurrence-cap and
+  # --incident-recurrence-window.
+  recurrence:
+    cap: 3
+    window: 24h
+  # Resolved incidents older than this are deleted, except the newest of every fault
+  # and any a non-terminal RemediationAction names. 0 keeps them forever. Maps to
+  # --resolved-incident-retention.
+  resolvedRetention: 720h
 
 # Remediation proposals. A proposal nobody approves within pendingTTL (counted
 # from its creation) becomes Expired: terminal, nothing applied, no cooldown, and

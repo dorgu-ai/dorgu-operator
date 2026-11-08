@@ -72,3 +72,22 @@ func TestProbeDetectionThresholdsAbsentWhenDetectionIsOff(t *testing.T) {
 	mustNotContain(t, out, "--readiness-threshold", "no thresholds when detection is off")
 	mustNotContain(t, out, "--liveness-restart", "no thresholds when detection is off")
 }
+
+// B9 review F-3: the recurrence cap and the retention of Resolved incidents are
+// rendered explicitly, and only when detection runs.
+func TestRecurrenceCapAndRetentionAreRendered(t *testing.T) {
+	out := helmTemplate(t)
+	mustContain(t, out, "--incident-recurrence-cap=3", "default cap")
+	mustContain(t, out, "--incident-recurrence-window=24h", "default window")
+	mustContain(t, out, "--resolved-incident-retention=720h", "default retention")
+
+	custom := helmTemplate(t, "healthCheck.recurrence.cap=0", "healthCheck.recurrence.window=6h",
+		"healthCheck.resolvedRetention=48h")
+	mustContain(t, custom, "--incident-recurrence-cap=0", "0 disables the cap and must still be rendered")
+	mustContain(t, custom, "--incident-recurrence-window=6h", "override")
+	mustContain(t, custom, "--resolved-incident-retention=48h", "override")
+
+	off := helmTemplate(t, "healthCheck.enabled=false")
+	mustNotContain(t, off, "--incident-recurrence", "no cap when detection is off")
+	mustNotContain(t, off, "--resolved-incident-retention", "no pruning when detection is off")
+}

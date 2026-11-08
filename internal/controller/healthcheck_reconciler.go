@@ -41,6 +41,17 @@ const (
 	// ResolutionGracePeriod is how long a signal must be absent before auto-resolving.
 	ResolutionGracePeriod = 5 * time.Minute
 
+	// DefaultRecurrenceCap and DefaultRecurrenceWindow: once a fault has opened this
+	// many recurrences inside the window, the next one reopens the latest incident
+	// instead of creating another. Three in a day is a fault that flaps, not one
+	// that came back.
+	DefaultRecurrenceCap    = 3
+	DefaultRecurrenceWindow = 24 * time.Hour
+
+	// DefaultResolvedRetention is how long a Resolved incident is kept before it
+	// may be pruned.
+	DefaultResolvedRetention = 30 * 24 * time.Hour
+
 	// MaxIncidentNameLength is the maximum length for IncidentMemory names.
 	MaxIncidentNameLength = 253
 
@@ -125,6 +136,17 @@ type HealthCheckReconciler struct {
 	Recorder          record.EventRecorder
 	Logger            logr.Logger
 	ReconcileInterval time.Duration
+
+	// RecurrenceCap and RecurrenceWindow bound how many IncidentMemories one
+	// flapping fault can open: after RecurrenceCap recurrences inside
+	// RecurrenceWindow the latest incident is reopened instead. Zero disables the
+	// cap.
+	RecurrenceCap    int
+	RecurrenceWindow time.Duration
+
+	// ResolvedRetention is how long a Resolved incident is kept. Zero keeps them
+	// forever.
+	ResolvedRetention time.Duration
 }
 
 // Start begins the health check reconciliation loop. Blocks until ctx is cancelled.

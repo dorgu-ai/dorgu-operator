@@ -309,6 +309,10 @@ func main() {
 			Recorder:          recorder,
 			Logger:            setupLog.WithName("health-check"),
 			ReconcileInterval: cfg.healthCheckInterval,
+
+			RecurrenceCap:     cfg.recurrenceCap,
+			RecurrenceWindow:  cfg.recurrenceWindow,
+			ResolvedRetention: cfg.resolvedRetention,
 		}
 		if err := mgr.Add(healthReconciler); err != nil {
 			setupLog.Error(err, "unable to start health check reconciler")

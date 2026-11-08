@@ -25,6 +25,7 @@ import (
 
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
+	"github.com/dorgu-ai/dorgu-operator/internal/controller"
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
 	"github.com/dorgu-ai/dorgu-operator/internal/events"
 	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
@@ -67,6 +68,11 @@ type operatorConfig struct {
 	readinessThreshold    time.Duration
 	livenessRestartCount  int
 	livenessRestartWindow time.Duration
+
+	// Recurrence cap and retention of Resolved incidents (B9 review F-3).
+	recurrenceCap     int
+	recurrenceWindow  time.Duration
+	resolvedRetention time.Duration
 
 	// Metrics-server integration
 	enableMetricsServer bool
@@ -158,6 +164,15 @@ func parseFlagSet(fs *flag.FlagSet, args []string) (operatorConfig, error) {
 			"liveness-probe failure signal, without waiting for CrashLoopBackOff.")
 	fs.DurationVar(&cfg.livenessRestartWindow, "liveness-restart-window", detection.DefaultLivenessWindow,
 		"The window in which --liveness-restart-count restarts make a signal.")
+	fs.IntVar(&cfg.recurrenceCap, "incident-recurrence-cap", controller.DefaultRecurrenceCap,
+		"How many recurrences of one fault may open a new IncidentMemory within --incident-recurrence-window. "+
+			"After that the latest incident is reopened instead (and one Event says so), so a flapping fault cannot "+
+			"create an incident per cycle. 0 disables the cap.")
+	fs.DurationVar(&cfg.recurrenceWindow, "incident-recurrence-window", controller.DefaultRecurrenceWindow,
+		"The window --incident-recurrence-cap counts recurrences in.")
+	fs.DurationVar(&cfg.resolvedRetention, "resolved-incident-retention", controller.DefaultResolvedRetention,
+		"How long a Resolved IncidentMemory is kept before it is deleted. The newest Resolved incident of every "+
+			"fault, and any incident a non-terminal RemediationAction names, is always kept. 0 keeps them forever.")
 	fs.BoolVar(&cfg.enableMetricsServer, "enable-metrics-server", true,
 		"Enable metrics-server integration for detection.")
 
@@ -227,8 +242,40 @@ func (c operatorConfig) validate() error {
 			"negative (omit them for the defaults), got %s, %d, %s",
 			c.readinessThreshold, c.livenessRestartCount, c.livenessRestartWindow)
 	}
+	if c.recurrenceCap < 0 || c.recurrenceWindow < 0 || c.resolvedRetention < 0 {
+		return fmt.Errorf("--incident-recurrence-cap, --incident-recurrence-window and --resolved-incident-retention "+
+			"must not be negative (use 0 to disable the cap or the pruning), got %d, %s, %s",
+			c.recurrenceCap, c.recurrenceWindow, c.resolvedRetention)
+	}
+	if err := c.validateLivenessWindow(); err != nil {
+		return err
+	}
 	if c.llmCacheTTL < 0 {
 		return fmt.Errorf("--llm-cache-ttl must not be negative (use 0 to disable), got %s", c.llmCacheTTL)
+	}
+	return nil
+}
+
+// validateLivenessWindow refuses a liveness window the health check cannot sample.
+// The restart history is one observation per cycle, so a window shorter than two
+// cycles holds at most one and no delta can ever be computed: the signal would be
+// silently dead. It is checked only when detection runs, with the flags' own
+// defaults standing in for unset values.
+func (c operatorConfig) validateLivenessWindow() error {
+	if !c.enableHealthCheck {
+		return nil
+	}
+	interval := c.healthCheckInterval
+	if interval == 0 {
+		interval = controller.DefaultReconcileInterval
+	}
+	window := c.livenessRestartWindow
+	if window == 0 {
+		window = detection.DefaultLivenessWindow
+	}
+	if window < 2*interval {
+		return fmt.Errorf("--liveness-restart-window=%s is shorter than two health-check cycles (--health-check-interval=%s): "+
+			"the liveness signal could never fire. Use at least %s", window, interval, 2*interval)
 	}
 	return nil
 }
