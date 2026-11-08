@@ -77,6 +77,14 @@ healthCheck:
   enabled: true
   interval: 60s
 
+# Remediation proposals. A proposal nobody approves within pendingTTL (counted
+# from its creation) becomes Expired: terminal, nothing applied, no cooldown, and
+# Dorgu may propose again if the problem persists. A proposal's own
+# spec.approval.deadline can shorten this window but never extend it. Maps to
+# --remediation-pending-ttl. Set 0 to disable the TTL.
+remediation:
+  pendingTTL: 24h
+
 # Remediation safety. Dorgu never remediates kube-system or the namespace it is
 # installed in (read from the pod's own namespace). List any other namespace it
 # must never touch here; maps to --safety-excluded-namespaces. ClusterPersona

@@ -19,6 +19,7 @@ package main
 import (
 	"slices"
 	"testing"
+	"time"
 )
 
 func TestSplitNamespaces(t *testing.T) {
@@ -34,5 +35,22 @@ func TestSplitNamespaces(t *testing.T) {
 		if got := splitNamespaces(tt.in); !slices.Equal(got, tt.want) {
 			t.Errorf("splitNamespaces(%q) = %q, want %q", tt.in, got, tt.want)
 		}
+	}
+}
+
+func TestValidate_RejectsNegativePendingTTL(t *testing.T) {
+	if err := (operatorConfig{remediationPendingTTL: -time.Second}).validate(); err == nil {
+		t.Error("a negative --remediation-pending-ttl must be rejected")
+	}
+	for _, ttl := range []time.Duration{0, time.Hour, DefaultRemediationPendingTTL} {
+		if err := (operatorConfig{remediationPendingTTL: ttl}).validate(); err != nil {
+			t.Errorf("ttl %s: unexpected error %v", ttl, err)
+		}
+	}
+}
+
+func TestDefaultRemediationPendingTTLIsTwentyFourHours(t *testing.T) {
+	if DefaultRemediationPendingTTL != 24*time.Hour {
+		t.Errorf("default = %s, want 24h (D17)", DefaultRemediationPendingTTL)
 	}
 }

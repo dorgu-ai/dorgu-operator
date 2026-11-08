@@ -7,6 +7,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Upgrade notes
+
+> **A RemediationAction nobody approves now expires.** A `Pending` proposal older than 24 hours becomes `Expired`: terminal, nothing applied, no rejection or failure cooldown, and Dorgu may propose again if the problem persists. Tune it with `--remediation-pending-ttl` / the Helm value `remediation.pendingTTL` (`0` disables the TTL). A proposal's own `spec.approval.deadline` can shorten the window but never extend it. An action approved after its deadline is refused (`Expired`), not applied.
+
+### Fixed
+
+- **Verification retries on `Unknown` now terminate, and a change that cannot be verified is rolled back (harness P1, task 1.8; adversarial OP-12).** The retry counter lives in the `Verified` condition's message, and `setCondition` left the message alone when status and reason were unchanged, so it stuck at `retry 1/2` and the action stayed `Verifying` forever with the change applied. The counter now advances, and after two retries the action rolls back (`RolledBack`, reason `VerificationUnknown`). If the rollback itself cannot run (disabled, no `prePatchState`), the action is `Failed` and its message says the change is STILL APPLIED to the ApplicationPersona.
+- **The verifier no longer reports `Healthy` for a persona it could not identify (adversarial OP-13).** `personaRef.namespace` is optional; the verifier compared it verbatim, so an empty namespace matched none of the persona's signals and a still-failing application verified `Healthy`. It now falls back to the action's namespace, then the incident's; with no persona name or no namespace at all it reports `Unknown` with an error.
+- **A rollback that did not reach the workload is recorded as `partial`, not `rollback`.** When the persona was restored but the live Deployment still carries the change (the operator has no write verbs on Deployments), the IncidentMemory resolution outcome is `partial` and the `RolledBack` condition says which half was restored; `WorkloadDiverged` carries the command that finishes the job. A failed rollback says the change is still applied.
+
+### Added
+
+- **Pending proposals expire (harness P1, task 1.9; adversarial OP-14).** New phase behaviour for the existing `Expired` phase, new `Expired` condition (reason `ApprovalTimedOut`), new flag `--remediation-pending-ttl` (default `24h`) and Helm value `remediation.pendingTTL`.
+
 ### Changed
 
 - **Internal: the health-check reconciler is split into cohesive files, with no behaviour change (harness P1, task 1.11).** `healthcheck_reconciler.go` (1,245 lines) is now the cycle only; the incident store (`incident_store.go`), incident subject and attribution (`incident_subject.go`), resolution (`incident_resolution.go`), the DorguEvent and Kubernetes Event writers (`incident_events.go`) and the proposal hand-off (`proposal_handoff.go`) each have their own file. Lifecycle broadcasts go through a new `Notifier` interface (`notifier.go`); the `WebSocket` field still works.

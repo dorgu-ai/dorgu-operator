@@ -34,3 +34,12 @@ func TestSafetyExcludedNamespaces(t *testing.T) {
 	custom := helmTemplate(t, "safety.excludedNamespaces={payments,billing}")
 	mustContain(t, custom, "--safety-excluded-namespaces=payments,billing", "extra namespaces reach the flag")
 }
+
+func TestRemediationPendingTTL(t *testing.T) {
+	out := helmTemplate(t)
+	mustContain(t, out, "--remediation-pending-ttl=24h", "the default expiry is rendered explicitly")
+
+	custom := helmTemplate(t, "remediation.pendingTTL=2h")
+	mustContain(t, custom, "--remediation-pending-ttl=2h", "a configured TTL reaches the flag")
+	mustNotContain(t, custom, "--remediation-pending-ttl=24h", "the override replaces the default")
+}

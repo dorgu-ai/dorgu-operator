@@ -41,9 +41,9 @@ never as blocked. None do today.
 | OP-09 | External RA carries a forged `steps[].safety` verdict calling a 16x step "within the 2x cap" | Operator recomputes verdicts at intake; the forged entry is gone | `TestOP09ForgedSafetyVerdict` | open, CP1 |
 | OP-10 | `healthCheck.enabled=false` and a workload is OOMKilled | No RA created | `TestOP10NoProposalWithHealthCheckDisabled` | **blocked** (0.4: legacy OOM proposer deleted) |
 | OP-11 | Model reply says "Do not restart the pod" | `SuggestedAction` stays the rule's `resource-adjustment`, so the dedup key is unchanged | `TestOP11ModelProseSteersAction` | open, CP1 |
-| OP-12 | Verification is Unknown on every attempt | Change rolled back, not left applied | `TestOP12UnknownVerificationRollsBack` | open, CP1 |
-| OP-13 | RA with empty `personaRef.namespace`; the OOM signal is still firing | Verifier does not report Healthy | `TestOP13VerifierEmptyNamespace` | open, CP1 |
-| OP-14 | Pending RA past its approval deadline is approved | Phase Expired; persona unchanged | `TestOP14StaleApproval` | open, CP1 |
+| OP-12 | Verification is Unknown on every attempt | Change rolled back, not left applied | `TestOP12UnknownVerificationRollsBack` | **blocked** (B2: the retry counter advances and the final Unknown rolls back) |
+| OP-13 | RA with empty `personaRef.namespace`; the OOM signal is still firing | Verifier does not report Healthy | `TestOP13VerifierEmptyNamespace` | **blocked** (B2: the verifier falls back to the action's namespace; no identity means Unknown) |
+| OP-14 | Pending RA past its approval deadline is approved | Phase Expired; persona unchanged | `TestOP14StaleApproval` | **blocked** (B2: deadline and `--remediation-pending-ttl` expire it; a late approval is refused) |
 | OP-15 | An OOM incident in `kube-system` or the operator's own namespace, with an AI diagnosis provider and an AI planner configured | No request reaches the model API (diagnosis and planner), no planner call, and the incident is still diagnosed, rule-based | `TestOP15DenyListKeepsProtectedNamespacesFromTheModel` | **blocked** (the diagnosis provider asks the same deny-list as the planner) |
 | OP-16 | Node pressure evicts pods from two namespaces and the rules merge them into one diagnosis: persona in an allowed namespace, one signal naming a pod in the operator's namespace; the AI planner is configured | No request reaches the model API (the planner prompt carries every signal's message, so the whole diagnosis is withheld) | `TestOP16MixedNamespaceEvictionNeverReachesThePlanner` | **blocked** (the planner and the diagnosis provider share one all-namespaces check) |
 | ID-01 | ServiceAccount holding `remediationactions/status` patch sets Approved | Denied at admission | `TestID01ServiceAccountApproves` | open, CP2 |
@@ -70,8 +70,9 @@ never as blocked. None do today.
   at `1/2` and the RA sits in Verifying forever (requeued every minute) instead of failing after two
   retries as `ARCHITECTURE_REMEDIATION.md` §3.1 says. Either way the change stays applied.
 - **OP-14** expresses the TTL through `spec.approval.deadline`, because envtest cannot backdate
-  `creationTimestamp`. If P1 derives the TTL from creation time instead, the controller needs a
-  clock seam and this test needs to use it.
+  `creationTimestamp`. The operator's own `--remediation-pending-ttl` (counted from creation, default
+  24 h) is covered by the controller's fake-client lifecycle tests (`remediation_lifecycle_test.go`),
+  which can set `creationTimestamp`.
 - **ID-01 to ID-04** run as real authenticated users (`testEnv.AddUser`) with only the RBAC the
   scenario names. They close with the CP2 ValidatingAdmissionPolicies, which must be installed into
   this envtest for the assertions to pass.

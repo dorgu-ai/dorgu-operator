@@ -34,6 +34,16 @@ import (
 	"github.com/dorgu-ai/dorgu-operator/internal/websocket"
 )
 
+// IncidentMemory resolution outcomes written by this controller. They are the
+// values of the IncidentMemory resolution.outcome enum.
+const (
+	IncidentOutcomeResolved     = "resolved"
+	IncidentOutcomeRollback     = "rollback"
+	IncidentOutcomePartial      = "partial"
+	IncidentOutcomeFailed       = "failed"
+	IncidentOutcomeAcknowledged = "acknowledged"
+)
+
 // RemediationAction phase constants.
 const (
 	RemediationPhasePending   = "Pending"
@@ -55,6 +65,13 @@ const (
 	ConditionApplied    = "Applied"
 	ConditionVerified   = "Verified"
 	ConditionRolledBack = "RolledBack"
+
+	// ConditionExpired records that a proposal was never approved in time (or
+	// was approved after its deadline) and so can no longer be applied.
+	ConditionExpired = "Expired"
+
+	// ReasonApprovalTimedOut is the ConditionExpired reason.
+	ReasonApprovalTimedOut = "ApprovalTimedOut"
 
 	// ConditionWorkloadDiverged reports what a rollback could NOT reach.
 	//
@@ -91,6 +108,11 @@ type RemediationController struct {
 	Rollback  *remediation.Rollback
 	Logger    logr.Logger
 	WebSocket *websocket.Server
+
+	// PendingTTL is how long a proposal may wait for approval, counted from its
+	// creation, before it becomes Expired. Zero disables the TTL (an explicit
+	// spec.approval.deadline still applies).
+	PendingTTL time.Duration
 }
 
 // Reconcile drives the RemediationAction through its lifecycle state machine.
@@ -119,8 +141,7 @@ func (r *RemediationController) dispatch(
 ) (ctrl.Result, error) {
 	switch action.Status.Phase {
 	case RemediationPhasePending:
-		// Waiting for human approval — no action.
-		return ctrl.Result{}, nil
+		return r.handlePending(ctx, logger, action)
 
 	case RemediationPhaseApproved:
 		return r.handleApproved(ctx, logger, action)
@@ -190,6 +211,77 @@ func hasCondition(conditions []metav1.Condition, condType string) bool {
 	return false
 }
 
+// handlePending waits for a human decision, and expires the proposal when none
+// arrives in time. It requeues for the deadline itself: nothing else would wake
+// a Pending action, since an idle object is not reconciled again until a resync.
+func (r *RemediationController) handlePending(ctx context.Context, logger logr.Logger, action *dorguv1.RemediationAction) (ctrl.Result, error) {
+	deadline, ok := r.approvalDeadline(action)
+	if !ok {
+		return ctrl.Result{}, nil
+	}
+
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		logger.Info("pending remediation was never approved; expiring it", "deadline", deadline)
+		return ctrl.Result{}, r.transitionToExpired(ctx, action, deadline, false)
+	}
+	// A second of slack so the requeue lands after the deadline, not just before.
+	return ctrl.Result{RequeueAfter: remaining + time.Second}, nil
+}
+
+// approvalDeadline is when a proposal stops being approvable: the earlier of the
+// operator-owned PendingTTL (counted from creation) and the author's own
+// spec.approval.deadline. The author can shorten the window but never extend
+// it. ok is false when neither applies.
+func (r *RemediationController) approvalDeadline(action *dorguv1.RemediationAction) (time.Time, bool) {
+	var deadline time.Time
+	found := false
+
+	if r.PendingTTL > 0 && !action.CreationTimestamp.IsZero() {
+		deadline = action.CreationTimestamp.Add(r.PendingTTL)
+		found = true
+	}
+	if action.Spec.Approval != nil && action.Spec.Approval.Deadline != nil {
+		authored := action.Spec.Approval.Deadline.Time
+		if !found || authored.Before(deadline) {
+			deadline = authored
+			found = true
+		}
+	}
+	return deadline, found
+}
+
+// transitionToExpired settles a proposal that missed its approval window.
+//
+// Expired is terminal, nothing was applied, and it is deliberately not a
+// rejection or a failure: no human said no, and the cluster was never touched,
+// so neither the rejection cooldown nor the failed-remediation cooldown holds it
+// against the application. If the problem persists, Dorgu may propose again.
+func (r *RemediationController) transitionToExpired(
+	ctx context.Context, action *dorguv1.RemediationAction, deadline time.Time, approvedLate bool,
+) error {
+	message := fmt.Sprintf(
+		"Not approved by %s, so this proposal expired without applying anything. "+
+			"It is not a rejection and starts no cooldown; Dorgu may propose again if the problem persists.",
+		deadline.UTC().Format(time.RFC3339))
+	if approvedLate {
+		message = fmt.Sprintf(
+			"Approved after its deadline of %s, so it was refused instead of applied. "+
+				"Nothing was changed. It is not a rejection and starts no cooldown; Dorgu may propose again if the problem persists.",
+			deadline.UTC().Format(time.RFC3339))
+	}
+
+	action.Status.Phase = RemediationPhaseExpired
+	setCondition(&action.Status.Conditions, ConditionExpired, metav1.ConditionTrue, ReasonApprovalTimedOut, message)
+
+	if err := r.Status().Update(ctx, action); err != nil {
+		return fmt.Errorf("updating status to Expired: %w", err)
+	}
+
+	r.broadcastRemediation(action, "expired")
+	return nil
+}
+
 // handleApproved applies the remediation patch and transitions to Applying.
 //
 // An approved plan with nothing to apply settles as Acknowledged instead: its
@@ -197,6 +289,14 @@ func hasCondition(conditions []metav1.Condition, condType string) bool {
 // Sending it to the executor is what used to mark it Failed and put the app into
 // a 30-minute remediation blackout (F-03).
 func (r *RemediationController) handleApproved(ctx context.Context, logger logr.Logger, action *dorguv1.RemediationAction) (ctrl.Result, error) {
+	// A proposal approved after its deadline was approved against a cluster that
+	// no longer exists. Refuse it rather than apply it (OP-14).
+	if deadline, ok := r.approvalDeadline(action); ok && !time.Now().Before(deadline) {
+		logger.Info("approval arrived after the proposal's deadline; expiring it instead of applying",
+			"deadline", deadline)
+		return ctrl.Result{}, r.transitionToExpired(ctx, action, deadline, true)
+	}
+
 	if !action.HasAutoApplicableChange() {
 		logger.Info("approved plan is advisory; recording the approval without applying anything",
 			"actionType", action.Spec.Action.Type, "steps", len(action.Spec.Steps))
@@ -302,7 +402,7 @@ func (r *RemediationController) handleVerificationHealthy(ctx context.Context, l
 	r.broadcastRemediation(action, "completed")
 
 	// Update incident with resolution info.
-	if err := r.updateIncidentResolution(ctx, action, "resolved"); err != nil {
+	if err := r.updateIncidentResolution(ctx, action, IncidentOutcomeResolved); err != nil {
 		logger.Error(err, "failed to update incident resolution")
 	}
 
@@ -310,23 +410,56 @@ func (r *RemediationController) handleVerificationHealthy(ctx context.Context, l
 	return ctrl.Result{}, nil
 }
 
-// handleVerificationDegraded triggers rollback if enabled.
+// handleVerificationDegraded rolls the change back because health degraded.
 func (r *RemediationController) handleVerificationDegraded(ctx context.Context, logger logr.Logger, action *dorguv1.RemediationAction) (ctrl.Result, error) {
 	logger.Info("verification failed: health degraded, attempting rollback")
+	return r.rollBack(ctx, logger, action, "HealthDegraded", "Remediation rolled back due to degraded health.")
+}
+
+// rollBack restores the ApplicationPersona and then states, on the record,
+// what that did and did not reach.
+//
+// Two halves exist: the persona, which the operator writes and can restore, and
+// the live workload, which the CLI may have patched with the user's own
+// credentials and which the operator has no verbs to touch (CR5-02). The record
+// has to say which half moved:
+//
+//   - persona restored and workload matches its pre-remediation values: phase
+//     RolledBack, incident outcome "rollback";
+//   - persona restored but the workload still carries the change: phase
+//     RolledBack, incident outcome "partial", WorkloadDiverged=True with the
+//     command that finishes the job;
+//   - workload unreadable: RolledBack, outcome "rollback", and the condition
+//     says Dorgu cannot tell;
+//   - the rollback itself could not run: Failed, and the message says the change
+//     is STILL APPLIED.
+//
+// reason and cause describe why the rollback was triggered.
+func (r *RemediationController) rollBack(
+	ctx context.Context,
+	logger logr.Logger,
+	action *dorguv1.RemediationAction,
+	reason, cause string,
+) (ctrl.Result, error) {
+	persona := fmt.Sprintf("%s/%s", personaNamespaceOf(action), action.Spec.PersonaRef.Name)
 
 	if err := r.Rollback.Execute(ctx, action); err != nil {
 		logger.Error(err, "rollback failed")
-		return ctrl.Result{}, r.transitionToFailed(ctx, action, fmt.Sprintf("rollback failed: %v", err))
+		return ctrl.Result{}, r.transitionToFailed(ctx, action, fmt.Sprintf(
+			"rollback failed: %v. %s The change is STILL APPLIED to ApplicationPersona %s and was NOT undone.",
+			err, cause, persona))
 	}
 
 	action.Status.Phase = RemediationPhaseRolledBack
-	setCondition(&action.Status.Conditions, ConditionRolledBack, metav1.ConditionTrue, "HealthDegraded", "Remediation rolled back due to degraded health")
 
 	// CR5-02: say what the rollback did NOT reach. The operator restored the
 	// persona and cannot un-patch a Deployment, so a workload the CLI already
 	// changed keeps the change. Leaving that unsaid is what let a user read
 	// "RolledBack" and walk away from a cluster that had not rolled back.
-	r.recordRollbackScope(ctx, logger, action)
+	outcome := r.recordRollbackScope(ctx, logger, action)
+
+	setCondition(&action.Status.Conditions, ConditionRolledBack, metav1.ConditionTrue, reason,
+		cause+" "+rollbackScopeSentence(outcome, persona))
 
 	if err := r.Status().Update(ctx, action); err != nil {
 		return ctrl.Result{}, fmt.Errorf("updating status to RolledBack: %w", err)
@@ -334,20 +467,49 @@ func (r *RemediationController) handleVerificationDegraded(ctx context.Context, 
 
 	r.broadcastRemediation(action, "rolledback")
 
-	// Update incident with rollback info.
-	if err := r.updateIncidentResolution(ctx, action, "rollback"); err != nil {
+	// A rollback that left the workload changed is partial, not a rollback.
+	resolution := IncidentOutcomeRollback
+	if outcome.Diverged() {
+		resolution = IncidentOutcomePartial
+	}
+	if err := r.updateIncidentResolution(ctx, action, resolution); err != nil {
 		logger.Error(err, "failed to update incident resolution after rollback")
 	}
 
-	logger.Info("remediation rolled back")
+	logger.Info("remediation rolled back", "reason", reason, "incidentOutcome", resolution)
 	return ctrl.Result{}, nil
+}
+
+// rollbackScopeSentence is the one sentence on the RolledBack condition that
+// says which half was restored.
+func rollbackScopeSentence(outcome remediation.RollbackOutcome, persona string) string {
+	switch outcome.Reason() {
+	case remediation.ReasonWorkloadDiverged:
+		return fmt.Sprintf("The persona (%s) was restored; the live workload was NOT, and still carries the change. "+
+			"See the %s condition for what to revert.", persona, ConditionWorkloadDiverged)
+	case remediation.ReasonWorkloadUnreadable:
+		return fmt.Sprintf("The persona (%s) was restored; Dorgu could not read the live workload, so it cannot say "+
+			"whether the workload still carries the change. See the %s condition.", persona, ConditionWorkloadDiverged)
+	default:
+		return fmt.Sprintf("The persona (%s) was restored and the live workload matches its pre-remediation values.", persona)
+	}
+}
+
+// personaNamespaceOf is the namespace the action's persona lives in.
+func personaNamespaceOf(action *dorguv1.RemediationAction) string {
+	if action.Spec.PersonaRef.Namespace != "" {
+		return action.Spec.PersonaRef.Namespace
+	}
+	return action.Namespace
 }
 
 // recordRollbackScope writes the WorkloadDiverged condition and logs the
 // divergence, so the fact is available to a client reading the CRD, to anyone
 // reading the operator log, and to `dorgu remediation` without either of them
 // having to diff the Deployment by hand.
-func (r *RemediationController) recordRollbackScope(ctx context.Context, logger logr.Logger, action *dorguv1.RemediationAction) {
+func (r *RemediationController) recordRollbackScope(
+	ctx context.Context, logger logr.Logger, action *dorguv1.RemediationAction,
+) remediation.RollbackOutcome {
 	outcome := r.Rollback.InspectRollback(ctx, action)
 
 	status := metav1.ConditionFalse
@@ -363,7 +525,7 @@ func (r *RemediationController) recordRollbackScope(ctx context.Context, logger 
 
 	if !outcome.Diverged() {
 		logger.V(1).Info("rollback scope recorded", "reason", outcome.Reason())
-		return
+		return outcome
 	}
 
 	fields := make([]string, 0, len(outcome.Divergences))
@@ -375,19 +537,29 @@ func (r *RemediationController) recordRollbackScope(ctx context.Context, logger 
 		"container", outcome.Ref.Container,
 		"managedBy", outcome.Ref.ManagedBy,
 		"diverged", fields)
+	return outcome
 }
 
-// handleVerificationUnknown retries verification or fails after max retries.
+// handleVerificationUnknown retries verification, and rolls the change back
+// when it still cannot be verified after maxUnknownRetries attempts.
+//
+// A change nobody can confirm is healthy must not be left applied, and the
+// retries must terminate: the counter lives in the Verified condition's message,
+// which setCondition used to leave alone when status and reason were unchanged,
+// so it stuck at 1/2 and the action sat in Verifying forever.
 func (r *RemediationController) handleVerificationUnknown(ctx context.Context, logger logr.Logger, action *dorguv1.RemediationAction) (ctrl.Result, error) {
 	retryCount := r.getRetryCount(action)
 
 	if retryCount >= maxUnknownRetries {
-		logger.Info("max verification retries exceeded, failing remediation")
-		return ctrl.Result{}, r.transitionToFailed(ctx, action, "verification returned Unknown after max retries")
+		logger.Info("verification still Unknown after the maximum retries, rolling back",
+			"retries", retryCount)
+		return r.rollBack(ctx, logger, action, "VerificationUnknown", fmt.Sprintf(
+			"Remediation rolled back because its effect could not be verified after %d retries.", maxUnknownRetries))
 	}
 
-	// Increment retry count via condition message.
-	setCondition(&action.Status.Conditions, ConditionVerified, metav1.ConditionFalse, "VerificationUnknown",
+	// Advance the counter. upsertCondition rewrites the message on every call;
+	// setCondition would keep "retry 1/2" for as long as status and reason stay put.
+	upsertCondition(&action.Status.Conditions, ConditionVerified, metav1.ConditionFalse, "VerificationUnknown",
 		fmt.Sprintf("Verification returned Unknown, retry %d/%d", retryCount+1, maxUnknownRetries))
 
 	if err := r.Status().Update(ctx, action); err != nil {
@@ -413,7 +585,7 @@ func (r *RemediationController) transitionToAcknowledged(ctx context.Context, ac
 
 	r.broadcastRemediation(action, "acknowledged")
 
-	if err := r.updateIncidentResolution(ctx, action, "acknowledged"); err != nil {
+	if err := r.updateIncidentResolution(ctx, action, IncidentOutcomeAcknowledged); err != nil {
 		r.Logger.Error(err, "failed to record incident acknowledgement")
 	}
 
@@ -445,7 +617,7 @@ func (r *RemediationController) transitionToFailedWithReason(
 	r.broadcastRemediation(action, "failed")
 
 	// Update incident with failure info.
-	if err := r.updateIncidentResolution(ctx, action, "failed"); err != nil {
+	if err := r.updateIncidentResolution(ctx, action, IncidentOutcomeFailed); err != nil {
 		r.Logger.Error(err, "failed to update incident resolution on failure")
 	}
 
@@ -490,7 +662,7 @@ func (r *RemediationController) updateIncidentResolution(ctx context.Context, ac
 	// Set the resolved phase label on the metadata here (before the spec
 	// update) so it lands on the same write — labels are metadata, so a
 	// Status().Update() below cannot persist them.
-	if outcome == "resolved" {
+	if outcome == IncidentOutcomeResolved {
 		if incident.Labels == nil {
 			incident.Labels = make(map[string]string)
 		}
@@ -504,7 +676,7 @@ func (r *RemediationController) updateIncidentResolution(ctx context.Context, ac
 	// If resolved, update incident status phase. Re-fetch inside the retry
 	// loop so we pick up the new ResourceVersion after our own spec update
 	// (and any concurrent writes from the healthcheck reconciler).
-	if outcome == "resolved" {
+	if outcome == IncidentOutcomeResolved {
 		statusErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 			if err := r.Get(ctx, key, &incident); err != nil {
 				return err
