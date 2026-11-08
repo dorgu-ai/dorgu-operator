@@ -31,6 +31,7 @@ import (
 	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
 	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
 	"github.com/dorgu-ai/dorgu-operator/internal/llm"
+	"github.com/dorgu-ai/dorgu-operator/internal/llm/llmtest"
 )
 
 // stubLLMClient returns a fixed enhancement and counts its calls. It mirrors what
@@ -42,12 +43,16 @@ type stubLLMClient struct {
 	calls   int
 }
 
-func (s *stubLLMClient) EnhanceDiagnosis(_ context.Context, _ llm.DiagnosisRequest) (*llm.DiagnosisResponse, error) {
+func (s *stubLLMClient) Complete(_ context.Context, _ llm.Request) (*llm.Response, error) {
 	s.calls++
-	return &llm.DiagnosisResponse{
-		EnhancedSummary:   s.summary,
-		RecommendedAction: s.action,
-	}, nil
+	summary, action := s.summary, s.action
+	if summary == "" {
+		summary = "the memory limit is too low"
+	}
+	if action == "" {
+		action = llm.ActionResourceAdjustment
+	}
+	return llmtest.DiagnosisReply(summary, "cause", action, 0.5), nil
 }
 
 func (s *stubLLMClient) Provider() string { return "stub" }

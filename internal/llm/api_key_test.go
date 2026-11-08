@@ -51,8 +51,8 @@ func TestGeminiClient_KeyInHeaderNotURL(t *testing.T) {
 	capture := &captureTransport{}
 	g := &GeminiClient{apiKey: secretGeminiKey, model: defaultGeminiModel, client: &http.Client{Transport: capture}}
 
-	if _, err := g.EnhanceDiagnosis(context.Background(), DiagnosisRequest{Summary: "x"}); err != nil {
-		t.Fatalf("EnhanceDiagnosis: %v", err)
+	if _, err := g.Complete(context.Background(), Request{User: "x"}); err != nil {
+		t.Fatalf("Complete: %v", err)
 	}
 
 	if strings.Contains(capture.req.URL.String(), secretGeminiKey) {
@@ -74,7 +74,7 @@ func TestGeminiClient_TransportErrorNeverCarriesKey(t *testing.T) {
 	capture := &captureTransport{err: errors.New("dial tcp: connection refused")}
 	g := &GeminiClient{apiKey: secretGeminiKey, model: defaultGeminiModel, client: &http.Client{Transport: capture}}
 
-	_, err := g.EnhanceDiagnosis(context.Background(), DiagnosisRequest{Summary: "x"})
+	_, err := g.Complete(context.Background(), Request{User: "x"})
 	if err == nil {
 		t.Fatal("expected an error")
 	}
@@ -91,7 +91,7 @@ func TestGeminiClient_ErrorBodyEchoingKeyIsRedacted(t *testing.T) {
 	defer server.Close()
 
 	g := &GeminiClient{apiKey: secretGeminiKey, model: defaultGeminiModel, client: server.Client(), baseURL: server.URL}
-	_, err := g.EnhanceDiagnosis(context.Background(), DiagnosisRequest{Summary: "x"})
+	_, err := g.Complete(context.Background(), Request{User: "x"})
 	if err == nil {
 		t.Fatal("expected an error")
 	}
@@ -112,7 +112,7 @@ func TestClaudeClient_ErrorBodyEchoingKeyIsRedacted(t *testing.T) {
 	defer server.Close()
 
 	c := &ClaudeClient{apiKey: key, model: defaultClaudeModel, client: server.Client(), baseURL: server.URL}
-	_, err := c.EnhanceDiagnosis(context.Background(), DiagnosisRequest{Summary: "x"})
+	_, err := c.Complete(context.Background(), Request{User: "x"})
 	if err == nil {
 		t.Fatal("expected an error")
 	}

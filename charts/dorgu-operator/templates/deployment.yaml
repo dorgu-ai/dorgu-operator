@@ -79,6 +79,9 @@ spec:
             {{- if .Values.llm.model }}
             - --llm-model={{ .Values.llm.model }}
             {{- end }}
+            {{- if .Values.llm.provider }}
+            - --llm-cache-ttl={{ .Values.llm.cacheTTL }}
+            {{- end }}
             {{- /* The API key is never passed as an inline arg (it would leak into the
                    pod spec and `helm get values`). It is injected as the provider's key
                    env var from a Secret instead — see the env: block below. */}}

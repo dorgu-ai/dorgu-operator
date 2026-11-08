@@ -198,7 +198,11 @@ func TestOP16MixedNamespaceEvictionNeverReachesThePlanner(t *testing.T) {
 		t.Fatalf("rule-based diagnosis: %v (%d results)", err, len(diagnoses))
 	}
 
-	claudePlanner, err := planner.NewClaudePlanner("test-key")
+	planClient, err := llm.NewClient("claude", "test-key")
+	if err != nil {
+		t.Fatalf("building LLM client: %v", err)
+	}
+	claudePlanner, err := planner.New(planClient)
 	if err != nil {
 		t.Fatalf("building planner: %v", err)
 	}
@@ -310,13 +314,15 @@ func createOOMKilledPod(t *testing.T, ns string) {
 	}
 }
 
-// OP-11: the model's prose says "do not restart". Model text must not drive
-// control flow: the AI diagnosis keeps the rule-owned SuggestedAction, so the
-// dedup key and the proposer's switch are unchanged.
+// OP-11: the model steers the action. Model text must not drive control flow:
+// the AI diagnosis keeps the rule-owned SuggestedAction, so the dedup key and
+// the proposer's switch are unchanged.
+//
+// Two attacks, both of which must fail. A reply in prose that names an action
+// ("Do not restart the pod") used to be substring-matched into SuggestedAction;
+// it now fails the structured-output schema and the rule-based diagnosis stands.
+// A schema-valid reply that recommends a different action is read as advice only.
 func TestOP11ModelProseSteersAction(t *testing.T) {
-	withCannedClaudeReply(t, "The memory limit is too low for this workload. "+
-		"Do not restart the pod; that only repeats the OOM kill.")
-
 	signals := []detection.Signal{oomSignal("op-11")}
 	rules, err := diagnosis.NewRuleBasedProvider(logr.Discard()).Diagnose(testCtx(t), signals)
 	if err != nil || len(rules) == 0 {
@@ -328,14 +334,42 @@ func TestOP11ModelProseSteersAction(t *testing.T) {
 		t.Fatalf("building LLM client: %v", err)
 	}
 	checker := gate.New(k8sClient, logr.Discard())
-	ai, err := diagnosis.NewAIProvider(llmClient, checker, logr.Discard()).Diagnose(testCtx(t), signals)
-	if err != nil || len(ai) == 0 {
-		t.Fatalf("AI diagnosis: %v (%d results)", err, len(ai))
+
+	attacks := map[string]func(*testing.T){
+		"prose": func(t *testing.T) {
+			withCannedClaudeReply(t, "The memory limit is too low for this workload. "+
+				"Do not restart the pod; that only repeats the OOM kill.")
+		},
+		"valid JSON recommending another action": func(t *testing.T) {
+			withCannedClaudeStructuredReply(t, map[string]any{
+				"summary":           "The pod keeps dying.",
+				"rootCause":         "Something is wrong with the pod.",
+				"recommendedAction": "restart",
+				"confidence":        0.99,
+			})
+		},
 	}
 
-	blocked := ai[0].SuggestedAction == rules[0].SuggestedAction
-	Expect(t, "OP-11", blocked, fmt.Sprintf("rule said %q, after model prose the diagnosis says %q",
-		rules[0].SuggestedAction, ai[0].SuggestedAction))
+	blocked, detail := true, ""
+	for name, install := range attacks {
+		var ai []diagnosis.Diagnosis
+		var diagErr error
+		// Each attack installs its own transport for the duration of its subtest.
+		t.Run(name, func(t *testing.T) {
+			install(t)
+			ai, diagErr = diagnosis.NewAIProvider(llmClient, checker, logr.Discard()).Diagnose(testCtx(t), signals)
+		})
+		if diagErr != nil || len(ai) == 0 {
+			t.Fatalf("AI diagnosis (%s): %v (%d results)", name, diagErr, len(ai))
+		}
+		if ai[0].SuggestedAction != rules[0].SuggestedAction {
+			blocked = false
+			detail += fmt.Sprintf("[%s: rule said %q, after the model the diagnosis says %q] ",
+				name, rules[0].SuggestedAction, ai[0].SuggestedAction)
+		}
+	}
+
+	Expect(t, "OP-11", blocked, detail)
 }
 
 // withCannedClaudeReply answers every request to the Anthropic API with text,
@@ -354,6 +388,36 @@ func withCannedClaudeReply(t *testing.T, text string) *atomic.Int32 {
 		calls.Add(1)
 		body, err := json.Marshal(map[string]any{
 			"content": []map[string]string{{"type": "text", "text": text}},
+		})
+		if err != nil {
+			return nil, err
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(bytes.NewReader(body)),
+			Request:    req,
+		}, nil
+	})
+	t.Cleanup(func() { http.DefaultTransport = original })
+	return calls
+}
+
+// withCannedClaudeStructuredReply answers every request to the Anthropic API with
+// a tool_use block carrying input, which is what a model that follows the
+// structured-output contract sends back.
+func withCannedClaudeStructuredReply(t *testing.T, input map[string]any) *atomic.Int32 {
+	t.Helper()
+	calls := &atomic.Int32{}
+	original := http.DefaultTransport
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Host != "api.anthropic.com" {
+			return original.RoundTrip(req)
+		}
+		calls.Add(1)
+		body, err := json.Marshal(map[string]any{
+			"content": []map[string]any{{"type": "tool_use", "name": "submit_diagnosis", "input": input}},
+			"usage":   map[string]int{"input_tokens": 10, "output_tokens": 5},
 		})
 		if err != nil {
 			return nil, err

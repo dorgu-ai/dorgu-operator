@@ -17,11 +17,9 @@ limitations under the License.
 package llm
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 )
@@ -30,10 +28,12 @@ const (
 	defaultClaudeModel = "claude-sonnet-4-6"
 	claudeAPIURL       = "https://api.anthropic.com/v1/messages"
 	anthropicVersion   = "2023-06-01"
-	maxTokens          = 512
 )
 
-// ClaudeClient implements the Client interface using the Anthropic Messages API.
+// ClaudeClient implements Client against the Anthropic Messages API.
+//
+// A structured request uses forced tool use: the model must call the tool named
+// by the Schema, and the tool input is the reply, parsed by the caller.
 type ClaudeClient struct {
 	apiKey string
 	model  string
@@ -48,91 +48,80 @@ func (c *ClaudeClient) Provider() string { return providerClaude }
 // SetModel overrides the default model.
 func (c *ClaudeClient) SetModel(model string) { c.model = model }
 
-// EnhanceDiagnosis calls the Anthropic Messages API to enhance a rule-based diagnosis.
-func (c *ClaudeClient) EnhanceDiagnosis(ctx context.Context, req DiagnosisRequest) (*DiagnosisResponse, error) {
+// Complete sends one Messages API request.
+func (c *ClaudeClient) Complete(ctx context.Context, req Request) (*Response, error) {
+	ctx, cancel := withTimeout(ctx, req)
+	defer cancel()
+
 	body := claudeRequest{
 		Model:     c.model,
-		MaxTokens: maxTokens,
-		System:    systemPrompt,
-		Messages: []claudeMessage{
-			{Role: "user", Content: buildUserMessage(req)},
-		},
+		MaxTokens: maxTokensFor(req),
+		System:    req.System,
+		Messages:  []claudeMessage{{Role: "user", Content: req.User}},
 	}
-
-	jsonBody, err := json.Marshal(body)
-	if err != nil {
-		return nil, fmt.Errorf("marshal request: %w", err)
+	if req.Schema != nil {
+		body.Tools = []claudeTool{{
+			Name:        req.Schema.Name,
+			Description: req.Schema.Description,
+			InputSchema: req.Schema.Definition,
+			Strict:      true,
+		}}
+		body.ToolChoice = &claudeToolChoice{Type: "tool", Name: req.Schema.Name}
 	}
 
 	apiURL := c.baseURL
 	if apiURL == "" {
 		apiURL = claudeAPIURL
 	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(jsonBody))
+	respBody, err := post(ctx, c.client, apiURL, map[string]string{
+		"x-api-key":         c.apiKey,
+		"anthropic-version": anthropicVersion,
+	}, body, c.apiKey)
 	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
+		return nil, err
 	}
 
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("x-api-key", c.apiKey)
-	httpReq.Header.Set("anthropic-version", anthropicVersion)
-
-	resp, err := c.client.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("API call failed: %s", redactKey(err.Error(), c.apiKey))
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, redactKey(string(respBody), c.apiKey))
-	}
-
-	var claudeResp claudeResponse
-	if err := json.Unmarshal(respBody, &claudeResp); err != nil {
+	var cr claudeResponse
+	if err := json.Unmarshal(respBody, &cr); err != nil {
 		return nil, fmt.Errorf("unmarshal response: %w", err)
 	}
-
-	if len(claudeResp.Content) == 0 {
+	if len(cr.Content) == 0 {
 		return nil, fmt.Errorf("empty response from Claude API")
 	}
 
-	text := claudeResp.Content[0].Text
-	return parseEnhancedResponse(text), nil
-}
-
-// parseEnhancedResponse extracts the enhanced summary from LLM text output.
-// The LLM returns free-form text; we use the full response as the enhanced summary
-// and extract any recommended action if present.
-func parseEnhancedResponse(text string) *DiagnosisResponse {
-	resp := &DiagnosisResponse{
-		EnhancedSummary: strings.TrimSpace(text),
-	}
-
-	// Look for an explicit action recommendation in the text.
-	lower := strings.ToLower(text)
-	for _, action := range []string{"resource-adjustment", "restart", "rollback", "scale-up", "deployment-fix", "investigate"} {
-		if strings.Contains(lower, action) {
-			resp.RecommendedAction = action
-			break
+	out := &Response{Usage: Usage{InputTokens: cr.Usage.InputTokens, OutputTokens: cr.Usage.OutputTokens}}
+	var text []string
+	for _, block := range cr.Content {
+		switch {
+		case block.Type == "text":
+			text = append(text, block.Text)
+		case block.Type == "tool_use" && req.Schema != nil && block.Name == req.Schema.Name && out.JSON == nil:
+			out.JSON = block.Input
 		}
 	}
-
-	return resp
+	out.Text = strings.TrimSpace(strings.Join(text, "\n"))
+	return out, nil
 }
 
-// Claude API types
-
 type claudeRequest struct {
-	Model     string          `json:"model"`
-	MaxTokens int             `json:"max_tokens"`
-	System    string          `json:"system"`
-	Messages  []claudeMessage `json:"messages"`
+	Model      string            `json:"model"`
+	MaxTokens  int               `json:"max_tokens"`
+	System     string            `json:"system"`
+	Tools      []claudeTool      `json:"tools,omitempty"`
+	ToolChoice *claudeToolChoice `json:"tool_choice,omitempty"`
+	Messages   []claudeMessage   `json:"messages"`
+}
+
+type claudeTool struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	InputSchema map[string]any `json:"input_schema"`
+	Strict      bool           `json:"strict,omitempty"`
+}
+
+type claudeToolChoice struct {
+	Type string `json:"type"`
+	Name string `json:"name"`
 }
 
 type claudeMessage struct {
@@ -142,9 +131,17 @@ type claudeMessage struct {
 
 type claudeResponse struct {
 	Content []claudeContent `json:"content"`
+	Usage   claudeUsage     `json:"usage"`
+}
+
+type claudeUsage struct {
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
 }
 
 type claudeContent struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
+	Type  string          `json:"type"`
+	Text  string          `json:"text"`
+	Name  string          `json:"name"`
+	Input json.RawMessage `json:"input"`
 }

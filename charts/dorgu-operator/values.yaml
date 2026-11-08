@@ -120,6 +120,11 @@ dorguEvents:
 llm:
   provider: ""            # "claude" or "gemini"; empty disables AI
   model: ""               # empty = provider default (claude-sonnet-4-6 / gemini-2.0-flash)
+  # How long an AI diagnosis or plan is reused while the signals of an incident are
+  # unchanged. A change asks the model again at once; this only bounds how stale an
+  # unchanged answer may get. 0 asks the model every health-check cycle. Maps to
+  # --llm-cache-ttl.
+  cacheTTL: 30m
   existingSecret: ""      # name of a pre-created Secret holding the API key (PREFERRED)
   existingSecretKey: ""   # key within the Secret; empty = ANTHROPIC_API_KEY or GEMINI_API_KEY per provider
   apiKey: ""              # DEV ONLY: raw key; requires createSecret=true to be stored in a Secret

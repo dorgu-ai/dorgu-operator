@@ -17,12 +17,11 @@ limitations under the License.
 package llm
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
+	"strings"
 )
 
 const (
@@ -33,7 +32,11 @@ const (
 	geminiAPIKeyHeader = "x-goog-api-key"
 )
 
-// GeminiClient implements the Client interface using the Google Gemini API.
+// GeminiClient implements Client using the Google Gemini API.
+//
+// A structured request sets the JSON response MIME type and states the schema in
+// the system instruction. Gemini's response-schema dialect is narrower than JSON
+// Schema, so the schema is not sent as one; the caller validates the reply.
 type GeminiClient struct {
 	apiKey string
 	model  string
@@ -48,72 +51,74 @@ func (g *GeminiClient) Provider() string { return providerGemini }
 // SetModel overrides the default model.
 func (g *GeminiClient) SetModel(model string) { g.model = model }
 
-// EnhanceDiagnosis calls the Gemini generateContent API to enhance a rule-based diagnosis.
-func (g *GeminiClient) EnhanceDiagnosis(ctx context.Context, req DiagnosisRequest) (*DiagnosisResponse, error) {
-	userMessage := buildUserMessage(req)
-	prompt := systemPrompt + "\n\n" + userMessage
+// Complete calls the Gemini generateContent API.
+func (g *GeminiClient) Complete(ctx context.Context, req Request) (*Response, error) {
+	ctx, cancel := withTimeout(ctx, req)
+	defer cancel()
 
+	system := req.System
 	body := geminiRequest{
-		Contents: []geminiContent{
-			{
-				Parts: []geminiPart{
-					{Text: prompt},
-				},
-			},
-		},
+		Contents:         []geminiContent{{Parts: []geminiPart{{Text: req.User}}}},
+		GenerationConfig: geminiGenerationConfig{MaxOutputTokens: maxTokensFor(req)},
 	}
-
-	jsonBody, err := json.Marshal(body)
-	if err != nil {
-		return nil, fmt.Errorf("marshal request: %w", err)
+	if req.Schema != nil {
+		schema, err := json.Marshal(req.Schema.Definition)
+		if err != nil {
+			return nil, fmt.Errorf("marshal schema: %w", err)
+		}
+		system += "\n\nReply with a single JSON object that conforms to this JSON Schema, and nothing else:\n" + string(schema)
+		body.GenerationConfig.ResponseMimeType = mimeJSON
+	}
+	if system != "" {
+		body.SystemInstruction = &geminiContent{Parts: []geminiPart{{Text: system}}}
 	}
 
 	apiURL := g.baseURL
 	if apiURL == "" {
 		apiURL = fmt.Sprintf(geminiAPIURLFmt, g.model)
 	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(jsonBody))
+	respBody, err := post(ctx, g.client, apiURL, map[string]string{geminiAPIKeyHeader: g.apiKey}, body, g.apiKey)
 	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
+		return nil, err
 	}
 
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set(geminiAPIKeyHeader, g.apiKey)
-
-	resp, err := g.client.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("API call failed: %s", redactKey(err.Error(), g.apiKey))
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, redactKey(string(respBody), g.apiKey))
-	}
-
-	var geminiResp geminiResponse
-	if err := json.Unmarshal(respBody, &geminiResp); err != nil {
+	var gr geminiResponse
+	if err := json.Unmarshal(respBody, &gr); err != nil {
 		return nil, fmt.Errorf("unmarshal response: %w", err)
 	}
-
-	if len(geminiResp.Candidates) == 0 ||
-		len(geminiResp.Candidates[0].Content.Parts) == 0 {
+	if len(gr.Candidates) == 0 || len(gr.Candidates[0].Content.Parts) == 0 {
 		return nil, fmt.Errorf("empty response from Gemini API")
 	}
 
-	text := geminiResp.Candidates[0].Content.Parts[0].Text
-	return parseEnhancedResponse(text), nil
+	parts := gr.Candidates[0].Content.Parts
+	text := make([]string, 0, len(parts))
+	for _, part := range parts {
+		text = append(text, part.Text)
+	}
+	out := &Response{
+		Text: strings.TrimSpace(strings.Join(text, "")),
+		Usage: Usage{
+			InputTokens:  gr.UsageMetadata.PromptTokenCount,
+			OutputTokens: gr.UsageMetadata.CandidatesTokenCount,
+		},
+	}
+	if req.Schema != nil && json.Valid([]byte(out.Text)) {
+		out.JSON = json.RawMessage(out.Text)
+	}
+	return out, nil
 }
 
 // Gemini API types
 
 type geminiRequest struct {
-	Contents []geminiContent `json:"contents"`
+	SystemInstruction *geminiContent         `json:"systemInstruction,omitempty"`
+	Contents          []geminiContent        `json:"contents"`
+	GenerationConfig  geminiGenerationConfig `json:"generationConfig"`
+}
+
+type geminiGenerationConfig struct {
+	MaxOutputTokens  int    `json:"maxOutputTokens,omitempty"`
+	ResponseMimeType string `json:"responseMimeType,omitempty"`
 }
 
 type geminiContent struct {
@@ -125,9 +130,15 @@ type geminiPart struct {
 }
 
 type geminiResponse struct {
-	Candidates []geminiCandidate `json:"candidates"`
+	Candidates    []geminiCandidate `json:"candidates"`
+	UsageMetadata geminiUsage       `json:"usageMetadata"`
 }
 
 type geminiCandidate struct {
 	Content geminiContent `json:"content"`
+}
+
+type geminiUsage struct {
+	PromptTokenCount     int `json:"promptTokenCount"`
+	CandidatesTokenCount int `json:"candidatesTokenCount"`
 }

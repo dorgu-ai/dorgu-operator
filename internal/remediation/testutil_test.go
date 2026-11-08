@@ -36,6 +36,7 @@ import (
 	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
 	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
 	"github.com/dorgu-ai/dorgu-operator/internal/llm"
+	"github.com/dorgu-ai/dorgu-operator/internal/llm/llmtest"
 )
 
 // Shared fixtures for the proposer tests.
@@ -67,9 +68,9 @@ func clusterPersonaExcluding(namespaces ...string) *dorguv1.ClusterPersona {
 
 type countingLLM struct{ calls int }
 
-func (c *countingLLM) EnhanceDiagnosis(context.Context, llm.DiagnosisRequest) (*llm.DiagnosisResponse, error) {
+func (c *countingLLM) Complete(context.Context, llm.Request) (*llm.Response, error) {
 	c.calls++
-	return &llm.DiagnosisResponse{EnhancedSummary: "model narrative"}, nil
+	return llmtest.DiagnosisReply("model narrative", "cause", llm.ActionInvestigate, 0.5), nil
 }
 
 func (c *countingLLM) Provider() string { return "counting" }

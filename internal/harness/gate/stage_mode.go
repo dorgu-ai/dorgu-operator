@@ -40,7 +40,7 @@ func (s modePolicyStage) Run(ctx context.Context, cand *Candidate, d *Decision) 
 	mode, err := s.selfHealingMode(ctx)
 	if err != nil {
 		// Fail closed: a policy that cannot be read is not the default policy.
-		s.g.logger.Error(err, "cannot read the ClusterPersona selfHealing mode; refusing until it is readable")
+		s.g.logUnreadable("selfHealingMode", err, "cannot read the ClusterPersona selfHealing mode; refusing until it is readable")
 		d.refuse(StageModePolicy, GuardrailSelfHealingMode,
 			"the self-healing mode could not be read, so nothing can be cleared", nil)
 		return nil

@@ -26,6 +26,7 @@ import (
 
 	"github.com/dorgu-ai/dorgu-operator/internal/events"
 	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
+	"github.com/dorgu-ai/dorgu-operator/internal/llm"
 )
 
 // DefaultRemediationPendingTTL is how long a proposal may wait for a human
@@ -79,6 +80,10 @@ type operatorConfig struct {
 	llmProvider string // "claude", "gemini", or "" (disabled)
 	llmAPIKey   string // API key (overrides env vars)
 	llmModel    string // model override
+
+	// llmCacheTTL is how long a model answer is reused while a group's signal
+	// fingerprint is unchanged. Zero disables the cache (a call every cycle).
+	llmCacheTTL time.Duration
 
 	// AI remediation planning (independent of AI diagnosis).
 	enableAIRemediation bool // default: on when an LLM provider+key is configured
@@ -152,6 +157,10 @@ func parseFlags() operatorConfig {
 		"API key for the LLM provider (overrides ANTHROPIC_API_KEY / GEMINI_API_KEY env vars).")
 	flag.StringVar(&cfg.llmModel, "llm-model", "",
 		"Override the default model for the LLM provider.")
+	flag.DurationVar(&cfg.llmCacheTTL, "llm-cache-ttl", llm.DefaultCacheTTL,
+		"How long a diagnosis or plan from the model is reused while the group's signal fingerprint is "+
+			"unchanged. A change in the signals asks again at once; this only bounds how stale an unchanged "+
+			"answer may get. 0 disables the cache and asks the model every health-check cycle.")
 	flag.BoolVar(&cfg.enableAIRemediation, "enable-ai-remediation", true,
 		"Enable AI-generated ordered remediation plans (requires --llm-provider=claude + key). "+
 			"When disabled, the proposer uses the deterministic rule-based path only.")
@@ -179,6 +188,9 @@ func (c operatorConfig) validate() error {
 	if c.remediationPendingTTL < 0 {
 		return fmt.Errorf("--remediation-pending-ttl must not be negative (use 0 to disable), got %s",
 			c.remediationPendingTTL)
+	}
+	if c.llmCacheTTL < 0 {
+		return fmt.Errorf("--llm-cache-ttl must not be negative (use 0 to disable), got %s", c.llmCacheTTL)
 	}
 	return nil
 }
