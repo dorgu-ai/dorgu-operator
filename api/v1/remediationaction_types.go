@@ -471,6 +471,12 @@ type RemediationActionStatus struct {
 	// +optional
 	// +listType=atomic
 	StepStatuses []StepStatus `json:"stepStatuses,omitempty"`
+
+	// Gate is what the operator's gate established about this action: the live
+	// facts it read, who owns the workload, every guardrail verdict, and the
+	// baseline the change was measured against. Written by the operator only.
+	// +optional
+	Gate *GateStatus `json:"gate,omitempty"`
 }
 
 // StepStatus tracks the execution outcome of a single RemediationStep.

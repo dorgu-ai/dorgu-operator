@@ -28,6 +28,7 @@ import (
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
+	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
 )
 
 // TestProposer_PersonaMissingTheLimitTheWorkloadHas covers the drift running the
@@ -44,7 +45,7 @@ func TestProposer_PersonaMissingTheLimitTheWorkloadHas(t *testing.T) {
 		WithRuntimeObjects(persona, deploy).
 		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
 
-	p := NewProposer(c, NewSafetyChecker(c, testLogger()), testLogger())
+	p := NewProposer(c, gate.New(c, testLogger()), testLogger())
 	result, err := p.Propose(context.Background(),
 		newOOMDiagnosis(defaultNamespace, groundedPersona, detection.SeverityCritical), incident)
 	require.NoError(t, err)

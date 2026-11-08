@@ -54,3 +54,18 @@ func TestDefaultRemediationPendingTTLIsTwentyFourHours(t *testing.T) {
 		t.Errorf("default = %s, want 24h (D17)", DefaultRemediationPendingTTL)
 	}
 }
+
+func TestAIDisabledReason(t *testing.T) {
+	if got := aiDisabledReason("claude", ""); got == "" {
+		t.Error("an LLM provider with an unknown operator namespace must be disabled")
+	}
+	for _, tt := range []struct{ provider, ns string }{
+		{"claude", "dorgu-system"}, // known namespace: AI may run
+		{"", ""},                   // no provider: nothing to disable
+		{"", "dorgu-system"},
+	} {
+		if got := aiDisabledReason(tt.provider, tt.ns); got != "" {
+			t.Errorf("aiDisabledReason(%q, %q) = %q, want it enabled", tt.provider, tt.ns, got)
+		}
+	}
+}

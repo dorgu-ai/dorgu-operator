@@ -29,6 +29,7 @@ import (
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
+	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation/planner"
 )
 
@@ -49,7 +50,7 @@ func atCapWorld(t *testing.T) (*Proposer, *dorguv1.IncidentMemory) {
 		WithRuntimeObjects(persona, deploy).
 		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
 
-	return NewProposer(c, NewSafetyChecker(c, testLogger()), testLogger()), incident
+	return NewProposer(c, gate.New(c, testLogger()), testLogger()), incident
 }
 
 // atCapPlan asks for exactly the doubling the guardrail permits, and says out
@@ -194,9 +195,9 @@ func TestScrubFabricatedGuardrailClaims(t *testing.T) {
 			build: func() *dorguv1.RemediationAction {
 				a := planWith(dorguv1.RemediationStep{Order: 1, Type: dorguv1.StepTypePersonaUpdate})
 				caveat := blastRadiusCaveat([]string{"spec.resources.limits.memory"})
-				a.Spec.PlanSummary = appendNote("the limit is too low for the working set", caveat)
-				a.Spec.Explanation = appendNote("AI remediation plan: 1 step, applied on approval", caveat)
-				a.Spec.Steps[0].Rationale = appendNote("doubling keeps them proportionate", caveat)
+				a.Spec.PlanSummary = gate.AppendNote("the limit is too low for the working set", caveat)
+				a.Spec.Explanation = gate.AppendNote("AI remediation plan: 1 step, applied on approval", caveat)
+				a.Spec.Steps[0].Rationale = gate.AppendNote("doubling keeps them proportionate", caveat)
 				return a
 			},
 			assert: func(t *testing.T, a *dorguv1.RemediationAction) {

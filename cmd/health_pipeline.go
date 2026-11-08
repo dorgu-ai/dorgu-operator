@@ -23,22 +23,23 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
+	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
 	"github.com/dorgu-ai/dorgu-operator/internal/llm"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation/planner"
 )
 
 // healthPipeline is everything the health-check path needs between detection
-// and the remediation controller: the one deny-list, the diagnosis engine with
-// its providers, the optional AI planner, and the proposer that uses them.
+// and the remediation controller: the one gate (deny-list included), the
+// diagnosis engine with its providers, the optional AI planner, and the
+// proposer that uses them.
 //
-// It is built in one place so a test can assert how the pieces are wired. The
-// safety checker is the single deny-list; the diagnosis provider's model call
-// and the proposer are gated by the same instance, and a second checker built
-// without the operator namespace would silently send dorgu-system incidents to
-// the model.
+// It is built in one place so a test can assert how the pieces are wired. There
+// is exactly one gate: the diagnosis provider's model call and the proposer are
+// gated by the same instance, and a second gate built without the operator
+// namespace would silently send dorgu-system incidents to the model.
 type healthPipeline struct {
-	SafetyChecker      *remediation.SafetyCheckerImpl
+	Gate               *gate.Gate
 	DiagnosisProviders []diagnosis.DiagnosisProvider
 	DiagnosisEngine    *diagnosis.Engine
 
@@ -48,7 +49,7 @@ type healthPipeline struct {
 	Proposer *remediation.Proposer
 }
 
-// buildHealthPipeline assembles the safety checker, diagnosis providers,
+// buildHealthPipeline assembles the gate, diagnosis providers,
 // planner and proposer from the operator configuration. operatorNS is the
 // operator's own namespace ("" when unknown); the deny-list protects it.
 //
@@ -59,12 +60,12 @@ func buildHealthPipeline(
 	operatorNS string,
 	log logr.Logger,
 ) healthPipeline {
-	// The safety checker is built first because it is the single deny-list: it
-	// gates the remediation proposer and the diagnosis provider's model call
-	// alike.
-	safetyChecker := remediation.NewSafetyChecker(c, log,
-		remediation.WithProtectedNamespaces(operatorNS),
-		remediation.WithProtectedNamespaces(cfg.safetyExcludedNamespaces...))
+	// The gate is built first because it is the single deny-list and the single
+	// decision point: it gates the remediation proposer and the diagnosis
+	// provider's model call alike.
+	g := gate.New(c, log,
+		gate.WithProtectedNamespaces(operatorNS),
+		gate.WithProtectedNamespaces(cfg.safetyExcludedNamespaces...))
 
 	providers := []diagnosis.DiagnosisProvider{diagnosis.NewRuleBasedProvider(log)}
 
@@ -72,7 +73,12 @@ func buildHealthPipeline(
 	// the proposer. It degrades gracefully to rules.
 	var aiPlanner planner.Planner
 
-	if cfg.llmProvider != "" {
+	if reason := aiDisabledReason(cfg.llmProvider, operatorNS); reason != "" {
+		// Fail closed. Detection, rule-based diagnosis and rule-based proposals
+		// carry on; nothing goes to a model.
+		log.Error(nil, "AI diagnosis and AI remediation planning are DISABLED: "+reason,
+			"provider", cfg.llmProvider)
+	} else if cfg.llmProvider != "" {
 		apiKey := resolveLLMAPIKey(cfg)
 		if apiKey != "" {
 			llmClient, llmErr := llm.NewClient(cfg.llmProvider, apiKey)
@@ -84,7 +90,7 @@ func buildHealthPipeline(
 						setter.SetModel(cfg.llmModel)
 					}
 				}
-				providers = append(providers, diagnosis.NewAIProvider(llmClient, safetyChecker, log))
+				providers = append(providers, diagnosis.NewAIProvider(llmClient, g, log))
 				log.Info("AI diagnosis enabled", "provider", cfg.llmProvider)
 			}
 
@@ -112,11 +118,11 @@ func buildHealthPipeline(
 	}
 
 	return healthPipeline{
-		SafetyChecker:      safetyChecker,
+		Gate:               g,
 		DiagnosisProviders: providers,
 		DiagnosisEngine:    diagnosis.NewEngine(log, providers...),
 		Planner:            aiPlanner,
-		Proposer:           remediation.NewProposer(c, safetyChecker, log, proposerOpts...),
+		Proposer:           remediation.NewProposer(c, g, log, proposerOpts...),
 	}
 }
 

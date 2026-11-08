@@ -21,6 +21,7 @@ import (
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
+	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
 )
 
 // ProposalResult wraps a RemediationAction with metadata about why it was proposed.
@@ -28,71 +29,23 @@ type ProposalResult struct {
 	// Action is the created RemediationAction CRD. Nil if skipped.
 	Action *dorguv1.RemediationAction
 
-	// SkipReason is non-empty if the proposal was suppressed by safety or other logic.
+	// SkipReason is non-empty if the proposal was suppressed by the gate or other logic.
 	SkipReason string
 
 	// Proposed is true if a RemediationAction was successfully created.
 	Proposed bool
-}
 
-// SafetyResult reports whether a proposed remediation passes safety checks.
-type SafetyResult struct {
-	// Allowed is true if no safety violations were found.
-	Allowed bool
+	// Suppressed is true when the proposal was withheld because a human already
+	// declined this fix (the rejection cooldown), as opposed to any other refusal.
+	// It feeds dorgu_proposals_total{result="suppressed"}.
+	Suppressed bool
 
-	// Violations lists all safety rules that were violated.
-	Violations []SafetyViolation
-}
-
-// SafetyViolation describes a single safety rule violation.
-type SafetyViolation struct {
-	// Rule identifies the safety rule (e.g., "rate-limit", "blast-radius", "deny-list", "concurrent").
-	Rule string
-
-	// Message is a human-readable explanation of the violation.
-	Message string
-
-	// BlastRadius carries the violation as numbers rather than as a sentence,
-	// and is set only for the "blast-radius" rule. Callers record the verdict on
-	// the step as structured data (dorguv1.StepSafety); parsing it back out of
-	// Message is what made the verdict unfilterable in the first place.
-	BlastRadius *BlastRadiusViolation
-}
-
-// BlastRadiusViolation is a blast-radius refusal expressed as its inputs, so a
-// caller can state the requested value, the value it measured against, and the
-// ceiling without re-deriving any of them from prose.
-type BlastRadiusViolation struct {
-	// Field is the persona-spec path, e.g. "spec.resources.limits.memory".
-	Field string
-
-	// Baseline is the value the change was measured against.
-	Baseline string
-
-	// Requested is the value the plan asked for.
-	Requested string
-
-	// Ratio is Requested over Baseline.
-	Ratio float64
-
-	// MaxRatio is the largest increase the guardrail allows.
-	MaxRatio float64
+	// Decision is the gate's last word on the proposal: nil only when the
+	// proposal was skipped before the gate was asked.
+	Decision *gate.Decision
 }
 
 // RemediationProposer generates RemediationAction CRDs from diagnoses.
 type RemediationProposer interface {
 	Propose(ctx context.Context, diag diagnosis.Diagnosis, incident *dorguv1.IncidentMemory) (*ProposalResult, error)
-}
-
-// SafetyChecker validates a proposed remediation against safety guardrails.
-type SafetyChecker interface {
-	// NamespaceProtected is the deny list as a yes/no, which is what the
-	// diagnosis package needs to decide whether a diagnosis may reach a model.
-	diagnosis.NamespaceGate
-
-	Check(ctx context.Context, action *dorguv1.RemediationAction) (*SafetyResult, error)
-
-	// NamespaceDenied reports whether nothing may be proposed in namespace at
-	// all. It needs no action, so the proposer can ask before planning.
-	NamespaceDenied(ctx context.Context, namespace string) *SafetyViolation
 }

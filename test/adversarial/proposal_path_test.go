@@ -37,6 +37,7 @@ import (
 	"github.com/dorgu-ai/dorgu-operator/internal/controller"
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
 	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
+	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
 	"github.com/dorgu-ai/dorgu-operator/internal/llm"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation/planner"
@@ -52,19 +53,16 @@ func TestOP02UnlabelledActionsEvadeRateLimit(t *testing.T) {
 	createPersona(t, ns)
 	createIncident(t, ns)
 
-	for i := range remediation.DefaultMaxRemediationsPerHour {
+	for i := range gate.DefaultMaxRemediationsPerHour {
 		createRA(t, newRA(ns, fmt.Sprintf("unlabelled-%d", i), withoutLabels()), "Pending")
 	}
 
-	checker := remediation.NewSafetyChecker(k8sClient, logr.Discard())
-	result, err := checker.Check(testCtx(t), newRA(ns, "next-proposal"))
-	if err != nil {
-		t.Fatalf("safety check: %v", err)
-	}
+	g := gate.New(k8sClient, logr.Discard())
+	dec := gateRun(t, g, newRA(ns, "next-proposal"))
 
-	blocked := hasViolation(result, "rate-limit")
-	Expect(t, "OP-02", blocked, fmt.Sprintf("%d unlabelled RAs exist; next proposal allowed=%v, violations %v",
-		remediation.DefaultMaxRemediationsPerHour, result.Allowed, result.Violations))
+	blocked := !dec.Allowed() && refusedBy(dec, gate.GuardrailRateLimit)
+	Expect(t, "OP-02", blocked, fmt.Sprintf("%d unlabelled RAs exist; next proposal result=%s, verdicts %v",
+		gate.DefaultMaxRemediationsPerHour, dec.Result, verdictSummary(dec)))
 }
 
 // operatorNamespace is where the chart installs Dorgu by default.
@@ -79,17 +77,14 @@ const operatorNamespace = "dorgu-system"
 func TestOP03DenyListProtectsOwnNamespace(t *testing.T) {
 	// Built the way cmd/main.go builds it, with POD_NAMESPACE set the way the
 	// chart's downward API sets it.
-	t.Setenv(remediation.OperatorNamespaceEnv, operatorNamespace)
-	checker := remediation.NewSafetyChecker(k8sClient, logr.Discard(),
-		remediation.WithProtectedNamespaces(remediation.OperatorNamespace()))
+	t.Setenv(gate.OperatorNamespaceEnv, operatorNamespace)
+	checker := gate.New(k8sClient, logr.Discard(),
+		gate.WithProtectedNamespaces(gate.OperatorNamespace()))
 
 	refused := map[string]bool{}
 	for _, target := range []string{"kube-system", operatorNamespace} {
-		result, err := checker.Check(testCtx(t), newRA(target, "deny-probe"))
-		if err != nil {
-			t.Fatalf("safety check for %s: %v", target, err)
-		}
-		refused[target] = hasViolation(result, "deny-list")
+		dec := gateRun(t, checker, newRA(target, "deny-probe"))
+		refused[target] = !dec.Allowed() && refusedBy(dec, gate.GuardrailDenyList)
 	}
 
 	blocked := refused["kube-system"] && refused[operatorNamespace]
@@ -105,10 +100,10 @@ func TestOP03DenyListProtectsOwnNamespace(t *testing.T) {
 // Claude client runs over a counting transport, so this counts requests that
 // would have reached the provider rather than calls to a fake.
 func TestOP15DenyListKeepsProtectedNamespacesFromTheModel(t *testing.T) {
-	t.Setenv(remediation.OperatorNamespaceEnv, operatorNamespace)
+	t.Setenv(gate.OperatorNamespaceEnv, operatorNamespace)
 	apiCalls := withCannedClaudeReply(t, "A narrative about a namespace that must never be sent.")
-	checker := remediation.NewSafetyChecker(k8sClient, logr.Discard(),
-		remediation.WithProtectedNamespaces(remediation.OperatorNamespace()))
+	checker := gate.New(k8sClient, logr.Discard(),
+		gate.WithProtectedNamespaces(gate.OperatorNamespace()))
 
 	llmClient, err := llm.NewClient("claude", "test-key")
 	if err != nil {
@@ -164,10 +159,10 @@ func TestOP15DenyListKeepsProtectedNamespacesFromTheModel(t *testing.T) {
 // The attacker only needs a memory-hungry pod in a namespace that has a persona:
 // the node's eviction takes the denied pod down with it.
 func TestOP16MixedNamespaceEvictionNeverReachesThePlanner(t *testing.T) {
-	t.Setenv(remediation.OperatorNamespaceEnv, operatorNamespace)
+	t.Setenv(gate.OperatorNamespaceEnv, operatorNamespace)
 	apiCalls := withCannedClaudeReply(t, "A plan for a namespace that must never be sent.")
-	checker := remediation.NewSafetyChecker(k8sClient, logr.Discard(),
-		remediation.WithProtectedNamespaces(remediation.OperatorNamespace()))
+	checker := gate.New(k8sClient, logr.Discard(),
+		gate.WithProtectedNamespaces(gate.OperatorNamespace()))
 
 	ns := newNamespace(t, "op-16")
 	createPersona(t, ns)
@@ -328,7 +323,7 @@ func TestOP11ModelProseSteersAction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("building LLM client: %v", err)
 	}
-	checker := remediation.NewSafetyChecker(k8sClient, logr.Discard())
+	checker := gate.New(k8sClient, logr.Discard())
 	ai, err := diagnosis.NewAIProvider(llmClient, checker, logr.Discard()).Diagnose(testCtx(t), signals)
 	if err != nil || len(ai) == 0 {
 		t.Fatalf("AI diagnosis: %v (%d results)", err, len(ai))
@@ -374,11 +369,39 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
 
-func hasViolation(result *remediation.SafetyResult, rule string) bool {
-	for _, v := range result.Violations {
-		if v.Rule == rule {
+// gateRun puts a RemediationAction through the gate as a proposal.
+func gateRun(t *testing.T, g *gate.Gate, ra *dorguv1.RemediationAction) *gate.Decision {
+	t.Helper()
+	dec, err := g.Run(testCtx(t), gate.Candidate{
+		Target:      ra.Spec.PersonaRef,
+		Namespace:   ra.Namespace,
+		Name:        ra.Name,
+		Source:      ra.Spec.PlanSource,
+		IncidentRef: ra.Spec.IncidentRef,
+		Steps:       ra.Spec.Steps,
+		Action:      ra.Spec.Action,
+	}, gate.PhaseProposal)
+	if err != nil {
+		t.Fatalf("running the gate for %s/%s: %v", ra.Namespace, ra.Name, err)
+	}
+	return dec
+}
+
+// refusedBy reports whether a refusing verdict came from the guardrail.
+func refusedBy(dec *gate.Decision, guardrail string) bool {
+	for _, v := range dec.Verdicts {
+		if v.Guardrail == guardrail && v.Verdict == dorguv1.GateVerdictRefuse {
 			return true
 		}
 	}
 	return false
+}
+
+// verdictSummary renders a decision's verdicts as "guardrail:verdict" pairs.
+func verdictSummary(dec *gate.Decision) []string {
+	out := make([]string, 0, len(dec.Verdicts))
+	for _, v := range dec.Verdicts {
+		out = append(out, v.Guardrail+":"+v.Verdict)
+	}
+	return out
 }

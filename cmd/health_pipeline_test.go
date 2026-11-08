@@ -88,19 +88,19 @@ func TestBuildHealthPipeline_OneDenyListSharedByProviderAndProposer(t *testing.T
 	cfg.safetyExcludedNamespaces = []string{"payments"}
 	p := buildForTest(t, cfg, testOperatorNS)
 
-	if p.SafetyChecker == nil {
-		t.Fatal("no safety checker")
+	if p.Gate == nil {
+		t.Fatal("no gate")
 	}
-	if got := aiProvider(t, p).Gate(); got != diagnosis.NamespaceGate(p.SafetyChecker) {
-		t.Error("AI provider is gated by a different checker than the pipeline's safety checker")
+	if got := aiProvider(t, p).Gate(); got != diagnosis.NamespaceGate(p.Gate) {
+		t.Error("AI provider is gated by a different gate than the pipeline's gate")
 	}
-	if p.Proposer.Safety() != p.SafetyChecker {
-		t.Error("proposer is gated by a different checker than the pipeline's safety checker")
+	if p.Proposer.Gate() != p.Gate {
+		t.Error("proposer is gated by a different gate than the pipeline's gate")
 	}
 
 	ctx := context.Background()
 	for _, ns := range []string{testOperatorNS, "kube-system", "payments"} {
-		if !p.SafetyChecker.NamespaceProtected(ctx, ns) {
+		if !p.Gate.NamespaceProtected(ctx, ns) {
 			t.Errorf("namespace %q is not protected", ns)
 		}
 	}
@@ -109,11 +109,11 @@ func TestBuildHealthPipeline_OneDenyListSharedByProviderAndProposer(t *testing.T
 func TestBuildHealthPipeline_UnknownOperatorNamespaceDoesNotProtectEmptyName(t *testing.T) {
 	p := buildForTest(t, aiConfig(), "")
 	ctx := context.Background()
-	if !p.SafetyChecker.NamespaceProtected(ctx, "kube-system") {
+	if !p.Gate.NamespaceProtected(ctx, "kube-system") {
 		t.Error("kube-system must always be protected")
 	}
 	// An empty namespace is refused by the fail-closed rule, not by being listed.
-	if !p.SafetyChecker.NamespaceProtected(ctx, "") {
+	if !p.Gate.NamespaceProtected(ctx, "") {
 		t.Error("an undeterminable namespace must be protected (fail closed)")
 	}
 }

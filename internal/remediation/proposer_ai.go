@@ -27,25 +27,31 @@ import (
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
+	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation/planner"
 	"github.com/dorgu-ai/dorgu-operator/internal/workload"
 )
 
-// proposeWithPlanner runs the AI planning path: build context, ask the planner
-// for an ordered plan, map it to RemediationStep[], validate persona-update
-// steps through the existing safety guardrails, and persist a RemediationAction.
+// proposeWithPlanner runs the AI planning path: ask the planner for an ordered
+// plan, map it to RemediationStep[], put it through the gate, and persist a
+// RemediationAction.
+//
+// The model is the author of the plan's words and of its candidate steps. It is
+// never the author of what survives: the gate validates the steps, measures them
+// against the live workload and removes what a guardrail refuses.
 //
 // It returns (nil, err) to signal the caller to fall back to the rule-based
-// proposer — used when context can't be built, the planner errors, or the plan
-// is empty. Global safety violations (rate-limit, deny-list, concurrent) produce
-// a (skip-result, nil) instead, matching the rule-based path.
+// proposer: used when context can't be built, the planner errors, or the plan is
+// empty. A gate refusal produces a (skip-result, nil) instead, matching the
+// rule-based path.
 func (p *Proposer) proposeWithPlanner(
 	ctx context.Context,
 	diag diagnosis.Diagnosis,
 	incident *dorguv1.IncidentMemory,
-	obs *workload.Observation,
-	workloadRef *dorguv1.WorkloadRef,
+	pre *gate.Decision,
 ) (*ProposalResult, error) {
+	workloadRef := pre.WorkloadRef
+
 	rc, err := planner.BuildContext(ctx, p.client, diag, incident)
 	if err != nil {
 		return nil, fmt.Errorf("building remediation context: %w", err)
@@ -55,7 +61,7 @@ func (p *Proposer) proposeWithPlanner(
 	// reasons from a persona that may be months stale, which is how it came to
 	// state a 96Mi limit for a 32Mi container and to invent an image tag while
 	// the real prior tag sat in an annotation Dorgu had written itself.
-	rc.Workload = planner.NewWorkloadContext(workloadRef, observedDeployment(obs), rc.AppPersona)
+	rc.Workload = planner.NewWorkloadContext(workloadRef, observedDeployment(pre.Observation), rc.AppPersona)
 
 	plan, err := p.planner.PlanRemediation(ctx, *rc)
 	if err != nil {
@@ -65,21 +71,21 @@ func (p *Proposer) proposeWithPlanner(
 		return nil, fmt.Errorf("planner returned an empty plan")
 	}
 
-	steps := mapPlannedSteps(plan, rc.AppPersona, workloadRef)
+	steps := mapPlannedSteps(plan, rc.AppPersona)
 
 	action := p.buildPlanAction(diag, incident, plan, steps, workloadRef)
 
-	// Validate persona-update steps through the existing safety guardrails.
-	// Per-step blast-radius violations strip the offending field and record the
-	// verdict as structured data; persona-wide violations (rate-limit,
-	// concurrent, deny-list) skip the whole proposal.
-	skip, err := p.applyStepSafety(ctx, action, workloadRef)
+	// The gate rules on the steps. Blast-radius and absent-field refusals strip the
+	// offending field and record the verdict as structured data; persona-wide
+	// refusals (rate limit, concurrency, deny-list, cooldown) end the proposal.
+	dec, err := p.gate.Run(ctx, candidateFor(action, diag, incident, false), gate.PhaseProposal)
 	if err != nil {
-		return nil, fmt.Errorf("safety check: %w", err)
+		return nil, fmt.Errorf("gate: %w", err)
 	}
-	if skip != "" {
-		return &ProposalResult{SkipReason: skip}, nil
+	if !dec.Allowed() {
+		return skipped(dec), nil
 	}
+	installDecision(action, dec)
 
 	// CR-01: a plan that diagnoses a resource change and then applies nothing is
 	// not a fix, however well it reads. Give the plan the deterministic patch the
@@ -102,38 +108,32 @@ func (p *Proposer) proposeWithPlanner(
 	}
 
 	// Recompute the back-compat Action from the first still-auto-executable
-	// persona-update step (safety may have flagged the original choice).
+	// persona-update step (the gate may have flagged the original choice).
 	setBackCompatAction(action)
 
-	// Defensive invariant guard: never persist an auto-executable non-persona
-	// step (the operator must never write workloads).
-	enforceAutoExecutableInvariant(action)
-
-	// Shape the advisory half of the plan for whoever owns the Deployment, and
-	// make sure no step hands the reader a command that writes to an owned
-	// workload. Persona-update steps are untouched: the operator patches the
-	// persona, which is safe whoever owns the workload.
+	// Shape the advisory half of the plan for whoever owns the Deployment. A
+	// persona-update step is untouched: the operator patches the persona, which is
+	// safe whoever owns the workload. The gate's final run below refuses a plan
+	// that still carries a command writing to an owned workload.
 	//
-	// This runs AFTER the guardrails and after the back-compat Action is
-	// recomputed, not before, because the owner instruction quotes the concrete
-	// values out of the plan's patches. Shaping first told a Helm user to put
-	// 128Mi in their values file while the guardrail was in the middle of
-	// refusing 128Mi, which is CR-04's "the headline still advertised the
-	// rejected value" one screen further down.
+	// This runs AFTER the gate and after the back-compat Action is recomputed, not
+	// before, because the owner instruction quotes the concrete values out of the
+	// plan's patches. Shaping first told a Helm user to put 128Mi in their values
+	// file while the guardrail was in the middle of refusing 128Mi, which is CR-04's
+	// "the headline still advertised the rejected value" one screen further down.
 	applyOwnershipShaping(action, workloadRef)
-	stripWorkloadWriteCommands(action, workloadRef)
 
-	// Safety and the invariant guard can both demote a step to advisory, so the
-	// explanation's auto/advisory split is only true once every gate has run.
+	// The explanation's auto/advisory split is only true once the gate has run and
+	// the plan has been shaped.
 	//
 	// This must stay ABOVE discloseBlastRadiusClamp: that appends the cap caveat
 	// to Explanation, and recomputing afterwards would erase it.
 	action.Spec.Explanation = planExplanation(action.Spec.Steps)
 
 	// The planner is told to keep changes within ~2x the live limit, so a plan
-	// can arrive already pressed against the cap. Damp its confidence rather than
-	// presenting a truncated fix as a confident one. Measured against the live
-	// workload.
+	// can arrive already pressed against the cap. Damp its confidence rather
+	// than presenting a truncated fix as a confident one. Measured against the
+	// live workload.
 	//
 	// The prose half of this disclosure only survives the CR5-03 scrub below when
 	// a guardrail actually recorded a verdict, so the log says what is always
@@ -162,43 +162,64 @@ func (p *Proposer) proposeWithPlanner(
 			"action", action.Name, "surfaces", scrubbed)
 	}
 
-	// The invariant CR-01 is about, asserted on the object that is about to be
-	// written rather than trusted to the code above. Nothing reaches the API
-	// server presenting itself as a fix for a resource problem while being
-	// incapable of changing a resource.
-	if err := assertAppliableWhenResourceDiagnosed(action, diag, ruleEngineDeclined); err != nil {
-		return nil, err
+	// The seal: the gate rules once more on the object that is about to be
+	// written, as final. Nothing reaches the API server that the gate would clamp
+	// or refuse, whichever code above produced it: a step the proposer derived, a
+	// command that survived shaping, a plan that applies nothing for a diagnosed
+	// resource change (CR-01).
+	if refusal := p.seal(ctx, action, diag, incident, ruleEngineDeclined); refusal != nil {
+		return refusal, nil
 	}
 
-	if err := p.client.Create(ctx, action); err != nil {
-		return nil, fmt.Errorf("creating RemediationAction: %w", err)
-	}
+	return p.persist(ctx, action, dec)
+}
 
-	action.Status = dorguv1.RemediationActionStatus{Phase: phasePending}
-	if err := p.client.Status().Update(ctx, action); err != nil {
-		p.logger.Error(err, "RemediationAction created but status update failed", "name", action.Name)
-	}
+// seal runs the gate on the final shape of a plan and reports a refusal when it
+// would be anything but a clean pass. The plan was already clamped by the first
+// run, so a Clamp here means something after the gate changed it.
+func (p *Proposer) seal(
+	ctx context.Context,
+	action *dorguv1.RemediationAction,
+	diag diagnosis.Diagnosis,
+	incident *dorguv1.IncidentMemory,
+	ruleEngineDeclined bool,
+) *ProposalResult {
+	cand := candidateFor(action, diag, incident, true)
+	cand.Facts.AdvisoryAllowed = ruleEngineDeclined
 
-	return &ProposalResult{Action: action, Proposed: true}, nil
+	final, err := p.gate.Run(ctx, cand, gate.PhaseProposal)
+	if err != nil {
+		p.logger.Error(err, "the gate could not re-verify the final plan; not proposing it", "action", action.Name)
+		return &ProposalResult{SkipReason: "the gate could not re-verify the final plan"}
+	}
+	switch {
+	case !final.Allowed():
+		return skipped(final)
+	case final.Result != gate.ResultPass:
+		p.logger.Info("the final plan was changed after the gate ruled on it; not proposing it",
+			"action", action.Name, "result", final.Result)
+		return &ProposalResult{
+			SkipReason: "the final plan differed from what the gate cleared, so it was not proposed",
+			Decision:   final,
+		}
+	}
+	return nil
 }
 
 // mapPlannedSteps converts the planner's ordered steps into RemediationStep[].
 // Only persona-update steps are auto-executable and carry a patch (plus a
-// pre-patch snapshot of the current persona spec for rollback / blast-radius).
+// pre-patch snapshot of the current persona spec, the rollback target).
 //
 // Advisory steps may additionally carry a suggested kubectl command, which is
 // sanitized here: the planner's output is model-authored, and this is the last
 // point before it is persisted for the CLI to print to a human.
 //
-// A persona-update patch is also filtered against the live container: a leaf
-// targeting a resource key the workload does not set is dropped, because
-// approving a memory fix must never quietly add a CPU limit (F-05). A step
-// whose patch is emptied by that filter becomes advisory rather than silently
-// applying nothing.
+// Nothing here decides what is safe. The patch is exactly what the model asked
+// for; the gate removes what a guardrail refuses (a resource key the workload
+// does not set, a change past the cap, a field outside the allowlist).
 func mapPlannedSteps(
 	plan *planner.RemediationPlan,
 	persona *dorguv1.ApplicationPersona,
-	ref *dorguv1.WorkloadRef,
 ) []dorguv1.RemediationStep {
 	steps := make([]dorguv1.RemediationStep, 0, len(plan.Steps))
 	for _, ps := range plan.Steps {
@@ -214,19 +235,9 @@ func mapPlannedSteps(
 		}
 
 		if ps.Type == dorguv1.StepTypePersonaUpdate && len(ps.Patch) > 0 && json.Valid(ps.Patch) {
-			requested := &apiextensionsv1.JSON{Raw: append([]byte(nil), ps.Patch...)}
-			patch, dropped := dropAbsentResourceKeys(requested, ref)
-			if len(dropped) > 0 {
-				step.Rationale = appendNote(step.Rationale, absentKeyNote(ref, dropped))
-				recordAbsentFields(&step, requested, dropped, ref)
-			}
-			step.Patch = patch
-			if patch != nil {
-				if pre := snapshotPrePatch(persona, patch.Raw); pre != nil {
-					step.PrePatchState = &apiextensionsv1.JSON{Raw: pre}
-				}
-			} else {
-				step.AutoExecutable = false
+			step.Patch = &apiextensionsv1.JSON{Raw: append([]byte(nil), ps.Patch...)}
+			if pre := gate.SnapshotPrePatch(persona, ps.Patch); pre != nil {
+				step.PrePatchState = &apiextensionsv1.JSON{Raw: pre}
 			}
 		} else if ps.Type == dorguv1.StepTypePersonaUpdate {
 			// A persona-update with no usable patch can't be auto-applied.
@@ -276,8 +287,6 @@ func (p *Proposer) buildPlanAction(
 		namespace = defaultNamespace
 	}
 
-	healthCheckDuration := metav1.Duration{Duration: defaultHealthCheckAfter}
-
 	action := &dorguv1.RemediationAction{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      generateActionName(incident, "ai-remediation"),
@@ -304,108 +313,11 @@ func (p *Proposer) buildPlanAction(
 			Approval: &dorguv1.ApprovalSpec{
 				Required: true,
 			},
-			Rollback: &dorguv1.RemediationRollbackSpec{
-				Enabled:          true,
-				HealthCheckAfter: &healthCheckDuration,
-				MaxRetries:       1,
-			},
 		},
 	}
 
 	setBackCompatAction(action)
 	return action
-}
-
-// applyStepSafety validates each persona-update step against the safety
-// guardrails. Blast-radius violations remove the offending field from the step's
-// patch and record the verdict on the step as structured data. Persona-wide
-// violations (rate-limit, concurrent, deny-list) return a non-empty skip reason
-// for the whole proposal.
-func (p *Proposer) applyStepSafety(ctx context.Context, action *dorguv1.RemediationAction, ref *dorguv1.WorkloadRef) (string, error) {
-	globalSeen := make(map[string]struct{})
-	var globalReasons []string
-
-	checkedAny := false
-	for i := range action.Spec.Steps {
-		step := &action.Spec.Steps[i]
-		if !step.AutoExecutable || step.Type != dorguv1.StepTypePersonaUpdate {
-			continue
-		}
-		checkedAny = true
-
-		probe := probeActionForStep(action, step, ref)
-		result, err := p.safety.Check(ctx, probe)
-		if err != nil {
-			return "", err
-		}
-
-		var refusals []SafetyViolation
-		for _, v := range result.Violations {
-			if v.Rule == "blast-radius" {
-				refusals = append(refusals, v)
-				continue
-			}
-			key := v.Rule + "|" + v.Message
-			if _, ok := globalSeen[key]; !ok {
-				globalSeen[key] = struct{}{}
-				globalReasons = append(globalReasons, fmt.Sprintf("[%s] %s", v.Rule, v.Message))
-			}
-		}
-		refuseStepFields(step, refusals)
-	}
-
-	// All-advisory plans still consume the rate limit / deny-list gate.
-	if !checkedAny {
-		probe := probeAdvisoryAction(action)
-		result, err := p.safety.Check(ctx, probe)
-		if err != nil {
-			return "", err
-		}
-		for _, v := range result.Violations {
-			key := v.Rule + "|" + v.Message
-			if _, ok := globalSeen[key]; !ok {
-				globalSeen[key] = struct{}{}
-				globalReasons = append(globalReasons, fmt.Sprintf("[%s] %s", v.Rule, v.Message))
-			}
-		}
-	}
-
-	if len(globalReasons) > 0 {
-		return fmt.Sprintf("safety check failed: %v", globalReasons), nil
-	}
-	return "", nil
-}
-
-// probeActionForStep builds a throwaway RemediationAction whose single Action is
-// the given persona-update step, so the existing safety.Check (which inspects
-// Spec.Action) validates that step's patch and the persona-wide guardrails.
-//
-// The probe's pre-patch state is the LIVE workload's values when they are
-// known, not the persona's. The blast-radius rule measures new-versus-old, and
-// measuring against a stale persona is exactly how a 32Mi container was raised
-// to 144Mi while the plan reported it as within the 2x cap.
-func probeActionForStep(action *dorguv1.RemediationAction, step *dorguv1.RemediationStep, ref *dorguv1.WorkloadRef) *dorguv1.RemediationAction {
-	probe := action.DeepCopy()
-	probe.Spec.Steps = nil
-	probe.Spec.Action = dorguv1.RemediationActionDetail{
-		Type:          dorguv1.StepTypePersonaUpdate,
-		Patch:         step.Patch.DeepCopy(),
-		PrePatchState: step.PrePatchState.DeepCopy(),
-	}
-	if grounded := groundedPrePatch(step.Patch, ref); grounded != nil {
-		probe.Spec.Action.PrePatchState = grounded
-	}
-	return probe
-}
-
-// probeAdvisoryAction builds a throwaway action with no auto-applicable change,
-// so safety.Check still evaluates the persona-wide guardrails (rate limit,
-// concurrency, deny-list) for an all-advisory plan.
-func probeAdvisoryAction(action *dorguv1.RemediationAction) *dorguv1.RemediationAction {
-	probe := action.DeepCopy()
-	probe.Spec.Steps = nil
-	probe.Spec.Action = dorguv1.RemediationActionDetail{Type: dorguv1.ActionTypeNotification}
-	return probe
 }
 
 // setBackCompatAction points the legacy single Action at the first
@@ -425,17 +337,6 @@ func setBackCompatAction(action *dorguv1.RemediationAction) {
 		}
 	}
 	action.Spec.Action = dorguv1.RemediationActionDetail{Type: dorguv1.ActionTypeNotification}
-}
-
-// enforceAutoExecutableInvariant defensively clears AutoExecutable on any step
-// that is not a persona-update, guaranteeing the operator never auto-applies a
-// workload write regardless of what the model proposed.
-func enforceAutoExecutableInvariant(action *dorguv1.RemediationAction) {
-	for i := range action.Spec.Steps {
-		if action.Spec.Steps[i].AutoExecutable && action.Spec.Steps[i].Type != dorguv1.StepTypePersonaUpdate {
-			action.Spec.Steps[i].AutoExecutable = false
-		}
-	}
 }
 
 // planExplanation produces the one-line description of WHAT the plan does.
@@ -486,65 +387,4 @@ func formatConfidence(c float64) string {
 		c = 1
 	}
 	return fmt.Sprintf("%.2f", c)
-}
-
-// snapshotPrePatch builds a pre-patch snapshot: the current persona-spec values
-// at exactly the paths the patch touches. This gives safety.checkBlastRadius the
-// old values to compare against and the executor a rollback target. Returns nil
-// when no snapshot can be produced (e.g. persona unavailable or paths absent).
-func snapshotPrePatch(persona *dorguv1.ApplicationPersona, patch json.RawMessage) json.RawMessage {
-	if persona == nil {
-		return nil
-	}
-
-	var patchMap map[string]any
-	if err := json.Unmarshal(patch, &patchMap); err != nil {
-		return nil
-	}
-
-	specBytes, err := json.Marshal(persona.Spec)
-	if err != nil {
-		return nil
-	}
-	var specMap map[string]any
-	if err := json.Unmarshal(specBytes, &specMap); err != nil {
-		return nil
-	}
-	// The patch is wrapped in {"spec": ...}; align the current object the same way.
-	currentMap := map[string]any{"spec": specMap}
-
-	snap := mirrorExistingPaths(patchMap, currentMap)
-	if len(snap) == 0 {
-		return nil
-	}
-	out, err := json.Marshal(snap)
-	if err != nil {
-		return nil
-	}
-	return out
-}
-
-// mirrorExistingPaths walks the patch structure and returns a map containing the
-// current values at each leaf path of the patch that also exists in current.
-// Paths absent from current are skipped (no prior value to record).
-func mirrorExistingPaths(patch, current map[string]any) map[string]any {
-	out := make(map[string]any)
-	for key, patchVal := range patch {
-		curVal, ok := current[key]
-		if !ok {
-			continue
-		}
-		patchChild, patchIsMap := patchVal.(map[string]any)
-		curChild, curIsMap := curVal.(map[string]any)
-		if patchIsMap && curIsMap {
-			child := mirrorExistingPaths(patchChild, curChild)
-			if len(child) > 0 {
-				out[key] = child
-			}
-			continue
-		}
-		// Leaf (or shape mismatch): record the current value.
-		out[key] = curVal
-	}
-	return out
 }

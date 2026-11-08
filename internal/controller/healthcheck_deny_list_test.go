@@ -29,7 +29,7 @@ import (
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
 	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
-	"github.com/dorgu-ai/dorgu-operator/internal/remediation"
+	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
 )
 
 // F-1: an incident in a protected namespace is still detected and recorded, but
@@ -67,7 +67,7 @@ var _ = Describe("HealthCheckReconciler deny-list and the diagnosis LLM call", f
 			}},
 		}
 		stub := &stubLLMClient{summary: "model narrative", action: "resource-adjustment"}
-		checker := remediation.NewSafetyChecker(k8sClient, testLogger)
+		checker := gate.New(k8sClient, testLogger)
 
 		r := &HealthCheckReconciler{
 			Client:    k8sClient,

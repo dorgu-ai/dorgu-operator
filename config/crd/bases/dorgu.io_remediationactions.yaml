@@ -556,6 +556,167 @@ spec:
                   Schema only this sprint — not yet driven by the controller.
                 format: int32
                 type: integer
+              gate:
+                description: |-
+                  Gate is what the operator's gate established about this action: the live
+                  facts it read, who owns the workload, every guardrail verdict, and the
+                  baseline the change was measured against. Written by the operator only.
+                properties:
+                  evaluatedAt:
+                    description: EvaluatedAt is when the gate ran.
+                    format: date-time
+                    type: string
+                  observed:
+                    description: Observed is what the gate read from the cluster.
+                    properties:
+                      liveValues:
+                        description: LiveValues is the live container's resource block.
+                        properties:
+                          limits:
+                            description: |-
+                              Limits are the container's live resource limits. An empty field means the
+                              container does not set that limit.
+                            properties:
+                              cpu:
+                                type: string
+                              memory:
+                                type: string
+                            type: object
+                          requests:
+                            description: |-
+                              Requests are the container's live resource requests. An empty field means
+                              the container does not set that request.
+                            properties:
+                              cpu:
+                                type: string
+                              memory:
+                                type: string
+                            type: object
+                        type: object
+                      observedAt:
+                        description: ObservedAt is when the cluster was read.
+                        format: date-time
+                        type: string
+                      personaGeneration:
+                        description: |-
+                          PersonaGeneration is the generation of the ApplicationPersona that was
+                          read.
+                        format: int64
+                        type: integer
+                      workloadResourceVersion:
+                        description: |-
+                          WorkloadResourceVersion is the resourceVersion of that Deployment when it
+                          was read.
+                        type: string
+                      workloadUID:
+                        description: |-
+                          WorkloadUID is the UID of the live Deployment that was read. A later
+                          re-check refuses when it differs: the workload was replaced.
+                        type: string
+                    type: object
+                  ownership:
+                    description: Ownership says who owns the live workload, as resolved
+                      by the operator.
+                    properties:
+                      detail:
+                        description: Detail names the specific owner when one was
+                          identified.
+                        maxLength: 253
+                        type: string
+                      managedBy:
+                        description: |-
+                          ManagedBy is the owner class. Anything but "unmanaged" means Dorgu
+                          recommends and does not write the workload.
+                        enum:
+                        - helm
+                        - argocd
+                        - flux
+                        - kustomize
+                        - unmanaged
+                        - unknown
+                        type: string
+                      resolved:
+                        description: |-
+                          Resolved is false when no live Deployment could be read, in which case
+                          ManagedBy is "unknown" and treated as owned.
+                        type: boolean
+                    required:
+                    - managedBy
+                    - resolved
+                    type: object
+                  phase:
+                    description: |-
+                      Phase is the gate phase that produced this record: Proposal when the
+                      operator proposed the action, ApprovalRecheck when approval re-ran it on
+                      live state.
+                    enum:
+                    - Proposal
+                    - ApprovalRecheck
+                    type: string
+                  prePatchState:
+                    description: |-
+                      PrePatchState is the baseline the guardrails measured the change against,
+                      at the paths the plan touches: the LIVE workload's values when the workload
+                      resolved, otherwise the persona's. It is computed by the operator and
+                      never accepted from the plan's author.
+                    x-kubernetes-preserve-unknown-fields: true
+                  result:
+                    description: |-
+                      Result is the overall decision: Pass, Clamp (the plan was narrowed and
+                      proceeds) or Refuse.
+                    enum:
+                    - Pass
+                    - Clamp
+                    - Refuse
+                    type: string
+                  verdicts:
+                    description: Verdicts is every guardrail the gate ran and what
+                      each one decided.
+                    items:
+                      description: GateVerdict is one guardrail's decision.
+                      properties:
+                        guardrail:
+                          description: |-
+                            Guardrail names the check within the stage, e.g. blast-radius,
+                            rate-limit, deny-list.
+                          type: string
+                        numbers:
+                          additionalProperties:
+                            type: string
+                          description: |-
+                            Numbers carries the inputs of the verdict (baseline, requested, ratio,
+                            ceiling) as data, so no client has to parse them out of Reason.
+                          type: object
+                        reason:
+                          description: Reason is a sentence safe to show a human.
+                            It never contains model text.
+                          maxLength: 1024
+                          type: string
+                        stage:
+                          description: |-
+                            Stage is the pipeline stage: Validate, Ground, Ownership, Guardrails,
+                            ModePolicy or DedupCooldown.
+                          type: string
+                        verdict:
+                          description: Verdict is pass, clamp or refuse.
+                          enum:
+                          - pass
+                          - clamp
+                          - refuse
+                          type: string
+                      required:
+                      - guardrail
+                      - stage
+                      - verdict
+                      type: object
+                    maxItems: 64
+                    type: array
+                    x-kubernetes-list-type: atomic
+                required:
+                - evaluatedAt
+                - phase
+                - result
+                type: object
               phase:
                 description: |-
                   Phase tracks the remediation lifecycle.

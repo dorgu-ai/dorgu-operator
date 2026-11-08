@@ -18,7 +18,7 @@ package remediation
 
 import (
 	"context"
-	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -26,19 +26,28 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"sigs.k8s.io/controller-runtime/pkg/client"
+	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
-	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
 	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
+	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
 	"github.com/dorgu-ai/dorgu-operator/internal/llm"
 )
 
-// The safety checker is the one deny-list. The diagnosis provider asks it
-// through diagnosis.NamespaceGate instead of keeping a copy.
-var _ diagnosis.NamespaceGate = (*SafetyCheckerImpl)(nil)
+// Shared fixtures for the proposer tests.
+
+func newTestScheme() *runtime.Scheme {
+	s := runtime.NewScheme()
+	_ = dorguv1.AddToScheme(s)
+	return s
+}
+
+func testLogger() logr.Logger {
+	return zap.New(zap.UseDevMode(true))
+}
 
 func clusterPersonaExcluding(namespaces ...string) *dorguv1.ClusterPersona {
 	return &dorguv1.ClusterPersona{
@@ -52,52 +61,6 @@ func clusterPersonaExcluding(namespaces ...string) *dorguv1.ClusterPersona {
 	}
 }
 
-func TestSafetyChecker_NamespaceProtected_AgreesWithNamespaceDenied(t *testing.T) {
-	c := fake.NewClientBuilder().WithScheme(newTestScheme()).
-		WithRuntimeObjects(clusterPersonaExcluding("staging")).Build()
-	checker := NewSafetyChecker(c, testLogger(), WithProtectedNamespaces("dorgu-system", "payments"))
-
-	tests := []struct {
-		namespace string
-		protected bool
-	}{
-		{"kube-system", true},
-		{"dorgu-system", true},
-		{"payments", true},
-		{"staging", true},
-		{"default", false},
-		{"apps", false},
-		// Fail closed: a namespace that cannot be determined is not safe to send.
-		{"", true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.namespace, func(t *testing.T) {
-			assert.Equal(t, tt.protected, checker.NamespaceProtected(context.Background(), tt.namespace))
-			assert.Equal(t, tt.protected, checker.NamespaceDenied(context.Background(), tt.namespace) != nil,
-				"the planner gate and the diagnosis gate must never disagree")
-		})
-	}
-}
-
-// An unreadable ClusterPersona means excludeNamespaces is unknown. The built-in
-// protected namespaces still hold, and everything else is refused rather than
-// guessed at.
-func TestSafetyChecker_NamespaceProtected_FailsClosedWhenDenyListUnreadable(t *testing.T) {
-	c := fake.NewClientBuilder().WithScheme(newTestScheme()).
-		WithInterceptorFuncs(interceptor.Funcs{
-			List: func(_ context.Context, _ client.WithWatch, _ client.ObjectList, _ ...client.ListOption) error {
-				return errors.New("apiserver unavailable")
-			},
-		}).Build()
-	checker := NewSafetyChecker(c, testLogger(), WithProtectedNamespaces("dorgu-system"))
-
-	assert.True(t, checker.NamespaceProtected(context.Background(), "kube-system"))
-	assert.True(t, checker.NamespaceProtected(context.Background(), "apps"), "unreadable deny-list must fail closed")
-	violation := checker.NamespaceDenied(context.Background(), "apps")
-	require.NotNil(t, violation)
-	assert.Equal(t, RuleDenyList, violation.Rule)
-}
-
 type countingLLM struct{ calls int }
 
 func (c *countingLLM) EnhanceDiagnosis(context.Context, llm.DiagnosisRequest) (*llm.DiagnosisResponse, error) {
@@ -109,10 +72,10 @@ func (c *countingLLM) Provider() string { return "counting" }
 
 // The wiring cmd/main.go uses: the real checker is the diagnosis provider's
 // gate. Every way a namespace becomes protected reaches the model call.
-func TestAIProvider_UsesTheSafetyCheckerDenyList(t *testing.T) {
+func TestAIProvider_UsesTheGateDenyList(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(newTestScheme()).
 		WithRuntimeObjects(clusterPersonaExcluding("staging")).Build()
-	checker := NewSafetyChecker(c, testLogger(), WithProtectedNamespaces("dorgu-system", "payments"))
+	checker := gate.New(c, testLogger(), gate.WithProtectedNamespaces("dorgu-system", "payments"))
 
 	tests := []struct {
 		namespace string
@@ -143,4 +106,17 @@ func TestAIProvider_UsesTheSafetyCheckerDenyList(t *testing.T) {
 			assert.Equal(t, tt.wantCalls, model.calls)
 		})
 	}
+}
+
+// assertAppliable is the completeness invariant (CR-01) expressed over a plan and
+// a diagnosis: an error when a resource change was diagnosed and no step applies
+// it. The gate enforces the same rule on the final plan; this is the test-side
+// reading of it.
+func assertAppliable(action *dorguv1.RemediationAction, diag diagnosis.Diagnosis, ruleEngineDeclined bool) error {
+	target := diagnosisTargetPath(diag)
+	if ruleEngineDeclined || target == "" ||
+		gate.AppliesDiagnosedChange(action.Spec.Steps, action.Spec.Action, target) {
+		return nil
+	}
+	return fmt.Errorf("a plan that applies nothing for a diagnosed change to %s", target)
 }

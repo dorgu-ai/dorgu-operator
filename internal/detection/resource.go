@@ -170,7 +170,7 @@ func (r *ResourceCollector) saturationSignal(
 		Source:   resourceCollectorName,
 		Message:  fmt.Sprintf("Node %s %s request saturation at %.1f%%", node.Name, resourceName, pct),
 		Resource: dorguv1.ResourceReference{
-			Kind: "Node",
+			Kind: KindNode,
 			Name: node.Name,
 		},
 		Value:      &pct,

@@ -25,6 +25,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	"github.com/dorgu-ai/dorgu-operator/internal/events"
+	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
 )
 
 // DefaultRemediationPendingTTL is how long a proposal may wait for a human
@@ -180,6 +181,19 @@ func (c operatorConfig) validate() error {
 			c.remediationPendingTTL)
 	}
 	return nil
+}
+
+// aiDisabledReason says why AI features must stay off despite an LLM provider
+// being configured, or "" when they may run. Today there is one reason: without
+// the operator's own namespace the deny-list cannot protect it, so an incident in
+// the operator's namespace could be sent to the model. It fails closed: AI is off,
+// loudly, and everything that needs no model carries on.
+func aiDisabledReason(llmProvider, operatorNS string) string {
+	if llmProvider == "" || operatorNS != "" {
+		return ""
+	}
+	return "the operator's namespace is unknown, so the deny-list cannot keep its own namespace away from the model; " +
+		"set " + gate.OperatorNamespaceEnv + " (the Helm chart does) to turn AI on"
 }
 
 // splitNamespaces parses a comma-separated namespace list, dropping blanks.

@@ -144,7 +144,7 @@ func (n *NodeCollector) checkCondition(node corev1.Node, m nodeConditionMapping,
 			Source:   nodeCollectorName,
 			Message:  fmt.Sprintf(m.message, node.Name),
 			Resource: dorguv1.ResourceReference{
-				Kind: "Node",
+				Kind: KindNode,
 				Name: node.Name,
 			},
 			DetectedAt: detectedAt,

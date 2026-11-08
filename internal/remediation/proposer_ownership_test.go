@@ -30,6 +30,7 @@ import (
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
+	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation/planner"
 )
 
@@ -102,7 +103,7 @@ func proposeAgainst(t *testing.T, owner string) *dorguv1.RemediationAction {
 		WithRuntimeObjects(persona, deploy).
 		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
 
-	p := NewProposer(c, NewSafetyChecker(c, testLogger()), testLogger(),
+	p := NewProposer(c, gate.New(c, testLogger()), testLogger(),
 		WithPlanner(&stubPlanner{plan: memoryFixPlan()}))
 
 	result, err := p.Propose(context.Background(),
@@ -130,7 +131,7 @@ func TestProposer_NoWorkloadWriteCommandForOwnedWorkload(t *testing.T) {
 			for _, step := range action.Spec.Steps {
 				assert.NotContains(t, step.Command, "kubectl patch",
 					"step %d still hands over a workload patch", step.Order)
-				assert.False(t, writesWorkload(step.Command),
+				assert.False(t, gate.WritesWorkload(step.Command),
 					"step %d command writes to an owned workload: %q", step.Order, step.Command)
 			}
 
@@ -250,7 +251,7 @@ func TestProposer_AIPath_CapIsRelativeToLiveWorkload(t *testing.T) {
 		WithRuntimeObjects(persona, deploy).
 		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
 
-	p := NewProposer(c, NewSafetyChecker(c, testLogger()), testLogger(), WithPlanner(&stubPlanner{plan: plan}))
+	p := NewProposer(c, gate.New(c, testLogger()), testLogger(), WithPlanner(&stubPlanner{plan: plan}))
 	result, err := p.Propose(context.Background(),
 		newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical), incident)
 	require.NoError(t, err)
@@ -298,7 +299,7 @@ func TestProposer_AIPath_DropsPatchKeysTheWorkloadLacks(t *testing.T) {
 		WithRuntimeObjects(persona, deploy).
 		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
 
-	p := NewProposer(c, NewSafetyChecker(c, testLogger()), testLogger(), WithPlanner(&stubPlanner{plan: plan}))
+	p := NewProposer(c, gate.New(c, testLogger()), testLogger(), WithPlanner(&stubPlanner{plan: plan}))
 	result, err := p.Propose(context.Background(),
 		newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical), incident)
 	require.NoError(t, err)
@@ -339,7 +340,7 @@ func TestProposer_AIPath_EmptiedPatchBecomesAdvisory(t *testing.T) {
 		WithRuntimeObjects(persona, deploy).
 		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
 
-	p := NewProposer(c, NewSafetyChecker(c, testLogger()), testLogger(), WithPlanner(&stubPlanner{plan: plan}))
+	p := NewProposer(c, gate.New(c, testLogger()), testLogger(), WithPlanner(&stubPlanner{plan: plan}))
 	result, err := p.Propose(context.Background(),
 		newCPUDiagnosis(defaultNamespace, "my-app", detection.SeverityWarning), incident)
 	require.NoError(t, err)
@@ -377,7 +378,7 @@ func TestWritesWorkload(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.command, func(t *testing.T) {
-			assert.Equal(t, tc.want, writesWorkload(tc.command))
+			assert.Equal(t, tc.want, gate.WritesWorkload(tc.command))
 		})
 	}
 }
@@ -451,7 +452,7 @@ func TestProposer_OwnerInstructionQuotesThePermittedValue(t *testing.T) {
 		WithRuntimeObjects(persona, deploy).
 		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
 
-	p := NewProposer(c, NewSafetyChecker(c, testLogger()), testLogger(),
+	p := NewProposer(c, gate.New(c, testLogger()), testLogger(),
 		WithPlanner(&stubPlanner{plan: plan}))
 
 	result, err := p.Propose(context.Background(),

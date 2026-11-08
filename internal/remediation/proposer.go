@@ -21,7 +21,6 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	"slices"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -33,11 +32,18 @@ import (
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
 	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
+	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation/planner"
 )
 
 // kindApplicationPersona is the only persona kind the remediation path writes to.
 const kindApplicationPersona = "ApplicationPersona"
+
+// RemediationAction phases the proposer and executor refer to.
+const (
+	phasePending  = "Pending"
+	phaseApproved = "Approved"
+)
 
 // defaultNamespace is the namespace a remediation lands in when the diagnosis
 // carries no namespace of its own.
@@ -50,93 +56,12 @@ const (
 	cpuIncreaseWarning     = 1.25
 	cpuIncreaseCritical    = 1.5
 
-	// maxResourceMultiplier caps all resource increases.
-	maxResourceMultiplier = 2.0
-
 	// maxActionNameLength is the maximum length for RemediationAction names.
 	maxActionNameLength = 253
 
 	// actionNameOverhead: "ra-" (3) + 3 separators + hash (12) = 18.
 	actionNameOverhead = 18
-
-	// Default rollback health check duration.
-	defaultHealthCheckAfter = 10 * time.Minute
-
-	// labelPersonaName is the label every proposal path stamps with the target
-	// persona name; the dedup List is scoped by it.
-	labelPersonaName = "dorgu.io/persona-name"
 )
-
-// activeRemediationPhases are the RemediationAction phases that mean a
-// remediation is already in flight for an incident, so proposing another would
-// duplicate it. Terminal phases (Completed/Failed/RolledBack/Rejected/Expired)
-// do NOT block a fresh proposal — e.g. a recurrence after a prior fix failed.
-// The empty phase covers a just-created action whose status write has not yet
-// landed.
-var activeRemediationPhases = map[string]struct{}{
-	"":             {},
-	phasePending:   {},
-	phaseApproved:  {},
-	phaseApplying:  {},
-	phaseVerifying: {},
-}
-
-// Resource-limit patch paths a remediation may target. Used both to classify an
-// incoming diagnosis's intended fix and to read what an existing RemediationAction
-// changes, so two incidents that resolve to the same fix collapse to one action.
-const (
-	resourcePathMemory = "spec.resources.limits.memory"
-	resourcePathCPU    = "spec.resources.limits.cpu"
-)
-
-// activeRemediationExists reports whether a non-terminal RemediationAction
-// already makes this proposal redundant, returning a human-readable reason
-// (empty when none). The List is scoped by the persona-name label and namespace,
-// so every candidate already shares the persona. A candidate blocks the proposal
-// when EITHER:
-//   - it targets the same incident (per-cycle dedup — the health-check reconciler
-//     re-proposes every cycle), OR
-//   - it already remediates the same target (WS9 per-persona+target dedup): a
-//     second incident for the same root cause (e.g. CrashLoopBackOff trailing an
-//     OOMKill, both fixed by raising the memory limit) finds the first incident's
-//     remediation and stands down. Terminal-phase actions never block a fresh
-//     recurrence.
-func (p *Proposer) activeRemediationExists(ctx context.Context, diag diagnosis.Diagnosis, incident *dorguv1.IncidentMemory) (string, error) {
-	namespace := incident.Namespace
-	if namespace == "" && diag.PersonaRef != nil {
-		namespace = diag.PersonaRef.Namespace
-	}
-
-	opts := make([]client.ListOption, 0, 2)
-	if namespace != "" {
-		opts = append(opts, client.InNamespace(namespace))
-	}
-	if diag.PersonaRef != nil && diag.PersonaRef.Name != "" {
-		opts = append(opts, client.MatchingLabels{labelPersonaName: diag.PersonaRef.Name})
-	}
-
-	var list dorguv1.RemediationActionList
-	if err := p.client.List(ctx, &list, opts...); err != nil {
-		return "", fmt.Errorf("listing existing RemediationActions for incident %s: %w", incident.Name, err)
-	}
-
-	targetPath := diagnosisTargetPath(diag)
-
-	for i := range list.Items {
-		ra := &list.Items[i]
-		if _, active := activeRemediationPhases[ra.Status.Phase]; !active {
-			continue
-		}
-		if ra.Spec.IncidentRef.Name == incident.Name {
-			return fmt.Sprintf("active remediation already exists for incident %s", incident.Name), nil
-		}
-		if targetPath != "" && remediationTargetsPath(ra, targetPath) {
-			return fmt.Sprintf("active remediation already exists for persona %s targeting %s (via %s)",
-				diag.PersonaRef.Name, targetPath, ra.Name), nil
-		}
-	}
-	return "", nil
-}
 
 // diagnosisTargetPath predicts the persona-spec path an incoming diagnosis's
 // resource remediation will patch, mirroring calculateResourceChange's
@@ -148,72 +73,23 @@ func (p *Proposer) activeRemediationExists(ctx context.Context, diag diagnosis.D
 func diagnosisTargetPath(diag diagnosis.Diagnosis) string {
 	switch primarySignalType(diag) {
 	case detection.SignalOOMKilled, detection.SignalMemorySaturationCrit, detection.SignalMemorySaturationHigh:
-		return resourcePathMemory
+		return gate.ResourcePathMemory
 	case detection.SignalCPUSaturationHigh, detection.SignalCPUSaturationCritical:
-		return resourcePathCPU
+		return gate.ResourcePathCPU
 	case detection.SignalCrashLoopBackOff:
 		if hasOOMCorrelation(diag) {
-			return resourcePathMemory
+			return gate.ResourcePathMemory
 		}
 	}
 	return ""
 }
 
-// remediationTargetsPath reports whether an existing RemediationAction changes
-// the given persona-spec path, inspecting both the back-compat single Action
-// patch (rule-based path) and every step patch (AI plan path).
-func remediationTargetsPath(ra *dorguv1.RemediationAction, target string) bool {
-	if ra.Spec.Action.Patch != nil && patchTouchesPath(ra.Spec.Action.Patch.Raw, target) {
-		return true
-	}
-	for i := range ra.Spec.Steps {
-		if step := &ra.Spec.Steps[i]; step.Patch != nil && patchTouchesPath(step.Patch.Raw, target) {
-			return true
-		}
-	}
-	return false
-}
-
-// patchTouchesPath reports whether a merge patch sets a value at the given
-// dot-joined leaf path, e.g. {"spec":{"resources":{"limits":{"memory":"384Mi"}}}}
-// touches "spec.resources.limits.memory".
-func patchTouchesPath(raw []byte, target string) bool {
-	return slices.Contains(patchLeafPaths(raw), target)
-}
-
-// patchLeafPaths walks a JSON merge patch and returns the dot-joined path of
-// every leaf (non-object) value it sets. Returns nil for empty or invalid JSON.
-func patchLeafPaths(raw []byte) []string {
-	if len(raw) == 0 {
-		return nil
-	}
-	var root map[string]any
-	if err := json.Unmarshal(raw, &root); err != nil {
-		return nil
-	}
-	var paths []string
-	var walk func(prefix string, node map[string]any)
-	walk = func(prefix string, node map[string]any) {
-		for key, val := range node {
-			path := key
-			if prefix != "" {
-				path = prefix + "." + key
-			}
-			if child, ok := val.(map[string]any); ok {
-				walk(path, child)
-				continue
-			}
-			paths = append(paths, path)
-		}
-	}
-	walk("", root)
-	return paths
-}
-
-// Proposer generates RemediationAction CRDs from diagnoses.
+// Proposer generates RemediationAction CRDs from diagnoses. It decides nothing
+// about safety itself: it builds a candidate (from the rule engine or the AI
+// planner), asks the gate, and writes what the gate allows.
 type Proposer struct {
 	client  client.Client
-	safety  SafetyChecker
+	gate    *gate.Gate
 	logger  logr.Logger
 	planner planner.Planner
 }
@@ -228,10 +104,10 @@ func WithPlanner(p planner.Planner) ProposerOption {
 }
 
 // NewProposer creates a new Proposer. Pass WithPlanner to enable AI planning.
-func NewProposer(c client.Client, safety SafetyChecker, logger logr.Logger, opts ...ProposerOption) *Proposer {
+func NewProposer(c client.Client, g *gate.Gate, logger logr.Logger, opts ...ProposerOption) *Proposer {
 	p := &Proposer{
 		client: c,
-		safety: safety,
+		gate:   g,
 		logger: logger.WithName("proposer"),
 	}
 	for _, opt := range opts {
@@ -240,61 +116,90 @@ func NewProposer(c client.Client, safety SafetyChecker, logger logr.Logger, opts
 	return p
 }
 
-// Safety returns the safety checker the proposer consults. It is exposed so
-// wiring tests can assert the proposer and the diagnosis provider share one
-// deny-list.
-func (p *Proposer) Safety() SafetyChecker { return p.safety }
+// Gate returns the gate the proposer consults. It is exposed so wiring tests can
+// assert the proposer and the diagnosis provider share one deny-list.
+func (p *Proposer) Gate() *gate.Gate { return p.gate }
 
 // Planner returns the AI planner, or nil when planning is disabled.
 func (p *Proposer) Planner() planner.Planner { return p.planner }
 
 // withholdFromModel reports whether diag touches any protected namespace.
 func (p *Proposer) withholdFromModel(ctx context.Context, diag diagnosis.Diagnosis) bool {
-	_, protected := diagnosis.ProtectedNamespace(ctx, p.safety, diag)
+	_, protected := diagnosis.ProtectedNamespace(ctx, p.gate, diag)
 	return protected
 }
 
-// Propose generates a RemediationAction from a diagnosis, applying safety checks.
+// intent is the candidate for "do something about this diagnosis" before any
+// plan exists. Running the gate on it is the preflight: it decides whether to
+// plan at all (observe mode, a protected namespace, a duplicate, a cooldown)
+// before an AI call is spent, and reads the live workload the planner is given.
+func (p *Proposer) intent(diag diagnosis.Diagnosis, incident *dorguv1.IncidentMemory) gate.Candidate {
+	return gate.Candidate{
+		Target:    *diag.PersonaRef,
+		Namespace: diag.PersonaRef.Namespace,
+		Source:    dorguv1.PlanSourceRuleBased,
+		Facts:     factsFor(diag, incident),
+	}
+}
+
+// factsFor extracts the inputs the gate's dedup and cooldown stage reads. None of
+// it is model text: the target path and signal come from the rules.
+func factsFor(diag diagnosis.Diagnosis, incident *dorguv1.IncidentMemory) gate.Facts {
+	return gate.Facts{
+		Incident:      incident,
+		Severity:      string(diag.Severity),
+		PrimarySignal: string(primarySignalType(diag)),
+		TargetPath:    diagnosisTargetPath(diag),
+	}
+}
+
+// candidateFor turns a drafted RemediationAction into the candidate the gate
+// rules on.
+func candidateFor(action *dorguv1.RemediationAction, diag diagnosis.Diagnosis, incident *dorguv1.IncidentMemory, final bool) gate.Candidate {
+	facts := factsFor(diag, incident)
+	return gate.Candidate{
+		Target:          action.Spec.PersonaRef,
+		Namespace:       action.Namespace,
+		Name:            action.Name,
+		Source:          action.Spec.PlanSource,
+		IncidentRef:     action.Spec.IncidentRef,
+		Steps:           action.Spec.Steps,
+		Action:          action.Spec.Action,
+		RequestedVerify: action.Spec.Rollback,
+		Final:           final,
+		Facts:           facts,
+	}
+}
+
+// skipped converts a refusal into the result callers act on.
+func skipped(dec *gate.Decision) *ProposalResult {
+	_, guardrail := dec.RefusedBy()
+	return &ProposalResult{
+		SkipReason: dec.SkipReason(),
+		Suppressed: guardrail == gate.GuardrailRejection,
+		Decision:   dec,
+	}
+}
+
+// Propose generates a RemediationAction from a diagnosis. Every safety property
+// is the gate's: Propose builds candidates and writes the gate's answer.
 func (p *Proposer) Propose(ctx context.Context, diag diagnosis.Diagnosis, incident *dorguv1.IncidentMemory) (*ProposalResult, error) {
 	if diag.PersonaRef == nil {
 		return &ProposalResult{SkipReason: "diagnosis has no persona reference"}, nil
 	}
 
-	// Honor spec.policies.selfHealing.mode before doing any work: observe means
-	// the incident is recorded (the caller already did that) and nothing is
-	// proposed. This runs ahead of both the AI planner and the rule-based path so
-	// observe never spends an API call.
-	if reason := p.proposalSuppressedByMode(ctx, diag.PersonaRef.Name, incidentName(incident)); reason != "" {
-		return &ProposalResult{SkipReason: reason}, nil
+	// Preflight, before planning. Observe mode, a protected namespace, a rate or
+	// concurrency limit, a duplicate and a recent rejection all end here, so none
+	// of them can spend an AI call or send that namespace's context out. It also
+	// reads the live workload once: the persona is a point-in-time import that
+	// drifts, so every stated fact and every cap is grounded in this observation.
+	pre, err := p.gate.Run(ctx, p.intent(diag, incident), gate.PhaseProposal)
+	if err != nil {
+		return nil, fmt.Errorf("gate: %w", err)
 	}
-
-	// A protected namespace is refused here, before planning, for the same
-	// reason: the deny list would discard any plan afterwards, so asking the
-	// model first only spends a call and sends that namespace's context out.
-	if violation := p.safety.NamespaceDenied(ctx, diag.PersonaRef.Namespace); violation != nil {
-		return &ProposalResult{SkipReason: fmt.Sprintf("safety check failed: [[%s] %s]", violation.Rule, violation.Message)}, nil
+	if !pre.Allowed() {
+		return skipped(pre), nil
 	}
-
-	// Dedup: skip if an active RemediationAction already covers this proposal —
-	// either the same incident (per-cycle re-proposal) or the same
-	// persona+target (a second incident for one root cause, e.g. CrashLoop after
-	// OOM, both fixed by the same memory bump). This runs ahead of both the AI
-	// and rule-based paths so one persona + one resource fix yields one action.
-	if incident != nil {
-		reason, err := p.activeRemediationExists(ctx, diag, incident)
-		if err != nil {
-			return nil, err
-		}
-		if reason != "" {
-			return &ProposalResult{SkipReason: reason}, nil
-		}
-	}
-
-	// Read the live workload once, before either planning path. The persona is a
-	// point-in-time import that drifts, so every stated fact and every cap below
-	// is grounded in this observation rather than in the persona. When it cannot
-	// be read, ref records ManagedBy=unknown, which is treated as owned.
-	obs, workloadRef := p.observeWorkload(ctx, diag.PersonaRef)
 
 	// AI path: when a planner is configured, try it first across all signal
 	// types. Any failure degrades gracefully to the deterministic rules below
@@ -308,7 +213,7 @@ func (p *Proposer) Propose(ctx context.Context, diag diagnosis.Diagnosis, incide
 		p.logger.V(1).Info("not asking the planner: the diagnosis touches a protected or unknown namespace",
 			"category", diag.Category)
 	} else if p.planner != nil {
-		result, err := p.proposeWithPlanner(ctx, diag, incident, obs, workloadRef)
+		result, err := p.proposeWithPlanner(ctx, diag, incident, pre)
 		if err != nil {
 			p.logger.V(0).Info("AI remediation planning failed, falling back to rules",
 				"error", err, "category", diag.Category)
@@ -319,47 +224,49 @@ func (p *Proposer) Propose(ctx context.Context, diag diagnosis.Diagnosis, incide
 
 	switch diag.SuggestedAction {
 	case "resource-adjustment":
-		return p.proposeResourceAdjustment(ctx, diag, incident, workloadRef)
+		return p.proposeResourceAdjustment(ctx, diag, incident, pre)
 	case "restart":
-		return &ProposalResult{SkipReason: "restart remediation not automated in Phase 2b"}, nil
+		return &ProposalResult{SkipReason: "restart remediation not automated in Phase 2b", Decision: pre}, nil
 	default:
-		return &ProposalResult{SkipReason: fmt.Sprintf("unsupported action type: %s", diag.SuggestedAction)}, nil
+		return &ProposalResult{SkipReason: fmt.Sprintf("unsupported action type: %s", diag.SuggestedAction), Decision: pre}, nil
 	}
 }
 
 // proposeResourceAdjustment creates a RemediationAction for resource limit changes.
 //
-// workloadRef is the live workload read in Propose. Every number this path
-// states, and the cap it applies, come from it whenever it resolved.
+// pre is the preflight decision: its WorkloadRef is the live workload, and every
+// number this path states, and the cap it applies, come from it whenever it
+// resolved.
 func (p *Proposer) proposeResourceAdjustment(
 	ctx context.Context,
 	diag diagnosis.Diagnosis,
 	incident *dorguv1.IncidentMemory,
-	workloadRef *dorguv1.WorkloadRef,
+	pre *gate.Decision,
 ) (*ProposalResult, error) {
-	// Read the current ApplicationPersona: it is the object being patched, and
-	// its prior values are the rollback target. It is NOT the source of the
-	// numbers below.
+	workloadRef := pre.WorkloadRef
+
+	// The ApplicationPersona is the object being patched, and its prior values are
+	// the rollback target. It is NOT the source of the numbers below.
 	persona, err := p.getApplicationPersona(ctx, diag.PersonaRef)
 	if err != nil {
 		return nil, fmt.Errorf("getting application persona: %w", err)
 	}
 
 	if personaLimits(persona) == nil && !hasObservedLimits(workloadRef) {
-		return &ProposalResult{SkipReason: "persona has no resource limits configured"}, nil
+		return &ProposalResult{SkipReason: "persona has no resource limits configured", Decision: pre}, nil
 	}
 
-	// Determine which resource to adjust and by how much, sized against the
-	// live workload.
+	// Determine which resource to adjust and by how much, sized against the live
+	// workload.
 	change, err := p.calculateResourceChange(diag, persona, workloadRef)
 	if err != nil {
 		return nil, fmt.Errorf("calculating resource change: %w", err)
 	}
 	if change.skipReason != "" {
-		return &ProposalResult{SkipReason: change.skipReason}, nil
+		return &ProposalResult{SkipReason: change.skipReason, Decision: pre}, nil
 	}
 	if change.patch == nil {
-		return &ProposalResult{SkipReason: "no applicable resource adjustment"}, nil
+		return &ProposalResult{SkipReason: "no applicable resource adjustment", Decision: pre}, nil
 	}
 
 	patchJSON, err := json.Marshal(change.patch)
@@ -376,8 +283,6 @@ func (p *Proposer) proposeResourceAdjustment(
 	if namespace == "" {
 		namespace = defaultNamespace
 	}
-
-	healthCheckDuration := metav1.Duration{Duration: defaultHealthCheckAfter}
 
 	action := &dorguv1.RemediationAction{
 		ObjectMeta: metav1.ObjectMeta{
@@ -397,6 +302,7 @@ func (p *Proposer) proposeResourceAdjustment(
 			PersonaRef:  *diag.PersonaRef,
 			TrustLevel:  2,
 			Explanation: change.explanation,
+			PlanSource:  dorguv1.PlanSourceRuleBased,
 			Confidence:  fmt.Sprintf("%.2f", diag.Confidence),
 			WorkloadRef: workloadRef,
 			Action: dorguv1.RemediationActionDetail{
@@ -406,11 +312,6 @@ func (p *Proposer) proposeResourceAdjustment(
 			},
 			Approval: &dorguv1.ApprovalSpec{
 				Required: true,
-			},
-			Rollback: &dorguv1.RemediationRollbackSpec{
-				Enabled:          true,
-				HealthCheckAfter: &healthCheckDuration,
-				MaxRetries:       1,
 			},
 		},
 	}
@@ -423,23 +324,16 @@ func (p *Proposer) proposeResourceAdjustment(
 			"action", action.Name, "confidence", action.Spec.Confidence)
 	}
 
-	// Run safety checks against a probe whose pre-patch state is the live
-	// workload's, so the 2x cap bounds the real change rather than a change
-	// relative to a stale persona.
-	safetyResult, err := p.safety.Check(ctx, groundedSafetyProbe(action, workloadRef))
+	// The gate rules on the plan. This path never reshapes it afterwards, so the
+	// candidate is final: a clamp is installed, a refusal ends the proposal.
+	dec, err := p.gate.Run(ctx, candidateFor(action, diag, incident, true), gate.PhaseProposal)
 	if err != nil {
-		return nil, fmt.Errorf("safety check: %w", err)
+		return nil, fmt.Errorf("gate: %w", err)
 	}
-
-	if !safetyResult.Allowed {
-		reasons := make([]string, 0, len(safetyResult.Violations))
-		for _, v := range safetyResult.Violations {
-			reasons = append(reasons, fmt.Sprintf("[%s] %s", v.Rule, v.Message))
-		}
-		return &ProposalResult{
-			SkipReason: fmt.Sprintf("safety check failed: %v", reasons),
-		}, nil
+	if !dec.Allowed() {
+		return skipped(dec), nil
 	}
+	installDecision(action, dec)
 
 	// CR5-03, on this path too. A rule-based plan records no step verdicts, so
 	// its at-the-cap disclosure claims a clamp that never happened just as the
@@ -450,24 +344,37 @@ func (p *Proposer) proposeResourceAdjustment(
 			"action", action.Name, "surfaces", scrubbed)
 	}
 
-	// Create the RemediationAction CRD.
+	return p.persist(ctx, action, dec)
+}
+
+// installDecision applies what the gate allows to the action: the plan it let
+// through, and the verification and rollback settings the operator owns. The
+// plan's own settings were requests; these are the operator's.
+func installDecision(action *dorguv1.RemediationAction, dec *gate.Decision) {
+	action.Spec.Steps = dec.Steps
+	action.Spec.Action = dec.Action
+	verify := dec.Verify
+	action.Spec.Rollback = &verify
+}
+
+// persist writes the RemediationAction and records the gate's decision on its
+// status. The spec fields the gate also derives (workloadRef, step verdicts,
+// prePatchState) stay populated for one release; status.gate is the record to
+// trust.
+func (p *Proposer) persist(ctx context.Context, action *dorguv1.RemediationAction, dec *gate.Decision) (*ProposalResult, error) {
 	if err := p.client.Create(ctx, action); err != nil {
 		return nil, fmt.Errorf("creating RemediationAction: %w", err)
 	}
 
-	// Set initial status.
 	action.Status = dorguv1.RemediationActionStatus{
 		Phase: phasePending,
+		Gate:  dec.Status(),
 	}
 	if err := p.client.Status().Update(ctx, action); err != nil {
-		p.logger.Error(err, "RemediationAction created but status update failed",
-			"name", action.Name)
+		p.logger.Error(err, "RemediationAction created but status update failed", "name", action.Name)
 	}
 
-	return &ProposalResult{
-		Action:   action,
-		Proposed: true,
-	}, nil
+	return &ProposalResult{Action: action, Proposed: true, Decision: dec}, nil
 }
 
 // resourceAdjustment is the outcome of sizing a resource change: the persona
@@ -488,15 +395,15 @@ func (p *Proposer) calculateResourceChange(
 ) (resourceAdjustment, error) {
 	switch primarySignalType(diag) {
 	case detection.SignalOOMKilled, detection.SignalMemorySaturationCrit, detection.SignalMemorySaturationHigh:
-		return p.calculateLimitIncrease(diag, persona, ref, resourceKeyMemory)
+		return p.calculateLimitIncrease(diag, persona, ref, gate.ResourceKeyMemory)
 
 	case detection.SignalCPUSaturationHigh, detection.SignalCPUSaturationCritical:
-		return p.calculateLimitIncrease(diag, persona, ref, resourceKeyCPU)
+		return p.calculateLimitIncrease(diag, persona, ref, gate.ResourceKeyCPU)
 
 	case detection.SignalCrashLoopBackOff:
 		// CrashLoop with OOM correlation → memory increase.
 		if hasOOMCorrelation(diag) {
-			return p.calculateLimitIncrease(diag, persona, ref, resourceKeyMemory)
+			return p.calculateLimitIncrease(diag, persona, ref, gate.ResourceKeyMemory)
 		}
 		// CrashLoop without OOM → skip.
 		return resourceAdjustment{}, nil
@@ -526,13 +433,13 @@ func (p *Proposer) calculateLimitIncrease(
 	key string,
 ) (resourceAdjustment, error) {
 	personaValue := personaLimit(persona, key)
-	path := pathPrefixLimits + key
+	path := gate.PathPrefixLimits + key
 
-	baseline, groundedInLive := observedValue(ref, path)
+	baseline, groundedInLive := gate.ObservedValue(ref, path)
 	switch {
 	case groundedInLive:
 		// Sized against what is running.
-	case resolved(ref):
+	case gate.Resolved(ref):
 		return resourceAdjustment{skipReason: fmt.Sprintf(
 			"container %q on Deployment %s does not set a %s limit, so raising one would introduce a field the workload has never had",
 			ref.Container, ref.Name, key)}, nil
@@ -575,7 +482,7 @@ func (p *Proposer) calculateLimitIncrease(
 // exceeding the blast-radius cap.
 func increaseMultiplier(key string, severity detection.Severity) float64 {
 	warning, critical := memoryIncreaseWarning, memoryIncreaseCritical
-	if key == resourceKeyCPU {
+	if key == gate.ResourceKeyCPU {
 		warning, critical = cpuIncreaseWarning, cpuIncreaseCritical
 	}
 
@@ -583,13 +490,13 @@ func increaseMultiplier(key string, severity detection.Severity) float64 {
 	if severity == detection.SeverityCritical {
 		multiplier = critical
 	}
-	return min(multiplier, maxResourceMultiplier)
+	return min(multiplier, gate.MaxBlastRadiusMultiplier)
 }
 
 // scaleQuantity multiplies a quantity, rendering it in the format each
 // dimension is normally written in.
 func scaleQuantity(qty resource.Quantity, multiplier float64, key string) string {
-	if key == resourceKeyCPU {
+	if key == gate.ResourceKeyCPU {
 		return resource.NewMilliQuantity(int64(float64(qty.MilliValue())*multiplier), resource.DecimalSI).String()
 	}
 	return resource.NewQuantity(int64(float64(qty.Value())*multiplier), resource.BinarySI).String()
@@ -639,7 +546,7 @@ func personaLimit(persona *dorguv1.ApplicationPersona, key string) string {
 	if limits == nil {
 		return ""
 	}
-	if key == resourceKeyCPU {
+	if key == gate.ResourceKeyCPU {
 		return limits.CPU
 	}
 	return limits.Memory
@@ -648,7 +555,7 @@ func personaLimit(persona *dorguv1.ApplicationPersona, key string) string {
 // hasObservedLimits reports whether the live container sets any limit, which
 // makes a proposal possible even when the persona records none.
 func hasObservedLimits(ref *dorguv1.WorkloadRef) bool {
-	return resolved(ref) && ref.ObservedResources != nil && ref.ObservedResources.Limits != nil
+	return gate.Resolved(ref) && ref.ObservedResources != nil && ref.ObservedResources.Limits != nil
 }
 
 // getApplicationPersona fetches the ApplicationPersona by reference.

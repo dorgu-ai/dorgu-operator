@@ -38,6 +38,7 @@ import (
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
 	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
+	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation"
 )
 
@@ -516,25 +517,23 @@ func TestExpiry_TriggersNoCooldown(t *testing.T) {
 	im.Status.Phase = PhaseDetected
 	_, c := lcController(t, []client.Object{expired, im})
 
-	r := &HealthCheckReconciler{Client: c, Logger: logr.Discard()}
-	suppressed, err := r.rejectionSuppressesProposal(context.Background(), lcDiagnosis(), im)
+	// The gate, not the controller, owns the failed-remediation cooldown. An Expired
+	// action must not trip it.
+	g := gate.New(c, logr.Discard())
+	cand := gate.Candidate{
+		Target:      dorguv1.PersonaReference{Kind: "ApplicationPersona", Name: lcPersona, Namespace: lcNamespace},
+		Namespace:   lcNamespace,
+		Name:        "ra-2",
+		IncidentRef: dorguv1.IncidentReference{Name: lcIncident, Namespace: lcNamespace},
+		Facts:       gate.Facts{Incident: im},
+	}
+	decision, err := g.Run(context.Background(), cand, gate.PhaseProposal)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if suppressed != "" {
-		t.Errorf("an Expired action suppressed the next proposal: %q", suppressed)
-	}
-
-	checker := remediation.NewSafetyChecker(c, logr.Discard())
-	fresh := lcRA("")
-	fresh.Name = "ra-2"
-	fresh.Labels = map[string]string{LabelPersonaName: lcPersona, LabelPersonaKind: "ApplicationPersona"}
-	res, err := checker.Check(context.Background(), fresh)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, v := range res.Violations {
-		if v.Rule == "failed-cooldown" || strings.Contains(strings.ToLower(v.Message), "cooldown") {
+	for _, v := range decision.Verdicts {
+		if v.Verdict == dorguv1.GateVerdictRefuse &&
+			(v.Guardrail == gate.GuardrailFailedCooldown || v.Guardrail == gate.GuardrailRejection) {
 			t.Errorf("an Expired action tripped a cooldown: %+v", v)
 		}
 	}

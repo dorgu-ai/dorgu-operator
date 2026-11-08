@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package remediation
+package gate
 
 import "strings"
 
@@ -90,11 +90,11 @@ var (
 	}
 )
 
-// writesWorkload reports whether a suggested kubectl command may change
+// WritesWorkload reports whether a suggested kubectl command may change
 // cluster state: everything that is a kubectl invocation and is not positively
 // recognised as read-only. A non-kubectl or empty command is not a workload
 // write: it is already dropped by SanitizeStepCommand before it reaches here.
-func writesWorkload(command string) bool {
+func WritesWorkload(command string) bool {
 	return isKubectlInvocation(command) && !readsOnly(command)
 }
 

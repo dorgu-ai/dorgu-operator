@@ -26,6 +26,7 @@ import (
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
+	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
 )
 
 // A protected namespace is refused before the planner runs. EKS QA 2026-10-24
@@ -36,11 +37,11 @@ func TestProposer_DenyListRefusesBeforeThePlannerRuns(t *testing.T) {
 	tests := []struct {
 		name      string
 		namespace string
-		options   []SafetyOption
+		options   []gate.Option
 	}{
 		{"kube-system is always protected", "kube-system", nil},
-		{"the operator's own namespace", "dorgu-system", []SafetyOption{WithProtectedNamespaces("dorgu-system")}},
-		{"an installer-protected namespace", "payments", []SafetyOption{WithProtectedNamespaces("payments")}},
+		{"the operator's own namespace", "dorgu-system", []gate.Option{gate.WithProtectedNamespaces("dorgu-system")}},
+		{"an installer-protected namespace", "payments", []gate.Option{gate.WithProtectedNamespaces("payments")}},
 	}
 
 	for _, tt := range tests {
@@ -52,7 +53,7 @@ func TestProposer_DenyListRefusesBeforeThePlannerRuns(t *testing.T) {
 				WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
 
 			model := &countingPlanner{}
-			p := NewProposer(c, NewSafetyChecker(c, testLogger(), tt.options...), testLogger(), WithPlanner(model))
+			p := NewProposer(c, gate.New(c, testLogger(), tt.options...), testLogger(), WithPlanner(model))
 
 			diag := newOOMDiagnosis(tt.namespace, "my-app", detection.SeverityCritical)
 			result, err := p.Propose(context.Background(), diag, incident)

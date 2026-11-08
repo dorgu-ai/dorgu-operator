@@ -29,6 +29,7 @@ import (
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
+	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation/planner"
 )
 
@@ -82,7 +83,7 @@ func TestProposer_AIPath_MapsPlanToSteps(t *testing.T) {
 		WithRuntimeObjects(persona).
 		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
 
-	safety := NewSafetyChecker(c, testLogger())
+	safety := gate.New(c, testLogger())
 	p := NewProposer(c, safety, testLogger(), WithPlanner(&stubPlanner{plan: threeStepPlan()}))
 
 	diag := newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical)
@@ -145,7 +146,7 @@ func TestProposer_AIPath_BlastRadiusClampsStep(t *testing.T) {
 		},
 	}
 
-	safety := NewSafetyChecker(c, testLogger())
+	safety := gate.New(c, testLogger())
 	p := NewProposer(c, safety, testLogger(), WithPlanner(&stubPlanner{plan: plan}))
 
 	result, err := p.Propose(context.Background(), newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical), incident)
@@ -187,7 +188,7 @@ func TestProposer_AIPath_DenyListSkips(t *testing.T) {
 		WithRuntimeObjects(persona).
 		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
 
-	safety := NewSafetyChecker(c, testLogger())
+	safety := gate.New(c, testLogger())
 	p := NewProposer(c, safety, testLogger(), WithPlanner(&stubPlanner{plan: threeStepPlan()}))
 
 	result, err := p.Propose(context.Background(), newOOMDiagnosis("kube-system", "coredns", detection.SeverityCritical), incident)
@@ -205,7 +206,7 @@ func TestProposer_AIPath_FallbackOnPlannerError(t *testing.T) {
 		WithRuntimeObjects(persona).
 		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
 
-	safety := NewSafetyChecker(c, testLogger())
+	safety := gate.New(c, testLogger())
 	p := NewProposer(c, safety, testLogger(), WithPlanner(&stubPlanner{err: errors.New("model down")}))
 
 	// Planner errors -> fall back to the rule-based single-action path.
@@ -226,7 +227,7 @@ func TestProposer_AIPath_FallbackOnEmptyPlan(t *testing.T) {
 		WithRuntimeObjects(persona).
 		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
 
-	safety := NewSafetyChecker(c, testLogger())
+	safety := gate.New(c, testLogger())
 	p := NewProposer(c, safety, testLogger(), WithPlanner(&stubPlanner{plan: &planner.RemediationPlan{}}))
 
 	result, err := p.Propose(context.Background(), newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical), incident)
@@ -244,7 +245,7 @@ func TestProposer_NoPlanner_UsesRules(t *testing.T) {
 		WithRuntimeObjects(persona).
 		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
 
-	safety := NewSafetyChecker(c, testLogger())
+	safety := gate.New(c, testLogger())
 	p := NewProposer(c, safety, testLogger()) // no planner
 
 	result, err := p.Propose(context.Background(), newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical), incident)
@@ -275,7 +276,7 @@ func TestProposer_AIPath_AllAdvisoryPlanPersists(t *testing.T) {
 		},
 	}
 
-	safety := NewSafetyChecker(c, testLogger())
+	safety := gate.New(c, testLogger())
 	p := NewProposer(c, safety, testLogger(), WithPlanner(&stubPlanner{plan: plan}))
 
 	diag := newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical)
@@ -313,7 +314,7 @@ func TestProposer_AIPath_AllAdvisoryPlanForResourceChangeFallsBack(t *testing.T)
 		},
 	}
 
-	p := NewProposer(c, NewSafetyChecker(c, testLogger()), testLogger(),
+	p := NewProposer(c, gate.New(c, testLogger()), testLogger(),
 		WithPlanner(&stubPlanner{plan: plan}))
 
 	diag := newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical)
@@ -355,7 +356,7 @@ func TestProposer_AIPath_InvariantNeverAutoExecsWorkload(t *testing.T) {
 		},
 	}
 
-	safety := NewSafetyChecker(c, testLogger())
+	safety := gate.New(c, testLogger())
 	p := NewProposer(c, safety, testLogger(), WithPlanner(&stubPlanner{plan: plan}))
 
 	result, err := p.Propose(context.Background(), newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical), incident)
@@ -425,7 +426,7 @@ func TestProposer_AIPath_PersistsAdvisoryCommands(t *testing.T) {
 		WithRuntimeObjects(persona, deploy).
 		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
 
-	p := NewProposer(c, NewSafetyChecker(c, testLogger()), testLogger(),
+	p := NewProposer(c, gate.New(c, testLogger()), testLogger(),
 		WithPlanner(&stubPlanner{plan: imagePullPlan()}))
 
 	diag := newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical)
@@ -458,7 +459,7 @@ func TestProposer_AIPath_ExplanationDiffersFromPlanSummary(t *testing.T) {
 		WithRuntimeObjects(persona).
 		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
 
-	p := NewProposer(c, NewSafetyChecker(c, testLogger()), testLogger(),
+	p := NewProposer(c, gate.New(c, testLogger()), testLogger(),
 		WithPlanner(&stubPlanner{plan: threeStepPlan()}))
 
 	diag := newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical)
@@ -565,7 +566,7 @@ func TestProposer_AIPath_ClampNoticeSurvivesExplanationRecompute(t *testing.T) {
 		WithRuntimeObjects(persona, deploy).
 		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
 
-	p := NewProposer(c, NewSafetyChecker(c, testLogger()), testLogger(),
+	p := NewProposer(c, gate.New(c, testLogger()), testLogger(),
 		WithPlanner(&stubPlanner{plan: clampedPlan()}))
 
 	diag := newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical)
