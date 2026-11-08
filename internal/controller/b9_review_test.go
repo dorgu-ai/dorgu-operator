@@ -163,23 +163,25 @@ func TestReview_OneProbeFaultAcrossCyclesIsOneOpenIncident_Bug(t *testing.T) {
 
 // ---- R-3: flapping fault, no cap --------------------------------------------
 
-// R-3. Characterization (passes). A fault that resolves and returns N times
-// leaves N+1 IncidentMemories, N+1 model-diagnosed incidents and an unbounded
-// lineage. There is no cap, no Flapping fold and nothing prunes Resolved objects.
-func TestReview_FlappingFaultIsUncapped_Characterization(t *testing.T) {
+// R-3 (F-3). A fault that resolves and returns N times used to leave N+1
+// IncidentMemories and an unbounded lineage: no cap, no fold, no pruning. With the
+// default cap, three recurrences open incidents and every later one reopens the
+// latest (see incident_cap_test.go for the full behaviour).
+func TestReview_FlappingFaultIsCappedByTheDefaultConfiguration(t *testing.T) {
 	const flaps = 40
 	e := newRecurrenceEnv(t, noiseClient(t, recurrencePersonaObject()))
+	e.r.RecurrenceCap = DefaultRecurrenceCap
+	e.r.RecurrenceWindow = DefaultRecurrenceWindow
 	e.cycle()
 	for range flaps {
 		e.resolve(e.onlyOpen().Name)
 		e.cycle()
 	}
 	all := e.incidents()
-	assert.Len(t, all, flaps+1, "no cap: every recurrence is a new object")
+	assert.Len(t, all, 1+DefaultRecurrenceCap, "the cap bounds the objects: %d flaps, %d incidents", flaps, len(all))
 	last := e.onlyOpen()
 	assert.Equal(t, gate.IncidentLineage(all[0].Name), gate.IncidentLineage(last.Name))
-	assert.Equal(t, flaps, gate.IncidentGeneration(last.Name))
-	t.Logf("after %d flaps: %d IncidentMemories, last generation r%d", flaps, len(all), gate.IncidentGeneration(last.Name))
+	assert.Equal(t, DefaultRecurrenceCap, gate.IncidentGeneration(last.Name))
 }
 
 var _ = detection.SignalOOMKilled

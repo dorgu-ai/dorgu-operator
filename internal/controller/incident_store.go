@@ -109,12 +109,34 @@ func (r *HealthCheckReconciler) updateExistingIncident(
 	diag *diagnosis.Diagnosis,
 	now metav1.Time,
 ) error {
+	return r.writeIncident(ctx, im, diag, now, incidentEdit{
+		spec: func(fresh *dorguv1.IncidentMemory) { applyDiagnosisToSpec(fresh, subject, diag, now) },
+	})
+}
+
+// incidentEdit says how to change an incident: what to do to its spec, and
+// optionally to its status after the occurrence count and last occurrence are
+// recorded. Both run against a freshly fetched object on every retry.
+type incidentEdit struct {
+	spec   func(*dorguv1.IncidentMemory)
+	status func(*dorguv1.IncidentMemory)
+}
+
+// writeIncident applies an edit to an incident and counts the occurrence, with the
+// retries updateExistingIncident documents. im is refreshed in place.
+func (r *HealthCheckReconciler) writeIncident(
+	ctx context.Context,
+	im *dorguv1.IncidentMemory,
+	diag *diagnosis.Diagnosis,
+	now metav1.Time,
+	edit incidentEdit,
+) error {
 	specErr := retryIncidentWrite(func(int) error {
 		var fresh dorguv1.IncidentMemory
 		if err := r.Client.Get(ctx, client.ObjectKeyFromObject(im), &fresh); err != nil {
 			return err
 		}
-		applyDiagnosisToSpec(&fresh, subject, diag, now)
+		edit.spec(&fresh)
 		if err := r.Client.Update(ctx, &fresh); err != nil {
 			return err
 		}
@@ -134,6 +156,9 @@ func (r *HealthCheckReconciler) updateExistingIncident(
 		}
 		im.Status.OccurrenceCount++
 		im.Status.LastOccurrence = &now
+		if edit.status != nil {
+			edit.status(im)
+		}
 		return r.Client.Status().Update(ctx, im)
 	})
 	if err != nil {
@@ -165,9 +190,12 @@ func (r *HealthCheckReconciler) createIncident(
 ) error {
 	primarySignal := primarySignalType(diag)
 
-	generation, previous, err := r.nextGeneration(ctx, subject, diag)
+	generation, previous, resolved, err := r.nextGeneration(ctx, subject, diag)
 	if err != nil {
 		return err
+	}
+	if previous != nil && r.recurrenceCapReached(resolved, now.Time) {
+		return r.reopenLatest(ctx, subject, diag, previous, now)
 	}
 
 	var im *dorguv1.IncidentMemory
@@ -273,8 +301,7 @@ func newIncident(
 
 	im := &dorguv1.IncidentMemory{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: gate.RecurrenceName(
-				generateIncidentName(namespace, subject.incidentNameKey(), string(primarySignal)), generation),
+			Name:      incidentName(namespace, subject, primarySignal, generation, previous),
 			Namespace: namespace,
 			Labels: map[string]string{
 				LabelPersonaKind:      subject.personaRef.Kind,
@@ -309,6 +336,21 @@ func newIncident(
 		}
 	}
 	return im
+}
+
+// incidentName names an incident. The first occurrence is the stable hash of
+// namespace, persona and signal. A recurrence is named from the incident it
+// recurs, not from its own signal: an incident that was escalated (see
+// incident_family.go) carries the name of the signal it started as, and the
+// recurrence has to stay in that lineage or the cooldowns keyed on it would not
+// follow.
+func incidentName(
+	namespace string, subject incidentSubject, signal detection.SignalType, generation int, previous *dorguv1.IncidentMemory,
+) string {
+	if previous != nil && generation > 0 {
+		return gate.RecurrenceName(previous.Name, generation)
+	}
+	return generateIncidentName(namespace, subject.incidentNameKey(), string(signal))
 }
 
 // recordOpened counts a newly created incident, and a recurrence apart as well.

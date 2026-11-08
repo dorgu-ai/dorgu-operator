@@ -35,6 +35,7 @@ const (
 	ConditionDetected  = "Detected"
 	ConditionResolved  = "Resolved"
 	ConditionRecurring = "Recurring"
+	ConditionFlapping  = "Flapping"
 )
 
 // IncidentController watches IncidentMemory CRDs and manages their lifecycle:
@@ -199,6 +200,14 @@ func (r *IncidentController) updateConditions(im *dorguv1.IncidentMemory) {
 			prior, im.Annotations[AnnotationRecurrenceCount], im.Status.OccurrenceCount)
 	}
 	setCondition(&im.Status.Conditions, ConditionRecurring, recurringStatus, recurringReason, recurringMsg)
+
+	// Flapping condition: present once the recurrence cap folded recurrences into
+	// this incident. An ordinary incident does not carry it at all.
+	if folded := foldedCount(im); folded > 0 {
+		setCondition(&im.Status.Conditions, ConditionFlapping, metav1.ConditionTrue, "RecurrenceCapReached", fmt.Sprintf(
+			"%d recurrence(s) of this fault were folded into this incident because it kept coming back; it was reopened each time",
+			folded))
+	}
 }
 
 // syncPersonaStatus counts active incidents for the referenced persona

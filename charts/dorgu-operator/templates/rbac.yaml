@@ -29,10 +29,15 @@ rules:
   - apiGroups: ["dorgu.io"]
     resources: ["clusterpersonas/finalizers"]
     verbs: ["update"]
-  # IncidentMemory CRD (created by healthcheck reconciler; status updated by incident controller)
+  # IncidentMemory CRD (created by healthcheck reconciler; status updated by incident
+  # controller). `delete` is pruning Resolved incidents past
+  # healthCheck.resolvedRetention: dorgu's own records, never a workload. Verify both
+  # halves rather than take them on trust:
+  #   kubectl auth can-i delete incidentmemories.dorgu.io --as=system:serviceaccount:dorgu-system:dorgu-operator -A
+  #   kubectl auth can-i delete deployments --as=system:serviceaccount:dorgu-system:dorgu-operator -A
   - apiGroups: ["dorgu.io"]
     resources: ["incidentmemories"]
-    verbs: ["get", "list", "watch", "create", "update", "patch"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["dorgu.io"]
     resources: ["incidentmemories/status"]
     verbs: ["get", "update", "patch"]

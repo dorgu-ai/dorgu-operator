@@ -180,3 +180,20 @@ func TestRecordIncidentRecurrenceIncrements(t *testing.T) {
 		t.Errorf("recurrences delta = %v, want 1", got)
 	}
 }
+
+func TestRecordIncidentRecurrenceCappedAndPruneIncrement(t *testing.T) {
+	capped := incidentRecurrencesCappedTotal.WithLabelValues("health", "persona")
+	before := testutil.ToFloat64(capped)
+	RecordIncidentRecurrenceCapped("health", "persona")
+	if got := testutil.ToFloat64(capped) - before; got != 1 {
+		t.Errorf("capped delta = %v, want 1", got)
+	}
+	for _, r := range []string{PruneDeleted, PruneKeptReferenced, PruneError} {
+		series := incidentPruneTotal.WithLabelValues(r)
+		before := testutil.ToFloat64(series)
+		RecordIncidentPrune(r)
+		if got := testutil.ToFloat64(series) - before; got != 1 {
+			t.Errorf("prune %s delta = %v, want 1", r, got)
+		}
+	}
+}

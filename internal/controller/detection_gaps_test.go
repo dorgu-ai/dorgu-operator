@@ -70,6 +70,21 @@ func aiReconciler(t *testing.T, c client.Client, g *gate.Gate, stub *stubLLMClie
 	return r
 }
 
+// evolvePod moves a pod on between two cycles. A restart loop is a change in the
+// restart count, which the collector can only see across cycles (after an operator
+// restart a lifetime count proves nothing), so the liveness fault restarts twice.
+func evolvePod(t *testing.T, c client.Client, pod *corev1.Pod, fault string) {
+	t.Helper()
+	if fault != "LivenessRestarts" {
+		return
+	}
+	var cur corev1.Pod
+	require.NoError(t, c.Get(context.Background(), client.ObjectKeyFromObject(pod), &cur))
+	cur.Status.ContainerStatuses[0].RestartCount += 2
+	cur.Status.ContainerStatuses[0].LastTerminationState.Terminated.FinishedAt = metav1.NewTime(time.Now().Add(-5 * time.Second))
+	require.NoError(t, c.Status().Update(context.Background(), &cur))
+}
+
 func probePersona(ns string) *dorguv1.ApplicationPersona {
 	return &dorguv1.ApplicationPersona{
 		ObjectMeta: metav1.ObjectMeta{Name: "api", Namespace: ns},
@@ -152,6 +167,7 @@ func TestF13_FailingPodsInExcludedNamespacesRaiseNothingAndCallNoModel(t *testin
 				r := aiReconciler(t, c, g, stub)
 
 				r.reconcile(context.Background())
+				evolvePod(t, c, pod, fault)
 				r.reconcile(context.Background())
 
 				incidents := listIncidents(t, c)

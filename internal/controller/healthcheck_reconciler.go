@@ -84,6 +84,18 @@ const (
 	AnnotationRecurrenceOf    = "dorgu.io/recurrence-of"
 	AnnotationRecurrenceCount = "dorgu.io/recurrence-count"
 
+	// AnnotationEscalatedFrom lists, in order, the signals an incident had before it
+	// was escalated to its current one (see incident_family.go).
+	AnnotationEscalatedFrom = "dorgu.io/escalated-from"
+
+	// AnnotationRecurrencesFolded counts the recurrences that were folded into an
+	// incident (and reopened it) because the recurrence cap was reached.
+	AnnotationRecurrencesFolded = "dorgu.io/recurrences-folded"
+
+	// EventReasonIncidentFlapping is the Event reason for the one Warning an
+	// incident gets when the recurrence cap is first reached.
+	EventReasonIncidentFlapping = "DorguIncidentFlapping"
+
 	// IncidentMemory phase constants.
 	PhaseDetected      = "Detected"
 	PhaseInvestigating = "Investigating"
@@ -96,7 +108,12 @@ const (
 	ReasonDiagnosisDiscarded = "DorguDiagnosisDiscarded"
 )
 
-// +kubebuilder:rbac:groups=dorgu.io,resources=incidentmemories,verbs=get;list;watch;create;update;patch
+// `delete` on incidentmemories is pruning Resolved incidents past the retention: dorgu's
+// own records, never a workload (see incident_prune.go). Verify both halves:
+//
+//	kubectl auth can-i delete incidentmemories.dorgu.io --as=system:serviceaccount:dorgu-system:dorgu-operator -A
+//	kubectl auth can-i delete deployments --as=system:serviceaccount:dorgu-system:dorgu-operator -A
+// +kubebuilder:rbac:groups=dorgu.io,resources=incidentmemories,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=dorgu.io,resources=incidentmemories/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=dorgu.io,resources=applicationpersonas,verbs=get;list;watch
 // +kubebuilder:rbac:groups=dorgu.io,resources=applicationpersonas/status,verbs=get;update;patch
@@ -237,6 +254,12 @@ func (r *HealthCheckReconciler) runCycle(ctx context.Context) {
 			r.Logger.Error(err, "failed to resolve cleared incidents")
 		}
 	}
+
+	// 5. Prune Resolved incidents past the retention. It reads no signals, so a
+	// partial collection does not matter to it.
+	if err := r.pruneResolved(ctx, time.Now()); err != nil {
+		logFailure(r.Logger, err, "failed to prune Resolved incidents")
+	}
 }
 
 // processGroup diagnoses one application's signals in isolation and records the
@@ -295,6 +318,30 @@ func (r *HealthCheckReconciler) processGroup(
 	return attempted, discarded
 }
 
+// processPeerDiagnosis records a diagnosis against the incident its fault already
+// has, and keeps that incident active for as long as any rung of the fault is seen.
+func (r *HealthCheckReconciler) processPeerDiagnosis(
+	ctx context.Context,
+	subject incidentSubject,
+	diag *diagnosis.Diagnosis,
+	peer *dorguv1.IncidentMemory,
+	activeSignalKeys map[string]bool,
+	now metav1.Time,
+) error {
+	propose, err := r.mergeIntoPeer(ctx, subject, diag, peer, now)
+	if err != nil {
+		return err
+	}
+	// The key is read after the merge: an escalation changes the incident's signal.
+	activeSignalKeys[incidentSignalKey(peer)] = true
+
+	if !propose || subject.unattributed {
+		return nil
+	}
+	r.proposeRemediation(ctx, diag, peer)
+	return nil
+}
+
 // previousOccurrences answers, for the diagnosis provider's prompt, how many times
 // the incident behind a diagnosis has already been recorded. It reads the same
 // IncidentMemory processDiagnosis is about to update, so the model is told the
@@ -308,6 +355,10 @@ func (r *HealthCheckReconciler) previousOccurrences(subject incidentSubject) fun
 		}
 		if existing != nil {
 			return existing.Status.OccurrenceCount
+		}
+		// The fault may be open under another shape of the same family.
+		if peer, err := r.findFamilyPeer(ctx, subject, &d); err == nil && peer != nil {
+			return peer.Status.OccurrenceCount
 		}
 		// No open incident: when the fault is back after one resolved, it is not a
 		// first sighting, and the model is told how often it was seen before.
@@ -358,6 +409,18 @@ func (r *HealthCheckReconciler) processDiagnosis(
 	existing, err := r.findMatchingIncident(ctx, subject, diag)
 	if err != nil {
 		return fmt.Errorf("finding matching incident: %w", err)
+	}
+
+	// No incident for this signal: the fault may be one the application already has
+	// an incident for in another shape (see incident_family.go).
+	if existing == nil {
+		peer, err := r.findFamilyPeer(ctx, subject, diag)
+		if err != nil {
+			return fmt.Errorf("finding the incident this fault already has: %w", err)
+		}
+		if peer != nil {
+			return r.processPeerDiagnosis(ctx, subject, diag, peer, activeSignalKeys, now)
+		}
 	}
 
 	var incident *dorguv1.IncidentMemory

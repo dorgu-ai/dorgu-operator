@@ -407,3 +407,54 @@ func TestRecurrence_GetsANewProposalThroughTheGate(t *testing.T) {
 		})
 	}
 }
+
+// B9 review F-2: the rate limit, with the creation timestamps a real API server
+// sets (the fake client leaves them zero, so an hourly limit counted nothing in
+// the table above).
+func TestRecurrence_RateLimitWithRealCreationTimestamps(t *testing.T) {
+	proposalsDeferred := func() float64 {
+		return metricValue(t, "dorgu_proposals_total", map[string]string{
+			"source": "dorgu", "action_type": "resource-adjustment", "result": "deferred",
+		})
+	}
+	refused := func(im dorguv1.IncidentMemory) *metav1.Condition {
+		for i := range im.Status.Conditions {
+			if im.Status.Conditions[i].Type == dorguv1.ConditionProposalRefused && im.Status.Conditions[i].Status == metav1.ConditionTrue {
+				return &im.Status.Conditions[i]
+			}
+		}
+		return nil
+	}
+
+	t.Run("an outstanding proposal of the same fault defers, it is not another remediation", func(t *testing.T) {
+		e := newRecurrenceEnv(t, noiseClient(t, recurrencePersonaObject(), limitOneClusterPersona()))
+		e.cycle()
+		e.resolve(e.onlyOpen().Name)
+		stampCreationNow(t, e)
+		before := proposalsDeferred()
+
+		e.cycle()
+
+		assert.Len(t, e.actions(), 1)
+		assert.Nil(t, refused(e.onlyOpen()), "a deferral records no refusal")
+		assert.Greater(t, proposalsDeferred(), before, "it is counted as a deferral")
+	})
+
+	t.Run("a finished proposal inside the hour still counts: propose, fail, propose is stopped", func(t *testing.T) {
+		e := newRecurrenceEnv(t, noiseClient(t, recurrencePersonaObject(), limitOneClusterPersona()))
+		e.cycle()
+		e.resolve(e.onlyOpen().Name)
+		stampCreationNow(t, e)
+		for _, ra := range e.actions() {
+			ra.Status.Phase = RemediationPhaseCompleted
+			require.NoError(t, e.c.Status().Update(context.Background(), &ra))
+		}
+
+		e.cycle()
+
+		assert.Len(t, e.actions(), 1, "the hourly limit of 1 is spent")
+		cond := refused(e.onlyOpen())
+		require.NotNil(t, cond, "this one IS a refusal")
+		assert.Equal(t, "Guardrails_RateLimit", cond.Reason)
+	})
+}
