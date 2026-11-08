@@ -44,7 +44,6 @@ import (
 	"github.com/dorgu-ai/dorgu-operator/internal/events"
 	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation"
-	dorguws "github.com/dorgu-ai/dorgu-operator/internal/websocket"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -169,14 +168,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Create WebSocket server upfront (before health check) so it can be injected
-	// into the health check and remediation controllers, which broadcast lifecycle events.
-	var wsServer *dorguws.Server
-	if cfg.enableWebSocket {
-		setupLog.Info("Starting WebSocket server", "addr", cfg.webSocketAddr)
-		wsServer = dorguws.NewServer(mgr.GetClient(), cfg.webSocketAddr)
-	}
-
 	if err := (&controller.ApplicationPersonaReconciler{
 		Client:        mgr.GetClient(),
 		Scheme:        mgr.GetScheme(),
@@ -222,16 +213,6 @@ func main() {
 	// panics with "close of closed channel".
 	signalCtx := ctrl.SetupSignalHandler()
 
-	// Start the WebSocket server (already constructed above so it can be
-	// injected into the controllers before Setup).
-	if wsServer != nil {
-		go func() {
-			if err := wsServer.Start(signalCtx); err != nil {
-				setupLog.Error(err, "WebSocket server error")
-			}
-		}()
-	}
-
 	// Auto-create ClusterPersona on startup if none exists (ArgoCD-style bootstrap).
 	if cfg.autoCreateClusterPersona {
 		bootstrap := &controller.ClusterPersonaBootstrap{
@@ -258,9 +239,16 @@ func main() {
 			os.Exit(1)
 		}
 
-		// 1. Create detection collectors.
+		// 1. Assemble the deny-list, diagnosis providers, AI planner and proposer.
+		// buildHealthPipeline is the one place they are wired together, and it is
+		// built first because detection reads the same deny-list the gate does.
+		pipeline := buildHealthPipeline(mgr.GetClient(), cfg, operatorNS, setupLog)
+		diagnosisEngine := pipeline.DiagnosisEngine
+
+		// 2. Create detection collectors. The pod collector skips the namespaces the
+		// gate would refuse (F-13), so platform namespaces raise no incidents.
 		nodeCollector := detection.NewNodeCollector(mgr.GetClient(), setupLog)
-		podCollector := detection.NewPodCollector(mgr.GetClient(), setupLog)
+		podCollector := newPodCollector(mgr.GetClient(), pipeline.Gate, setupLog)
 		resourceCollector := detection.NewResourceCollector(mgr.GetClient(), setupLog)
 		controlPlaneCollector := detection.NewControlPlaneCollector(
 			mgr.GetClient(), clientset.CoreV1().RESTClient(), setupLog,
@@ -282,46 +270,31 @@ func main() {
 			}
 		}
 
-		// 2. Create detection engine.
+		// 3. Create detection engine.
 		detectionEngine := detection.NewEngine(setupLog, collectors...)
 		detectionEngine.SetPersonaCorrelator(
 			detection.NewPersonaCorrelator(mgr.GetClient(), setupLog.WithName("persona-correlator")),
 		)
 
-		// 3. Assemble the deny-list, diagnosis providers, AI planner and proposer.
-		// buildHealthPipeline is the one place they are wired together.
-		pipeline := buildHealthPipeline(mgr.GetClient(), cfg, operatorNS, setupLog)
-		diagnosisEngine := pipeline.DiagnosisEngine
-
-		// 4. Create event pipeline components.
-		classifier := events.NewClassifier()
-		correlator := events.NewCorrelator(mgr.GetClient())
-		eventStore := events.NewEventStore(mgr.GetClient(), setupLog,
-			events.WithTTL(cfg.dorguEventRetention))
+		// 4. Event pipeline: off unless --enable-event-pipeline (nothing reads its
+		// output yet). The Kubernetes Event emitter is separate and always on.
+		//
 		// GetEventRecorderFor is deprecated in favour of GetEventRecorder, but the
 		// two return different types: the new events API hands back an
 		// events.EventRecorder whose Eventf takes regarding and related objects,
 		// where events.NewEmitter and the whole emitter path take a
 		// record.EventRecorder. Switching is a real migration of the event
-		// pipeline, not a rename, and that pipeline was only just made to emit
-		// anything at all. Left for its own change.
+		// pipeline, not a rename. Left for its own change.
 		//nolint:staticcheck // SA1019: migrating to the new events API is a separate change
-		emitter := events.NewEmitter(mgr.GetEventRecorderFor(events.OperatorEventSource), setupLog)
-
-		// 5. Start event watcher.
-		eventWatcher := events.NewWatcher(clientset, classifier, correlator, eventStore, emitter, setupLog)
-		if err := mgr.Add(eventWatcher); err != nil {
-			setupLog.Error(err, "unable to start event watcher")
+		recorder := mgr.GetEventRecorderFor(events.OperatorEventSource)
+		eventPipe := buildEventPipeline(cfg, mgr.GetClient(), clientset, recorder, setupLog)
+		if err := eventPipe.register(mgr); err != nil {
+			setupLog.Error(err, "unable to start the event pipeline")
 			os.Exit(1)
 		}
-
-		// 6. Start DorguEvent cleanup, bounded by both age and count.
-		cleaner := events.NewCleaner(mgr.GetClient(), setupLog,
-			events.WithRetention(cfg.dorguEventRetention),
-			events.WithMaxRecords(cfg.dorguEventMaxRecords))
-		if err := mgr.Add(cleaner); err != nil {
-			setupLog.Error(err, "unable to start event cleaner")
-			os.Exit(1)
+		if cfg.enableEventPipeline {
+			setupLog.Info("event pipeline enabled",
+				"retention", cfg.dorguEventRetention, "maxRecords", cfg.dorguEventMaxRecords)
 		}
 
 		// 7. Start health check reconciler.
@@ -329,12 +302,11 @@ func main() {
 			Client:            mgr.GetClient(),
 			Detection:         detectionEngine,
 			Diagnosis:         diagnosisEngine,
-			EventStore:        eventStore,
-			EventEmitter:      emitter,
+			EventStore:        eventPipe.Store,
+			EventEmitter:      eventPipe.Emitter,
 			Proposer:          pipeline.Proposer,
 			Logger:            setupLog.WithName("health-check"),
 			ReconcileInterval: cfg.healthCheckInterval,
-			WebSocket:         wsServer,
 		}
 		if err := mgr.Add(healthReconciler); err != nil {
 			setupLog.Error(err, "unable to start health check reconciler")
@@ -356,12 +328,11 @@ func main() {
 		rollbackHandler := remediation.NewRollback(mgr.GetClient(), setupLog)
 
 		if err := (&controller.RemediationController{
-			Client:    mgr.GetClient(),
-			Executor:  executor,
-			Verifier:  verifier,
-			Rollback:  rollbackHandler,
-			Logger:    setupLog.WithName("remediation-controller"),
-			WebSocket: wsServer,
+			Client:   mgr.GetClient(),
+			Executor: executor,
+			Verifier: verifier,
+			Rollback: rollbackHandler,
+			Logger:   setupLog.WithName("remediation-controller"),
 
 			PendingTTL: cfg.remediationPendingTTL,
 		}).SetupWithManager(mgr); err != nil {

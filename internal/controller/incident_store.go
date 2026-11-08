@@ -32,7 +32,6 @@ import (
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
 	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
 	"github.com/dorgu-ai/dorgu-operator/internal/metrics"
-	"github.com/dorgu-ai/dorgu-operator/internal/websocket"
 )
 
 // findMatchingIncident searches for an active IncidentMemory matching a
@@ -145,26 +144,6 @@ func (r *HealthCheckReconciler) updateExistingIncident(
 		"occurrenceCount", im.Status.OccurrenceCount,
 	)
 
-	// Broadcast incident update to the notifier.
-	if n := r.notifier(); n != nil {
-		summary := ""
-		if im.Spec.RootCause != nil {
-			summary = im.Spec.RootCause.Summary
-		}
-		n.BroadcastIncident(websocket.IncidentEvent{
-			EventType:   "updated",
-			Name:        im.Name,
-			Namespace:   im.Namespace,
-			Severity:    im.Spec.Severity,
-			Category:    im.Spec.Category,
-			Signal:      im.Spec.Detection.Signal,
-			Phase:       im.Status.Phase,
-			PersonaName: im.Spec.PersonaRef.Name,
-			PersonaKind: im.Spec.PersonaRef.Kind,
-			Summary:     summary,
-		})
-	}
-
 	return nil
 }
 
@@ -267,26 +246,6 @@ func (r *HealthCheckReconciler) createIncident(
 		"signal", primarySignal,
 		"attribution", subject.attribution(),
 	)
-
-	// Broadcast incident creation to the notifier.
-	if n := r.notifier(); n != nil {
-		summary := ""
-		if diag.Summary != "" {
-			summary = diag.Summary
-		}
-		n.BroadcastIncident(websocket.IncidentEvent{
-			EventType:   "created",
-			Name:        im.Name,
-			Namespace:   im.Namespace,
-			Severity:    string(diag.Severity),
-			Category:    diag.Category,
-			Signal:      string(primarySignal),
-			Phase:       PhaseDetected,
-			PersonaName: subject.personaRef.Name,
-			PersonaKind: subject.personaRef.Kind,
-			Summary:     summary,
-		})
-	}
 
 	// Store contributing signals as DorguEvents.
 	r.storeSignalEvents(ctx, diag, im)

@@ -25,6 +25,8 @@ import (
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
+
+	"github.com/dorgu-ai/dorgu-operator/internal/k8srace"
 )
 
 const (
@@ -148,6 +150,13 @@ func (w *Watcher) processEvent(ctx context.Context, event *corev1.Event) {
 
 	// Step 3: Store.
 	if err := w.store.Store(ctx, internal); err != nil {
+		// A namespace deleted mid-cycle, or a record another writer got to first,
+		// is an expected race and not worth an ERROR line.
+		if k8srace.IsRace(err) {
+			w.logger.V(1).Info("event not stored: a benign race with a deletion or another writer",
+				"event", event.Name, "reason", event.Reason, "cause", err.Error())
+			return
+		}
 		w.logger.Error(err, "failed to store event",
 			"event", event.Name,
 			"reason", event.Reason,

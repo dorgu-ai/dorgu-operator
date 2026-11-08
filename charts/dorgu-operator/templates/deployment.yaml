@@ -56,10 +56,6 @@ spec:
             {{- if and .Values.prometheus.enabled .Values.prometheus.url }}
             - --prometheus-url={{ .Values.prometheus.url }}
             {{- end }}
-            {{- if .Values.websocket.enabled }}
-            - --enable-websocket=true
-            - --websocket-addr=:{{ .Values.websocket.port }}
-            {{- end }}
             {{- /* Rendered unconditionally so healthCheck.enabled=false is explicit in
                    the pod spec rather than relying on the binary's own default. */}}
             - --enable-health-check={{ .Values.healthCheck.enabled }}
@@ -69,10 +65,14 @@ spec:
             {{- if not .Values.metricsServer.enabled }}
             - --enable-metrics-server=false
             {{- end }}
-            {{- /* Rendered unconditionally so the pod spec states what bounds the
-                   DorguEvent count, including maxRecords: 0 meaning "no cap". */}}
+            {{- /* Rendered unconditionally so the pod spec states whether the event
+                   pipeline runs. The bounds on DorguEvent records only mean
+                   something when it does; maxRecords: 0 means "no cap". */}}
+            - --enable-event-pipeline={{ .Values.eventPipeline.enabled }}
+            {{- if .Values.eventPipeline.enabled }}
             - --dorgu-event-retention={{ .Values.dorguEvents.retention }}
             - --dorgu-event-max-records={{ .Values.dorguEvents.maxRecords }}
+            {{- end }}
             {{- if .Values.llm.provider }}
             - --llm-provider={{ .Values.llm.provider }}
             {{- end }}
@@ -128,11 +128,6 @@ spec:
             {{- if .Values.metrics.enabled }}
             - name: metrics
               containerPort: {{ regexFind "[0-9]+$" .Values.metrics.bindAddress | int }}
-              protocol: TCP
-            {{- end }}
-            {{- if .Values.websocket.enabled }}
-            - name: websocket
-              containerPort: {{ .Values.websocket.port }}
               protocol: TCP
             {{- end }}
           livenessProbe:

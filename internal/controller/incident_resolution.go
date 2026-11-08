@@ -24,7 +24,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
-	"github.com/dorgu-ai/dorgu-operator/internal/websocket"
 )
 
 // resolveCleared closes the incidents whose applications can be shown to have
@@ -86,7 +85,7 @@ func (r *HealthCheckReconciler) resolveCleared(ctx context.Context, activeSignal
 		}
 
 		if err := r.markResolved(ctx, im, evidence); err != nil {
-			r.Logger.Error(err, "failed to resolve incident", "name", im.Name)
+			logFailure(r.Logger, err, "failed to resolve incident", "name", im.Name)
 			continue
 		}
 
@@ -98,20 +97,6 @@ func (r *HealthCheckReconciler) resolveCleared(ctx context.Context, activeSignal
 			"evidence", evidence.Reason,
 		)
 
-		// Broadcast incident resolution to the notifier.
-		if n := r.notifier(); n != nil {
-			n.BroadcastIncident(websocket.IncidentEvent{
-				EventType:   "resolved",
-				Name:        im.Name,
-				Namespace:   im.Namespace,
-				Severity:    im.Spec.Severity,
-				Category:    im.Spec.Category,
-				Signal:      im.Spec.Detection.Signal,
-				Phase:       PhaseResolved,
-				PersonaName: im.Spec.PersonaRef.Name,
-				PersonaKind: im.Spec.PersonaRef.Kind,
-			})
-		}
 	}
 
 	return nil

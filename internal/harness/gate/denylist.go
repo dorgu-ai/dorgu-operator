@@ -73,16 +73,7 @@ func (g *Gate) NamespaceDenied(ctx context.Context, namespace string) *Violation
 		}
 	}
 
-	// Always deny kube-system, the operator's own namespace and any namespace the
-	// installer protected.
-	if slices.Contains(g.protected, namespace) {
-		return &Violation{
-			Rule:    RuleDenyList,
-			Message: fmt.Sprintf("namespace %s is in the protected deny list", namespace),
-		}
-	}
-
-	excluded, err := g.excludedNamespaces(ctx)
+	denied, why, err := g.listed(ctx, namespace)
 	if err != nil {
 		// Logged loudly: while this persists (lost RBAC, missing CRD) every AI call
 		// and proposal is refused, and that must not be silent.
@@ -95,14 +86,61 @@ func (g *Gate) NamespaceDenied(ctx context.Context, namespace string) *Violation
 			Message: fmt.Sprintf("namespace %s: deny-list could not be read, treating namespace as protected", namespace),
 		}
 	}
-
-	if slices.Contains(excluded, namespace) {
-		return &Violation{
-			Rule:    RuleDenyList,
-			Message: fmt.Sprintf("namespace %s is excluded by ClusterPersona policy", namespace),
-		}
+	if denied {
+		return &Violation{Rule: RuleDenyList, Message: why}
 	}
 	return nil
+}
+
+// NamespaceExcluded asks the same deny list a different question: should
+// detection leave this namespace alone? It is the list alone (kube-system, the
+// operator's namespace, installer-protected namespaces and every ClusterPersona
+// excludeNamespaces entry, all normalized the same way), read from the one place
+// NamespaceDenied reads it.
+//
+// It differs from NamespaceDenied in two deliberate ways. An empty namespace is
+// not excluded: cluster-scoped signals have none, and detection is not the place
+// to refuse them. And an operator that does not know its own namespace does not
+// blind detection: the gate still refuses every action in that state, so seeing
+// an incident costs nothing, while hiding one costs the user the report.
+//
+// An unreadable policy is an error, not a verdict. Detection that cannot tell
+// what it may skip must say so rather than guess either way; a collector that
+// fails is what the verifier and the resolver already treat as "do not conclude".
+func (g *Gate) NamespaceExcluded(ctx context.Context, namespace string) (bool, error) {
+	if g == nil {
+		return false, fmt.Errorf("no deny list is configured, so the namespace cannot be cleared")
+	}
+	namespace = NormalizeNamespace(namespace)
+	if namespace == "" {
+		return false, nil
+	}
+	denied, _, err := g.listed(ctx, namespace)
+	if err != nil {
+		g.logUnreadable("excludeNamespaces", err, "cannot read ClusterPersona excludeNamespaces; detection cannot tell which namespaces to skip",
+			"namespace", namespace)
+		return false, err
+	}
+	return denied, nil
+}
+
+// listed reports whether a normalized, non-empty namespace is on the deny list,
+// and why. It is the one reading of the list: the protected set first, then the
+// ClusterPersona policy.
+func (g *Gate) listed(ctx context.Context, namespace string) (denied bool, why string, err error) {
+	// Always deny kube-system, the operator's own namespace and any namespace the
+	// installer protected.
+	if slices.Contains(g.protected, namespace) {
+		return true, fmt.Sprintf("namespace %s is in the protected deny list", namespace), nil
+	}
+	excluded, err := g.excludedNamespaces(ctx)
+	if err != nil {
+		return false, "", err
+	}
+	if slices.Contains(excluded, namespace) {
+		return true, fmt.Sprintf("namespace %s is excluded by ClusterPersona policy", namespace), nil
+	}
+	return false, "", nil
 }
 
 // excludedNamespaces reads excluded namespaces from all ClusterPersonas.

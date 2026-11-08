@@ -257,11 +257,26 @@ func diagnoseOOM(signals []detection.Signal) *Diagnosis {
 	related := signalsForResource(signals, primary.Resource)
 	memUsage := signalsOfType(related, detection.SignalMemoryUsageHigh)
 
+	// A pod that was OOM-killed usually goes on to crash-loop. That is the same
+	// event seen twice, not a second finding, so the OOM diagnosis owns the
+	// crash-loop signals of every pod it explains (F-9): one OOM, one incident.
+	crashLoops := crashLoopsExplainedByOOM(signals)
+
 	var contributing []ContributingSignal
 	var summary string
 	var base float64
 
-	if len(memUsage) > 0 {
+	switch {
+	case len(crashLoops) > 0:
+		summary = "CrashLoopBackOff caused by OOM kills. Increase memory limits."
+		base = 0.90
+		contributing = buildContributing(oomSignals, "Container was OOM-killed")
+		if len(memUsage) > 0 {
+			contributing = append(contributing, buildContributing(memUsage, "Memory usage was near limit")...)
+		}
+		contributing = append(contributing,
+			buildContributing(crashLoops, "Container is crash-looping because it keeps being OOM-killed")...)
+	case len(memUsage) > 0:
 		val := ""
 		if memUsage[0].Value != nil {
 			val = fmt.Sprintf(" Memory usage was at %.0f%% of limit.", *memUsage[0].Value)
@@ -272,13 +287,13 @@ func diagnoseOOM(signals []detection.Signal) *Diagnosis {
 			buildContributing(oomSignals, "Container was OOM-killed"),
 			buildContributing(memUsage, "Memory usage was near limit")...,
 		)
-	} else {
+	default:
 		summary = "Container OOM-killed. Memory limit may be insufficient."
 		base = 0.70
 		contributing = buildContributing(oomSignals, "Container was OOM-killed")
 	}
 
-	allRelated := concatSignals(oomSignals, memUsage)
+	allRelated := concatSignals(oomSignals, memUsage, crashLoops)
 
 	return &Diagnosis{
 		Summary:           summary,
@@ -292,6 +307,18 @@ func diagnoseOOM(signals []detection.Signal) *Diagnosis {
 	}
 }
 
+// crashLoopsExplainedByOOM returns the CrashLoopBackOff signals whose pod also
+// has an OOMKilled signal: the crash loop is the OOM, and the OOM rule reports it.
+func crashLoopsExplainedByOOM(signals []detection.Signal) []detection.Signal {
+	var explained []detection.Signal
+	for _, crash := range signalsOfType(signals, detection.SignalCrashLoopBackOff) {
+		if hasSignalType(signalsForResource(signals, crash.Resource), detection.SignalOOMKilled) {
+			explained = append(explained, crash)
+		}
+	}
+	return explained
+}
+
 // ============================================================================
 // Rule 2: CrashLoop Root Cause
 // ============================================================================
@@ -301,7 +328,10 @@ func matchCrashLoop(signals []detection.Signal) bool {
 }
 
 func diagnoseCrashLoop(signals []detection.Signal) *Diagnosis {
-	crashSignals := signalsOfType(signals, detection.SignalCrashLoopBackOff)
+	// A crash loop the pod's own OOM kills explain belongs to the OOM rule: one
+	// OOM is one finding (F-9). What is left here is a crash loop with some other
+	// cause.
+	crashSignals := unexplainedByOOM(signalsOfType(signals, detection.SignalCrashLoopBackOff), signals)
 	if len(crashSignals) == 0 {
 		return nil
 	}
@@ -313,19 +343,10 @@ func diagnoseCrashLoop(signals []detection.Signal) *Diagnosis {
 	var summary, action string
 	var base float64
 
-	oomRelated := signalsOfType(related, detection.SignalOOMKilled)
 	imgRelated := signalsOfType(related, detection.SignalImagePullBackOff)
 	probeRelated := signalsOfType(related, detection.SignalProbeFailure)
 
 	switch {
-	case len(oomRelated) > 0:
-		summary = "CrashLoopBackOff caused by OOM kills. Increase memory limits."
-		action = actionResourceAdjustment
-		base = 0.90
-		contributing = append(
-			buildContributing(crashSignals, "Container is crash-looping"),
-			buildContributing(oomRelated, "Container was OOM-killed during crash loop")...,
-		)
 	case len(imgRelated) > 0:
 		summary = "CrashLoopBackOff caused by image pull failures."
 		action = actionDeploymentFix
@@ -349,7 +370,7 @@ func diagnoseCrashLoop(signals []detection.Signal) *Diagnosis {
 		contributing = buildContributing(crashSignals, "Container is crash-looping with no correlated signals")
 	}
 
-	allSignals := concatSignals(crashSignals, oomRelated, imgRelated, probeRelated)
+	allSignals := concatSignals(crashSignals, imgRelated, probeRelated)
 
 	return &Diagnosis{
 		Summary:           summary,
@@ -361,6 +382,25 @@ func diagnoseCrashLoop(signals []detection.Signal) *Diagnosis {
 		Contributing:      contributing,
 		SuggestedAction:   action,
 	}
+}
+
+// unexplainedByOOM drops the crash-loop signals the OOM rule already reports.
+func unexplainedByOOM(crashLoops, all []detection.Signal) []detection.Signal {
+	explained := crashLoopsExplainedByOOM(all)
+	var rest []detection.Signal
+	for i := range crashLoops {
+		isExplained := false
+		for j := range explained {
+			if crashLoops[i].Resource == explained[j].Resource {
+				isExplained = true
+				break
+			}
+		}
+		if !isExplained {
+			rest = append(rest, crashLoops[i])
+		}
+	}
+	return rest
 }
 
 // ============================================================================

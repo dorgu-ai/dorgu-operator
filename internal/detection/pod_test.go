@@ -488,3 +488,81 @@ func makePod(ns, name string, phase corev1.PodPhase, containerStatuses []corev1.
 		},
 	}
 }
+
+// stubFilter is a NamespaceFilter that excludes a fixed set and counts its calls.
+type stubFilter struct {
+	excluded map[string]bool
+	err      error
+	calls    int
+}
+
+func (f *stubFilter) NamespaceExcluded(_ context.Context, ns string) (bool, error) {
+	f.calls++
+	return f.excluded[ns], f.err
+}
+
+func oomedPod(ns, name string) corev1.Pod {
+	return makePod(ns, name, corev1.PodRunning, []corev1.ContainerStatus{{
+		Name: "main",
+		State: corev1.ContainerState{
+			Terminated: &corev1.ContainerStateTerminated{Reason: "OOMKilled"},
+		},
+	}})
+}
+
+func podCollectorWith(t *testing.T, pods []corev1.Pod, opts ...PodCollectorOption) *PodCollector {
+	t.Helper()
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	builder := fake.NewClientBuilder().WithScheme(scheme)
+	for i := range pods {
+		builder = builder.WithObjects(&pods[i])
+	}
+	return NewPodCollector(builder.Build(), zap.New(zap.UseDevMode(true)), opts...)
+}
+
+// With no filter, the collector keeps its old behaviour: kube-system only.
+func TestPodCollector_DefaultFilterIsKubeSystemOnly(t *testing.T) {
+	c := podCollectorWith(t, []corev1.Pod{oomedPod("kube-system", "a"), oomedPod("cert-manager", "b")})
+
+	signals, err := c.Collect(context.Background())
+	require.NoError(t, err)
+	require.Len(t, signals, 1)
+	assert.Equal(t, "cert-manager", signals[0].Resource.Namespace)
+}
+
+func TestPodCollector_NamespaceFilterSkipsExcluded(t *testing.T) {
+	filter := &stubFilter{excluded: map[string]bool{"cert-manager": true, "argocd": true}}
+	c := podCollectorWith(t, []corev1.Pod{
+		oomedPod("cert-manager", "a"), oomedPod("cert-manager", "a2"),
+		oomedPod("argocd", "b"), oomedPod("shop", "c"), oomedPod("shop", "c2"),
+	}, WithNamespaceFilter(filter))
+
+	signals, err := c.Collect(context.Background())
+	require.NoError(t, err)
+	require.Len(t, signals, 2)
+	for _, s := range signals {
+		assert.Equal(t, "shop", s.Resource.Namespace)
+	}
+	assert.Equal(t, 3, filter.calls, "each namespace is asked about once per cycle, not once per pod")
+}
+
+// A filter that cannot answer fails the collector. Guessing "not excluded" would
+// raise noise; guessing "excluded" would hide a real incident. The engine treats
+// a failed collector as "do not conclude anything from silence".
+func TestPodCollector_NamespaceFilterErrorFailsTheCollector(t *testing.T) {
+	filter := &stubFilter{err: assert.AnError}
+	c := podCollectorWith(t, []corev1.Pod{oomedPod("shop", "a")}, WithNamespaceFilter(filter))
+
+	signals, err := c.Collect(context.Background())
+	require.ErrorIs(t, err, assert.AnError)
+	assert.Empty(t, signals)
+}
+
+func TestPodCollector_NilFilterOptionKeepsDefault(t *testing.T) {
+	c := podCollectorWith(t, []corev1.Pod{oomedPod("kube-system", "a")}, WithNamespaceFilter(nil))
+
+	signals, err := c.Collect(context.Background())
+	require.NoError(t, err)
+	assert.Empty(t, signals)
+}

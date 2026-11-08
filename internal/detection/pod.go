@@ -42,20 +42,50 @@ type PodCollector struct {
 	logger           logr.Logger
 	pendingTimeout   time.Duration
 	restartThreshold int32
-	excludeNS        map[string]bool
+	namespaces       NamespaceFilter
+}
+
+// NamespaceFilter says which namespaces detection leaves alone. The operator
+// passes the gate, so detection and the gate read one deny list: what the gate
+// would refuse to act on, detection does not raise an incident about.
+type NamespaceFilter interface {
+	// NamespaceExcluded reports whether to skip the namespace. An error means the
+	// answer is unknown, and the collector fails rather than guess.
+	NamespaceExcluded(ctx context.Context, namespace string) (bool, error)
+}
+
+// kubeSystemOnly is the filter a collector has when it is given none.
+type kubeSystemOnly struct{}
+
+func (kubeSystemOnly) NamespaceExcluded(_ context.Context, namespace string) (bool, error) {
+	return namespace == "kube-system", nil
+}
+
+// PodCollectorOption configures a PodCollector.
+type PodCollectorOption func(*PodCollector)
+
+// WithNamespaceFilter replaces the default (kube-system only) filter.
+func WithNamespaceFilter(f NamespaceFilter) PodCollectorOption {
+	return func(p *PodCollector) {
+		if f != nil {
+			p.namespaces = f
+		}
+	}
 }
 
 // NewPodCollector creates a collector that detects pod failures.
-func NewPodCollector(c client.Reader, logger logr.Logger) *PodCollector {
-	return &PodCollector{
+func NewPodCollector(c client.Reader, logger logr.Logger, opts ...PodCollectorOption) *PodCollector {
+	p := &PodCollector{
 		client:           c,
 		logger:           logger.WithName(podCollectorName),
 		pendingTimeout:   defaultPendingTimeout,
 		restartThreshold: defaultRestartThreshold,
-		excludeNS: map[string]bool{
-			"kube-system": true,
-		},
+		namespaces:       kubeSystemOnly{},
 	}
+	for _, opt := range opts {
+		opt(p)
+	}
+	return p
 }
 
 func (p *PodCollector) Name() string { return podCollectorName }
@@ -69,8 +99,18 @@ func (p *PodCollector) Collect(ctx context.Context) ([]Signal, error) {
 	now := time.Now()
 	var signals []Signal
 
+	// Each namespace is asked about once per cycle.
+	skip := make(map[string]bool)
 	for _, pod := range podList.Items {
-		if p.excludeNS[pod.Namespace] {
+		excluded, known := skip[pod.Namespace]
+		if !known {
+			var err error
+			if excluded, err = p.namespaces.NamespaceExcluded(ctx, pod.Namespace); err != nil {
+				return nil, fmt.Errorf("deciding whether to skip namespace %q: %w", pod.Namespace, err)
+			}
+			skip[pod.Namespace] = excluded
+		}
+		if excluded {
 			continue
 		}
 

@@ -86,6 +86,11 @@ type ClusterPersonaReconciler struct {
 
 // Reconcile discovers cluster state and updates ClusterPersona status.
 func (r *ClusterPersonaReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	res, err := r.reconcile(ctx, req)
+	return quietRaces(logf.FromContext(ctx), res, err)
+}
+
+func (r *ClusterPersonaReconciler) reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
 	// 1. Fetch the ClusterPersona

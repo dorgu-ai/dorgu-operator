@@ -19,6 +19,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -57,10 +58,6 @@ type operatorConfig struct {
 	// Prometheus integration
 	prometheusURL string
 
-	// WebSocket server
-	enableWebSocket bool
-	webSocketAddr   string
-
 	// Health check reconciler
 	enableHealthCheck   bool
 	healthCheckInterval time.Duration
@@ -88,7 +85,11 @@ type operatorConfig struct {
 	// AI remediation planning (independent of AI diagnosis).
 	enableAIRemediation bool // default: on when an LLM provider+key is configured
 
-	// DorguEvent record retention
+	// Event pipeline: watches Kubernetes Events and writes DorguEvent records.
+	// Off by default; nothing reads what it produces yet.
+	enableEventPipeline bool
+
+	// DorguEvent record retention (only used when the event pipeline is on)
 	dorguEventRetention  time.Duration
 	dorguEventMaxRecords int
 
@@ -100,87 +101,104 @@ type operatorConfig struct {
 	zapOpts zap.Options
 }
 
-// parseFlags parses command-line flags and returns the operator configuration.
+// parseFlags parses the process's command-line flags. A bad flag exits, as the
+// standard flag package does.
 func parseFlags() operatorConfig {
+	cfg, err := parseFlagSet(flag.CommandLine, os.Args[1:])
+	if err != nil {
+		// flag.CommandLine is ExitOnError, so this is only reached by a caller that
+		// changed that; fail the same way.
+		fmt.Fprintln(os.Stderr, "invalid flags:", err)
+		os.Exit(2)
+	}
+	return cfg
+}
+
+// parseFlagSet binds every operator flag on fs and parses args. It exists so a
+// test can parse a fresh FlagSet; the process uses parseFlags.
+func parseFlagSet(fs *flag.FlagSet, args []string) (operatorConfig, error) {
 	cfg := operatorConfig{}
 
-	flag.StringVar(&cfg.metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
+	fs.StringVar(&cfg.metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
-	flag.StringVar(&cfg.probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
-	flag.BoolVar(&cfg.enableLeaderElection, "leader-elect", false,
+	fs.StringVar(&cfg.probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
+	fs.BoolVar(&cfg.enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
-	flag.BoolVar(&cfg.secureMetrics, "metrics-secure", true,
+	fs.BoolVar(&cfg.secureMetrics, "metrics-secure", true,
 		"If set, the metrics endpoint is served securely via HTTPS. Use --metrics-secure=false to use HTTP instead.")
-	flag.StringVar(&cfg.metricsCertPath, "metrics-cert-path", "",
+	fs.StringVar(&cfg.metricsCertPath, "metrics-cert-path", "",
 		"The directory that contains the metrics server certificate.")
-	flag.StringVar(&cfg.metricsCertName, "metrics-cert-name", "tls.crt",
+	fs.StringVar(&cfg.metricsCertName, "metrics-cert-name", "tls.crt",
 		"The name of the metrics server certificate file.")
-	flag.StringVar(&cfg.metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
-	flag.BoolVar(&cfg.enableHTTP2, "enable-http2", false,
+	fs.StringVar(&cfg.metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
+	fs.BoolVar(&cfg.enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics server")
-	flag.BoolVar(&cfg.enableArgoCD, "enable-argocd", true,
+	fs.BoolVar(&cfg.enableArgoCD, "enable-argocd", true,
 		"Enable ArgoCD Application watching for sync status integration.")
-	flag.StringVar(&cfg.prometheusURL, "prometheus-url", "",
+	fs.StringVar(&cfg.prometheusURL, "prometheus-url", "",
 		"Prometheus server URL for metrics baseline learning (e.g., http://prometheus:9090).")
-	flag.BoolVar(&cfg.enableWebSocket, "enable-websocket", false,
-		"Enable WebSocket server for CLI real-time communication.")
-	flag.StringVar(&cfg.webSocketAddr, "websocket-addr", ":9090",
-		"Address for the WebSocket server to listen on.")
-	flag.BoolVar(&cfg.enableHealthCheck, "enable-health-check", true,
+	fs.BoolVar(&cfg.enableHealthCheck, "enable-health-check", true,
 		"Run detection, diagnosis and remediation proposals. When false, Dorgu records persona health only "+
 			"and never opens an incident or proposes a fix.")
-	flag.DurationVar(&cfg.healthCheckInterval, "health-check-interval", 60*time.Second,
+	fs.DurationVar(&cfg.healthCheckInterval, "health-check-interval", 60*time.Second,
 		"Health check reconciler interval.")
-	flag.BoolVar(&cfg.enableMetricsServer, "enable-metrics-server", true,
+	fs.BoolVar(&cfg.enableMetricsServer, "enable-metrics-server", true,
 		"Enable metrics-server integration for detection.")
+
+	fs.BoolVar(&cfg.enableEventPipeline, "enable-event-pipeline", false,
+		"Run the event pipeline: watch Kubernetes Events, classify and correlate them, and write DorguEvent "+
+			"records (pruned by the retention flags below). Nothing in Dorgu reads those records yet, so it is off "+
+			"by default.")
 
 	// DorguEvent retention. Both bounds are enforced by the same cleaner: a
 	// record is removed once it is older than the retention, and the oldest are
 	// removed early if the count is over the cap. The cap is what holds on a
 	// large cluster, where the arrival rate alone outgrows any time window.
-	flag.DurationVar(&cfg.dorguEventRetention, "dorgu-event-retention", events.DefaultTTL,
+	fs.DurationVar(&cfg.dorguEventRetention, "dorgu-event-retention", events.DefaultTTL,
 		"How long a DorguEvent record is kept before the cleaner removes it.")
-	flag.IntVar(&cfg.dorguEventMaxRecords, "dorgu-event-max-records", events.DefaultMaxRecords,
+	fs.IntVar(&cfg.dorguEventMaxRecords, "dorgu-event-max-records", events.DefaultMaxRecords,
 		"Maximum DorguEvent records to keep regardless of age; the oldest are removed first. "+
 			"Set to 0 to drop the cap and rely on --dorgu-event-retention alone.")
 
-	flag.DurationVar(&cfg.remediationPendingTTL, "remediation-pending-ttl", DefaultRemediationPendingTTL,
+	fs.DurationVar(&cfg.remediationPendingTTL, "remediation-pending-ttl", DefaultRemediationPendingTTL,
 		"How long a RemediationAction may wait for approval, counted from its creation, before it becomes "+
 			"Expired. Expired is terminal, applies nothing and starts no cooldown. 0 disables the TTL; "+
 			"a spec.approval.deadline set by the proposal is still honoured, and can only shorten the window.")
 
 	// LLM flags
-	flag.StringVar(&cfg.llmProvider, "llm-provider", "",
+	fs.StringVar(&cfg.llmProvider, "llm-provider", "",
 		"LLM provider for AI-enhanced diagnosis: 'claude' or 'gemini' (default: disabled).")
-	flag.StringVar(&cfg.llmAPIKey, "llm-api-key", "",
+	fs.StringVar(&cfg.llmAPIKey, "llm-api-key", "",
 		"API key for the LLM provider (overrides ANTHROPIC_API_KEY / GEMINI_API_KEY env vars).")
-	flag.StringVar(&cfg.llmModel, "llm-model", "",
+	fs.StringVar(&cfg.llmModel, "llm-model", "",
 		"Override the default model for the LLM provider.")
-	flag.DurationVar(&cfg.llmCacheTTL, "llm-cache-ttl", llm.DefaultCacheTTL,
+	fs.DurationVar(&cfg.llmCacheTTL, "llm-cache-ttl", llm.DefaultCacheTTL,
 		"How long a diagnosis or plan from the model is reused while the group's signal fingerprint is "+
 			"unchanged. A change in the signals asks again at once; this only bounds how stale an unchanged "+
 			"answer may get. 0 disables the cache and asks the model every health-check cycle.")
-	flag.BoolVar(&cfg.enableAIRemediation, "enable-ai-remediation", true,
+	fs.BoolVar(&cfg.enableAIRemediation, "enable-ai-remediation", true,
 		"Enable AI-generated ordered remediation plans (requires --llm-provider=claude + key). "+
 			"When disabled, the proposer uses the deterministic rule-based path only.")
-	flag.BoolVar(&cfg.autoCreateClusterPersona, "auto-create-cluster-persona", true,
+	fs.BoolVar(&cfg.autoCreateClusterPersona, "auto-create-cluster-persona", true,
 		"Auto-create a default ClusterPersona named 'dorgu-cluster' if none exists on startup.")
-	flag.DurationVar(&cfg.clusterPersonaEnsureInterval, "cluster-persona-ensure-interval", 2*time.Minute,
+	fs.DurationVar(&cfg.clusterPersonaEnsureInterval, "cluster-persona-ensure-interval", 2*time.Minute,
 		"How often the operator re-ensures the auto-created ClusterPersona exists (clamped to a 30s minimum). "+
 			"Acts as a self-healing safety net so the persona converges even if the startup bootstrap missed.")
 
 	var excludedNamespaces string
-	flag.StringVar(&excludedNamespaces, "safety-excluded-namespaces", "",
+	fs.StringVar(&excludedNamespaces, "safety-excluded-namespaces", "",
 		"Comma-separated namespaces Dorgu never remediates, in addition to kube-system and the "+
 			"operator's own namespace (from POD_NAMESPACE).")
 
 	cfg.zapOpts = zap.Options{Development: true}
-	cfg.zapOpts.BindFlags(flag.CommandLine)
-	flag.Parse()
+	cfg.zapOpts.BindFlags(fs)
+	if err := fs.Parse(args); err != nil {
+		return operatorConfig{}, err
+	}
 
 	cfg.safetyExcludedNamespaces = splitNamespaces(excludedNamespaces)
-	return cfg
+	return cfg, nil
 }
 
 // validate rejects configuration the operator must not start with.

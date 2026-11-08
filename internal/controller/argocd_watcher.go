@@ -60,6 +60,11 @@ type ArgoCDWatcher struct {
 
 // Reconcile watches ArgoCD Applications and updates matching ApplicationPersonas.
 func (r *ArgoCDWatcher) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	res, err := r.reconcile(ctx, req)
+	return quietRaces(logf.FromContext(ctx), res, err)
+}
+
+func (r *ArgoCDWatcher) reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	if !r.Enabled {
 		return ctrl.Result{}, nil
 	}
@@ -103,7 +108,7 @@ func (r *ArgoCDWatcher) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	persona.Status.ArgoCD = argoStatus
 
 	if err := r.Status().Update(ctx, persona); err != nil {
-		log.Error(err, "Failed to update ApplicationPersona with ArgoCD status")
+		logFailure(log, err, "Failed to update ApplicationPersona with ArgoCD status")
 		return ctrl.Result{}, err
 	}
 

@@ -35,7 +35,6 @@ Below are operator-specific steps.
 2. **Where to change code:**
    - **CRD types:** `api/v1/` (e.g. `applicationpersona_types.go`, `clusterpersona_types.go`)
    - **Controllers:** `internal/controller/` (ApplicationPersona, ClusterPersona, ArgoCD watcher)
-   - **WebSocket server:** `internal/websocket/`
    - **Prometheus client:** `internal/metrics/`
    - **Helm chart:** `charts/dorgu-operator/`
 

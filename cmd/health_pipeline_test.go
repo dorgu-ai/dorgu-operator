@@ -23,6 +23,8 @@ import (
 
 	"github.com/go-logr/logr"
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -254,5 +256,48 @@ func TestResolveLLMAPIKey(t *testing.T) {
 				t.Errorf("resolveLLMAPIKey = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// F-13 wiring: the pod collector main builds skips the namespaces the pipeline's
+// gate refuses, every one of them. It fails if main builds the collector without
+// the gate, which would send platform-namespace incidents back to the user.
+func TestNewPodCollector_SharesTheGatesDenyList(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := dorguv1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := appsv1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	oomed := func(ns string) *corev1.Pod {
+		return &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: "p", Namespace: ns},
+			Status: corev1.PodStatus{ContainerStatuses: []corev1.ContainerStatus{{
+				Name:  "main",
+				State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{Reason: "OOMKilled"}},
+			}}},
+		}
+	}
+	cp := &dorguv1.ClusterPersona{
+		ObjectMeta: metav1.ObjectMeta{Name: "dorgu-cluster"},
+		Spec: dorguv1.ClusterPersonaSpec{Policies: &dorguv1.ClusterPolicies{
+			SelfHealing: &dorguv1.SelfHealingPolicy{ExcludeNamespaces: []string{"cert-manager"}},
+		}},
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(cp, oomed("cert-manager"), oomed(testOperatorNS), oomed("kube-system"), oomed("shop")).Build()
+	cfg := operatorConfig{safetyExcludedNamespaces: []string{"gateway"}}
+	p := buildHealthPipeline(c, cfg, testOperatorNS, logr.Discard())
+
+	signals, err := newPodCollector(c, p.Gate, logr.Discard()).Collect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(signals) != 1 || signals[0].Resource.Namespace != "shop" {
+		t.Fatalf("only the OOM in shop may be detected, got %d signals: %+v", len(signals), signals)
 	}
 }

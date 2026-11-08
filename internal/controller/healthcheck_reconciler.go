@@ -30,7 +30,6 @@ import (
 	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
 	"github.com/dorgu-ai/dorgu-operator/internal/events"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation"
-	"github.com/dorgu-ai/dorgu-operator/internal/websocket"
 )
 
 const (
@@ -114,11 +113,6 @@ type HealthCheckReconciler struct {
 	Proposer          remediation.RemediationProposer
 	Logger            logr.Logger
 	ReconcileInterval time.Duration
-	// WebSocket is the legacy event transport. Notifier, when set, takes
-	// precedence; see notifier().
-	WebSocket *websocket.Server
-	// Notifier receives incident, remediation and health lifecycle events.
-	Notifier Notifier
 }
 
 // Start begins the health check reconciliation loop. Blocks until ctx is cancelled.
@@ -197,11 +191,6 @@ func (r *HealthCheckReconciler) reconcile(ctx context.Context) {
 			r.Logger.Error(err, "failed to resolve cleared incidents")
 		}
 	}
-
-	// 5. Publish the aggregate health update to whoever is listening.
-	if n := r.notifier(); n != nil {
-		r.broadcastHealthSummary(ctx, n)
-	}
 }
 
 // processGroup diagnoses one application's signals in isolation and records the
@@ -241,6 +230,14 @@ func (r *HealthCheckReconciler) processGroup(
 		diag := &diagnoses[i]
 		attempted++
 		if err := r.processDiagnosis(ctx, subject, diag, activeSignalKeys); err != nil {
+			if isBenignGone(err) {
+				// The namespace or incident was deleted mid-cycle. There is nothing
+				// left to record against, so it is neither an error nor a lost
+				// diagnosis.
+				r.Logger.V(1).Info("diagnosis dropped: its namespace or incident is gone",
+					"summary", diag.Summary, "reason", err.Error())
+				continue
+			}
 			discarded++
 			r.Logger.Error(err, "failed to process diagnosis",
 				"summary", diag.Summary,

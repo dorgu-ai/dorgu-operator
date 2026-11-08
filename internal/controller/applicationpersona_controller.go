@@ -74,6 +74,11 @@ type ApplicationPersonaReconciler struct {
 // Reconcile validates Deployments against ApplicationPersona constraints
 // and updates the persona status accordingly.
 func (r *ApplicationPersonaReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	res, err := r.reconcile(ctx, req)
+	return quietRaces(logf.FromContext(ctx), res, err)
+}
+
+func (r *ApplicationPersonaReconciler) reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
 	// 1. Fetch the ApplicationPersona

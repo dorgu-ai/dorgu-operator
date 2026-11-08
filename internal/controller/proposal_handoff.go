@@ -23,7 +23,6 @@ import (
 	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
 	"github.com/dorgu-ai/dorgu-operator/internal/metrics"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation"
-	"github.com/dorgu-ai/dorgu-operator/internal/websocket"
 )
 
 // proposeRemediation hands a recorded incident to the remediation proposer, if
@@ -49,29 +48,9 @@ func (r *HealthCheckReconciler) proposeRemediation(
 		r.Logger.Error(proposeErr, "failed to propose remediation", "incident", incident.Name)
 	case result.Proposed:
 		r.Logger.Info("remediation proposed", "action", result.Action.Name, "incident", incident.Name)
-		r.notifyRemediationCreated(result.Action)
 	case result.SkipReason != "":
 		r.Logger.V(1).Info("remediation skipped", "reason", result.SkipReason, "incident", incident.Name)
 	}
-}
-
-// notifyRemediationCreated publishes the new RemediationAction, if anyone is
-// listening.
-func (r *HealthCheckReconciler) notifyRemediationCreated(action *dorguv1.RemediationAction) {
-	n := r.notifier()
-	if n == nil || action == nil {
-		return
-	}
-	n.BroadcastRemediation(websocket.RemediationEvent{
-		EventType:   "created",
-		Name:        action.Name,
-		Namespace:   action.Namespace,
-		ActionType:  action.Spec.Action.Type,
-		Phase:       action.Status.Phase,
-		Confidence:  action.Spec.Confidence,
-		PersonaName: action.Spec.PersonaRef.Name,
-		PersonaKind: action.Spec.PersonaRef.Kind,
-	})
 }
 
 // proposalOutcome classifies a Propose call for dorgu_proposals_total.
