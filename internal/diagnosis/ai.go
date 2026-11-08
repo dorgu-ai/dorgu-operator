@@ -55,6 +55,11 @@ func NewAIProvider(client llm.Client, gate NamespaceGate, logger logr.Logger) *A
 	}
 }
 
+// Gate returns the deny-list this provider asks before every model call. It is
+// exposed so wiring tests can assert the provider is gated by the same checker
+// as the rest of the pipeline.
+func (p *AIProvider) Gate() NamespaceGate { return p.gate }
+
 // Name returns the provider identifier.
 func (p *AIProvider) Name() string { return providerNameAI }
 

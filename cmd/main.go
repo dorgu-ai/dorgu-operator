@@ -40,11 +40,8 @@ import (
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/controller"
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
-	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
 	"github.com/dorgu-ai/dorgu-operator/internal/events"
-	"github.com/dorgu-ai/dorgu-operator/internal/llm"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation"
-	"github.com/dorgu-ai/dorgu-operator/internal/remediation/planner"
 	dorguws "github.com/dorgu-ai/dorgu-operator/internal/websocket"
 	// +kubebuilder:scaffold:imports
 )
@@ -276,63 +273,10 @@ func main() {
 			detection.NewPersonaCorrelator(mgr.GetClient(), setupLog.WithName("persona-correlator")),
 		)
 
-		// 3. Create diagnosis engine with providers. The safety checker is built
-		// first because it is the single deny-list: it gates the remediation
-		// proposer and the diagnosis provider's model call alike.
-		safetyChecker := remediation.NewSafetyChecker(mgr.GetClient(), setupLog,
-			remediation.WithProtectedNamespaces(operatorNamespace()),
-			remediation.WithProtectedNamespaces(cfg.safetyExcludedNamespaces...))
-
-		var diagnosisProviders []diagnosis.DiagnosisProvider
-		diagnosisProviders = append(diagnosisProviders, diagnosis.NewRuleBasedProvider(setupLog))
-
-		// aiPlanner, when set, enables AI-generated ordered remediation plans in
-		// the proposer (constructed below). It degrades gracefully to rules.
-		var aiPlanner planner.Planner
-
-		if cfg.llmProvider != "" {
-			apiKey := cfg.llmAPIKey
-			if apiKey == "" {
-				switch cfg.llmProvider {
-				case "claude":
-					apiKey = os.Getenv("ANTHROPIC_API_KEY")
-				case "gemini":
-					apiKey = os.Getenv("GEMINI_API_KEY")
-				}
-			}
-			if apiKey != "" {
-				llmClient, llmErr := llm.NewClient(cfg.llmProvider, apiKey)
-				if llmErr != nil {
-					setupLog.Error(llmErr, "failed to create LLM client, continuing without AI diagnosis")
-				} else {
-					if cfg.llmModel != "" {
-						if setter, ok := llmClient.(interface{ SetModel(string) }); ok {
-							setter.SetModel(cfg.llmModel)
-						}
-					}
-					diagnosisProviders = append(diagnosisProviders, diagnosis.NewAIProvider(llmClient, safetyChecker, setupLog))
-					setupLog.Info("AI diagnosis enabled", "provider", cfg.llmProvider)
-				}
-
-				// AI remediation planning is Anthropic-only for v1 and toggled
-				// independently of AI diagnosis.
-				if cfg.enableAIRemediation && cfg.llmProvider == "claude" {
-					claudePlanner, plannerErr := planner.NewClaudePlanner(apiKey)
-					if plannerErr != nil {
-						setupLog.Error(plannerErr, "failed to create AI remediation planner, continuing with rule-based remediation")
-					} else {
-						claudePlanner.SetModel(cfg.llmModel)
-						aiPlanner = claudePlanner
-						setupLog.Info("AI remediation planning enabled", "provider", cfg.llmProvider)
-					}
-				}
-			} else {
-				setupLog.Info("LLM provider configured but no API key found, AI diagnosis disabled",
-					"provider", cfg.llmProvider)
-			}
-		}
-
-		diagnosisEngine := diagnosis.NewEngine(setupLog, diagnosisProviders...)
+		// 3. Assemble the deny-list, diagnosis providers, AI planner and proposer.
+		// buildHealthPipeline is the one place they are wired together.
+		pipeline := buildHealthPipeline(mgr.GetClient(), cfg, operatorNamespace(), setupLog)
+		diagnosisEngine := pipeline.DiagnosisEngine
 
 		// 4. Create event pipeline components.
 		classifier := events.NewClassifier()
@@ -365,21 +309,14 @@ func main() {
 			os.Exit(1)
 		}
 
-		// 7. Create remediation proposer with the same safety checker.
-		var proposerOpts []remediation.ProposerOption
-		if aiPlanner != nil {
-			proposerOpts = append(proposerOpts, remediation.WithPlanner(aiPlanner))
-		}
-		proposer := remediation.NewProposer(mgr.GetClient(), safetyChecker, setupLog, proposerOpts...)
-
-		// 8. Start health check reconciler.
+		// 7. Start health check reconciler.
 		healthReconciler := &controller.HealthCheckReconciler{
 			Client:            mgr.GetClient(),
 			Detection:         detectionEngine,
 			Diagnosis:         diagnosisEngine,
 			EventStore:        eventStore,
 			EventEmitter:      emitter,
-			Proposer:          proposer,
+			Proposer:          pipeline.Proposer,
 			Logger:            setupLog.WithName("health-check"),
 			ReconcileInterval: cfg.healthCheckInterval,
 			WebSocket:         wsServer,
@@ -389,7 +326,7 @@ func main() {
 			os.Exit(1)
 		}
 
-		// 9. Register incident controller.
+		// 8. Register incident controller.
 		if err := (&controller.IncidentController{
 			Client: mgr.GetClient(),
 			Logger: setupLog.WithName("incident-controller"),
@@ -398,7 +335,7 @@ func main() {
 			os.Exit(1)
 		}
 
-		// 10. Register remediation controller (executor + verifier + rollback).
+		// 9. Register remediation controller (executor + verifier + rollback).
 		executor := remediation.NewExecutor(mgr.GetClient(), setupLog)
 		verifier := remediation.NewVerifier(detectionEngine, mgr.GetClient(), setupLog)
 		rollbackHandler := remediation.NewRollback(mgr.GetClient(), setupLog)
