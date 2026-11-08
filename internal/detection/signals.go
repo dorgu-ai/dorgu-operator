@@ -107,6 +107,12 @@ const (
 	// kills) before it ever reaches CrashLoopBackOff: restarts within a window,
 	// last terminated as Error or SIGKILL (137).
 	SignalLivenessRestarts SignalType = "LivenessRestarts"
+
+	// SignalRestartLoop is a container restarted repeatedly within the window whose
+	// last exit was an Error or a SIGKILL, with no kubelet event saying a liveness
+	// probe killed it. It is a restart loop of unknown cause, not a liveness
+	// failure: an application that crashes quickly looks exactly like this.
+	SignalRestartLoop SignalType = "RestartLoop"
 )
 
 // Resource signals.

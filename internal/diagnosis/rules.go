@@ -64,6 +64,7 @@ func NewRuleBasedProvider(logger logr.Logger) *RuleBasedProvider {
 		{Name: "oom-root-cause", Match: matchOOM, Diagnose: diagnoseOOM},
 		{Name: "crashloop-root-cause", Match: matchCrashLoop, Diagnose: diagnoseCrashLoop},
 		{Name: "liveness-restarts", Match: matchLivenessRestarts, Diagnose: diagnoseLivenessRestarts},
+		{Name: "restart-loop", Match: matchRestartLoop, Diagnose: diagnoseRestartLoop},
 		{Name: "readiness-not-ready", Match: matchReadinessNotReady, Diagnose: diagnoseReadinessNotReady},
 		{Name: "node-pressure", Match: matchNodePressure, Diagnose: diagnoseNodePressure},
 		{Name: "node-down", Match: matchNodeDown, Diagnose: diagnoseNodeDown},
@@ -426,14 +427,37 @@ func diagnoseLivenessRestarts(signals []detection.Signal) *Diagnosis {
 		return nil
 	}
 	return &Diagnosis{
-		Summary: "Container is being restarted repeatedly without reaching CrashLoopBackOff, " +
-			"most likely killed by a failing liveness probe. Check the probe's path, port and timeout, and the container's last logs.",
+		Summary: "The kubelet is killing this container repeatedly for failing its liveness probe, " +
+			"without it reaching CrashLoopBackOff. Check the probe's path, port and timeout, and the container's last logs.",
 		Confidence:        buildConfidence(0.70, live),
 		Category:          string(detection.CategoryHealth),
 		Severity:          detection.SeverityWarning,
 		PersonaRef:        firstPersonaRef(live),
 		AffectedResources: collectAffectedResources(live),
 		Contributing:      buildContributing(live, "Container keeps restarting with an error or SIGKILL"),
+		SuggestedAction:   actionInvestigate,
+	}
+}
+
+func matchRestartLoop(signals []detection.Signal) bool {
+	return hasSignalType(signals, detection.SignalRestartLoop)
+}
+
+func diagnoseRestartLoop(signals []detection.Signal) *Diagnosis {
+	loops := signalsOfType(signals, detection.SignalRestartLoop)
+	if len(loops) == 0 {
+		return nil
+	}
+	return &Diagnosis{
+		Summary: "Container keeps restarting with an error without reaching CrashLoopBackOff, and no kubelet event " +
+			"blames a probe, so the cause is not known: it may be an application that crashes quickly or exits on " +
+			"its own. Check the container's last logs and exit code.",
+		Confidence:        buildConfidence(0.60, loops),
+		Category:          string(detection.CategoryHealth),
+		Severity:          detection.SeverityWarning,
+		PersonaRef:        firstPersonaRef(loops),
+		AffectedResources: collectAffectedResources(loops),
+		Contributing:      buildContributing(loops, "Container restarted repeatedly with an error or SIGKILL"),
 		SuggestedAction:   actionInvestigate,
 	}
 }

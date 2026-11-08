@@ -41,8 +41,8 @@ import (
 //  1. CrashLoopBackOff or a live OOMKilled on the container owns it. The probe
 //     signals below are not raised for that container; the rules already explain
 //     a crash loop through its probe and OOM correlations.
-//  2. LivenessRestarts beats ReadinessNotReady. A container the kubelet keeps
-//     killing is also not Ready, and that is the same fault.
+//  2. LivenessRestarts and RestartLoop beat ReadinessNotReady. A container the
+//     kubelet keeps killing is also not Ready, and that is the same fault.
 //  3. Only application containers are examined. An init container that is not
 //     Ready is just an init container that has not finished.
 
@@ -51,31 +51,45 @@ const (
 	readinessEventPrefix = "Readiness probe failed"
 	livenessEventPrefix  = "Liveness probe failed"
 
+	// eventReasonKilling and livenessKillMarker identify the kubelet's record that
+	// it killed a container for failing its liveness probe: reason Killing, message
+	// "Container <name> failed liveness probe, will be restarted". It is the primary
+	// evidence that a restart was a liveness failure, because the exit code cannot
+	// say so: a liveness kill is a SIGTERM first, and an application that handles
+	// it exits 0.
+	eventReasonKilling = "Killing"
+	livenessKillMarker = "failed liveness probe"
+
 	// exitSigkill is the exit code of a container killed by SIGKILL, which is how
 	// a liveness kill that outlasts the grace period ends.
 	exitSigkill = 137
 
 	terminatedReasonError = "Error"
 
+	// maxEventReadsPerCycle bounds the kubelet-event lookups one collection makes.
+	maxEventReadsPerCycle = 25
+
 	// evidenceUnavailable is recorded in place of an event count when the events
 	// could not be read, so a missing count is never mistaken for zero.
 	evidenceUnavailable = "unavailable"
 )
 
-// probeSignals returns the readiness and liveness signal for a container, if any.
-// found is what checkContainer already raised for it, which decides precedence.
-// It always observes the restart count, even when it raises nothing, so the
-// history is continuous.
-func (p *PodCollector) probeSignals(ctx context.Context, pod corev1.Pod, cs corev1.ContainerStatus, now time.Time, found []Signal) []Signal {
+// probeSignals returns the restart-loop or readiness signal for a container, if
+// any. found is what checkContainer already raised for it, which decides
+// precedence. It always observes the restart count, even when it raises nothing,
+// so the history is continuous.
+func (p *PodCollector) probeSignals(
+	ctx context.Context, pod corev1.Pod, cs corev1.ContainerStatus, now time.Time, found []Signal, book *eventBook,
+) []Signal {
 	delta, history := p.restarts.observe(restartKey(pod, cs), now, cs.RestartCount)
 
 	if ownedByCrashOrOOM(found) {
 		return nil
 	}
-	if sig, ok := p.checkLiveness(ctx, pod, cs, now, delta, history); ok {
+	if sig, ok := p.checkRestartLoop(ctx, pod, cs, now, delta, history, book); ok {
 		return []Signal{sig}
 	}
-	if sig, ok := p.checkReadiness(ctx, pod, cs, now); ok {
+	if sig, ok := p.checkReadiness(ctx, pod, cs, now, book); ok {
 		return []Signal{sig}
 	}
 	return nil
@@ -92,63 +106,95 @@ func ownedByCrashOrOOM(found []Signal) bool {
 	return false
 }
 
-// checkLiveness detects a container restarted at least livenessRestarts times
-// within livenessWindow whose last termination was an Error or a SIGKILL.
+// checkRestartLoop detects a container restarted at least livenessRestarts times
+// within livenessWindow, and says what kind of loop it is.
 //
-// The pod status holds a lifetime restart count, not a history, so the delta
-// comes from samples the collector took on earlier cycles. A container the
-// collector has never seen (the operator has just started) falls back to what
-// the status does prove: a count of at least the threshold and a last kill
-// inside the window. A container it has seen but not within the window (cycles
-// were skipped) proves nothing either way and raises nothing.
-func (p *PodCollector) checkLiveness(
-	ctx context.Context, pod corev1.Pod, cs corev1.ContainerStatus, now time.Time, delta int32, history restartHistory,
+// The kubelet's own Killing events decide that. With one or more "failed liveness
+// probe, will be restarted" events in the window, it is LivenessRestarts, whatever
+// the exit code: a liveness kill is a SIGTERM first, so an application that
+// handles it exits 0. With no such event, a restart loop that ends in an Error or
+// a SIGKILL is reported as RestartLoop: an application that crashes quickly looks
+// exactly like this, and calling it a probe failure would mislead.
+//
+// The pod status holds a lifetime restart count, not a history, so the delta comes
+// from what the tracker observed on earlier cycles. First sight after an operator
+// restart only seeds that history (a lifetime count is not evidence of anything in
+// the window), but the kubelet's events are cluster state, not operator memory: at
+// least livenessRestarts kill events in the window are enough on their own.
+func (p *PodCollector) checkRestartLoop(
+	ctx context.Context, pod corev1.Pod, cs corev1.ContainerStatus, now time.Time,
+	delta int32, history restartHistory, book *eventBook,
 ) (Signal, bool) {
 	last := cs.LastTerminationState.Terminated
-	if cs.State.Running == nil || last == nil || p.staleTermination(cs, last, now) || !killedByProbeOrError(last) {
+	if cs.State.Running == nil || last == nil || last.Reason == string(SignalOOMKilled) || p.staleTermination(cs, last, now) {
 		return Signal{}, false
 	}
 
-	restarts := delta
-	switch history {
-	case historyNone:
-		return Signal{}, false
-	case historyFirstSight:
-		recent := !last.FinishedAt.IsZero() && now.Sub(last.FinishedAt.Time) <= p.livenessWindow
-		if !recent {
-			return Signal{}, false
-		}
-		restarts = cs.RestartCount
-	case historyInWindow:
+	known := history == historyInWindow
+	observedLoop := known && delta >= p.livenessRestarts
+	recentKill := cs.RestartCount >= p.livenessRestarts && !last.FinishedAt.IsZero() &&
+		now.Sub(last.FinishedAt.Time) <= p.livenessWindow
+	if !observedLoop && !recentKill {
+		return Signal{}, false // nothing here is worth a lookup
 	}
-	if restarts < p.livenessRestarts {
+
+	since := now.Add(-p.livenessWindow)
+	events := book.forPod(ctx, pod)
+	kills, killEvidence := events.count(pod, cs, since, killMatch)
+	unhealthy, unhealthyEvidence := events.count(pod, cs, since, unhealthyMatch(livenessEventPrefix))
+
+	var typ SignalType
+	switch {
+	case kills >= 1 && observedLoop, kills >= p.livenessRestarts:
+		typ = SignalLivenessRestarts
+	case observedLoop && kills == 0 && killedByProbeOrError(last):
+		typ = SignalRestartLoop
+	default:
 		return Signal{}, false
 	}
 
-	events, evidence := p.probeEvents(ctx, pod, cs, livenessEventPrefix, now.Add(-p.livenessWindow))
 	meta := containerMetadata(pod, cs)
-	meta["restartsInWindow"] = strconv.Itoa(int(restarts))
 	meta["livenessWindow"] = p.livenessWindow.String()
 	meta["lastTerminationReason"] = last.Reason
 	meta["lastTerminationExitCode"] = strconv.Itoa(int(last.ExitCode))
-	meta["livenessProbeEvents"] = evidence
-
-	msg := fmt.Sprintf("Container %s in pod %s/%s restarted %d times in %s (last exit: %s)",
-		cs.Name, pod.Namespace, pod.Name, restarts, p.livenessWindow, terminationSummary(last))
-	if events > 0 {
-		msg += fmt.Sprintf("; %d kubelet liveness probe failure events", events)
+	meta["livenessKillEvents"] = killEvidence
+	meta["livenessProbeEvents"] = unhealthyEvidence
+	if known {
+		meta["restartsInWindow"] = strconv.Itoa(int(delta))
 	}
 
 	return Signal{
-		Type:       SignalLivenessRestarts,
+		Type:       typ,
 		Severity:   SeverityWarning,
 		Category:   CategoryHealth,
 		Source:     podCollectorName,
-		Message:    msg,
+		Message:    p.loopMessage(typ, pod, cs, last, delta, known, kills, unhealthy),
 		Resource:   podResource(pod),
 		DetectedAt: now,
 		Metadata:   meta,
 	}, true
+}
+
+// loopMessage words the signal. Counts only: nothing from an event's text.
+func (p *PodCollector) loopMessage(
+	typ SignalType, pod corev1.Pod, cs corev1.ContainerStatus, last *corev1.ContainerStateTerminated,
+	delta int32, known bool, kills, unhealthy int32,
+) string {
+	subject := fmt.Sprintf("Container %s in pod %s/%s", cs.Name, pod.Namespace, pod.Name)
+	restarts := ""
+	if known {
+		restarts = fmt.Sprintf(" restarted %d times within %s and", delta, p.livenessWindow)
+	}
+	if typ == SignalRestartLoop {
+		return fmt.Sprintf("%s%s keeps restarting (last exit: %s); no kubelet event blames a probe",
+			subject, restarts, terminationSummary(last))
+	}
+	msg := fmt.Sprintf("%s%s was killed for failing its liveness probe (%d kubelet liveness kill events, last exit: %s)",
+		subject, restarts, kills, terminationSummary(last))
+	if unhealthy > 0 {
+		msg += fmt.Sprintf("; %d kubelet liveness probe failure events", unhealthy)
+	}
+	return msg
 }
 
 // killedByProbeOrError reports whether a termination looks like a liveness kill
@@ -172,12 +218,15 @@ func terminationSummary(t *corev1.ContainerStateTerminated) string {
 // checkReadiness detects a running container that has stayed not Ready for at
 // least readinessThreshold.
 //
-// The clock starts at the later of the pod's ContainersReady transition and the
-// container's own start: a container that has just restarted is warming up
-// whatever the pod condition says. A container whose startup probe has not
-// passed is still starting, not failing readiness, and a terminating pod is
-// expected to go not Ready.
-func (p *PodCollector) checkReadiness(ctx context.Context, pod corev1.Pod, cs corev1.ContainerStatus, now time.Time) (Signal, bool) {
+// The clock starts at the latest of the pod's ContainersReady transition, the
+// container's own start, and the end of the readiness probe's initialDelaySeconds:
+// a container that has just restarted is warming up whatever the pod condition
+// says, and a probe that has not yet run has not failed. A container whose startup
+// probe has not passed is still starting, not failing readiness, and a
+// terminating pod is expected to go not Ready.
+func (p *PodCollector) checkReadiness(
+	ctx context.Context, pod corev1.Pod, cs corev1.ContainerStatus, now time.Time, book *eventBook,
+) (Signal, bool) {
 	running := cs.State.Running
 	if pod.Status.Phase != corev1.PodRunning || pod.DeletionTimestamp != nil || running == nil || cs.Ready {
 		return Signal{}, false
@@ -187,6 +236,9 @@ func (p *PodCollector) checkReadiness(ctx context.Context, pod corev1.Pod, cs co
 	}
 
 	since := running.StartedAt.Time
+	if delay := readinessInitialDelay(pod, cs.Name); delay > 0 {
+		since = since.Add(delay)
+	}
 	for i := range pod.Status.Conditions {
 		c := &pod.Status.Conditions[i]
 		if c.Type == corev1.ContainersReady && c.Status == corev1.ConditionFalse && c.LastTransitionTime.After(since) {
@@ -201,7 +253,7 @@ func (p *PodCollector) checkReadiness(ctx context.Context, pod corev1.Pod, cs co
 		return Signal{}, false
 	}
 
-	events, evidence := p.probeEvents(ctx, pod, cs, readinessEventPrefix, since)
+	events, evidence := book.forPod(ctx, pod).count(pod, cs, since, unhealthyMatch(readinessEventPrefix))
 	meta := containerMetadata(pod, cs)
 	meta["notReadyFor"] = notReadyFor.Round(time.Second).String()
 	meta["readinessThreshold"] = p.readinessThreshold.String()
@@ -225,6 +277,18 @@ func (p *PodCollector) checkReadiness(ctx context.Context, pod corev1.Pod, cs co
 	}, true
 }
 
+// readinessInitialDelay is the readiness probe's initialDelaySeconds for the named
+// container, or zero when it has no probe or no delay.
+func readinessInitialDelay(pod corev1.Pod, container string) time.Duration {
+	for i := range pod.Spec.Containers {
+		c := &pod.Spec.Containers[i]
+		if c.Name == container && c.ReadinessProbe != nil {
+			return time.Duration(c.ReadinessProbe.InitialDelaySeconds) * time.Second
+		}
+	}
+	return 0
+}
+
 // staleTermination reports whether a last-terminated state is history rather
 // than a live fact.
 //
@@ -234,6 +298,11 @@ func (p *PodCollector) checkReadiness(ctx context.Context, pod corev1.Pod, cs co
 // when the container is Running and Ready, started after the termination
 // finished, and has stayed up for staleAfter. The grace is what keeps a kill the
 // operator has not yet looked at live: see DefaultTerminatedStaleAfter.
+//
+// Known limit: the container's start time is the node's clock and "now" is the
+// operator's. A node whose clock runs behind by more than the grace makes a fresh
+// kill look old, and it is then not reported; the other direction only keeps a
+// signal alive longer. Clock skew on a managed cluster is normally milliseconds.
 func (p *PodCollector) staleTermination(cs corev1.ContainerStatus, t *corev1.ContainerStateTerminated, now time.Time) bool {
 	running := cs.State.Running
 	if running == nil || !cs.Ready || t.FinishedAt.IsZero() || running.StartedAt.IsZero() {
@@ -245,39 +314,94 @@ func (p *PodCollector) staleTermination(cs corev1.ContainerStatus, t *corev1.Con
 	return now.Sub(running.StartedAt.Time) >= p.staleAfter
 }
 
-// probeEvents counts the kubelet's Unhealthy events for the pod's container whose
-// message starts with prefix and that are no older than since. It is supporting
-// evidence only: it is never what raises a signal, and a failure to read events
-// leaves the signal standing with the count marked unavailable.
-func (p *PodCollector) probeEvents(
-	ctx context.Context, pod corev1.Pod, cs corev1.ContainerStatus, prefix string, since time.Time,
-) (int32, string) {
-	if p.events == nil {
-		return 0, evidenceUnavailable
-	}
-	var list corev1.EventList
-	if err := p.events.List(ctx, &list,
-		client.InNamespace(pod.Namespace),
-		client.MatchingFields{"involvedObject.name": pod.Name},
-	); err != nil {
-		p.logger.V(1).Info("could not read kubelet probe events; the signal stands without them",
-			"namespace", pod.Namespace, "pod", pod.Name, "error", err.Error())
-		return 0, evidenceUnavailable
-	}
+// eventBook reads the kubelet events of the pods a collection looks at, once per
+// pod and at most maxEventReadsPerCycle pods per collection. Events are supporting
+// evidence for most signals and the deciding evidence for one, and a node loss
+// leaves hundreds of pods not Ready: the bound keeps that from becoming hundreds
+// of API calls a minute. A pod past the bound has its evidence marked unavailable,
+// exactly as if the read had failed, and keeps its signal.
+type eventBook struct {
+	p     *PodCollector
+	reads int
+	pods  map[string]podEvents
+}
 
-	var total int32
-	for i := range list.Items {
-		ev := &list.Items[i]
-		if !probeEventMatches(ev, pod, cs, prefix, since) {
-			continue
+func newEventBook(p *PodCollector) *eventBook {
+	return &eventBook{p: p, pods: make(map[string]podEvents)}
+}
+
+// podEvents is one pod's events, or the fact that they could not be read.
+type podEvents struct {
+	items []corev1.Event
+	ok    bool
+}
+
+// forPod returns the pod's events, reading them on first use.
+func (b *eventBook) forPod(ctx context.Context, pod corev1.Pod) podEvents {
+	key := fmt.Sprintf("%s/%s/%s", pod.Namespace, pod.Name, pod.UID)
+	if cached, ok := b.pods[key]; ok {
+		return cached
+	}
+	result := podEvents{}
+	switch {
+	case b.p.events == nil:
+	case b.reads >= maxEventReadsPerCycle:
+		b.p.logger.V(1).Info("kubelet event lookups for this cycle are used up; the signal stands without them",
+			"namespace", pod.Namespace, "pod", pod.Name, "budget", maxEventReadsPerCycle)
+	default:
+		b.reads++
+		var list corev1.EventList
+		if err := b.p.events.List(ctx, &list,
+			client.InNamespace(pod.Namespace),
+			client.MatchingFields{"involvedObject.name": pod.Name},
+		); err != nil {
+			b.p.logger.V(1).Info("could not read kubelet probe events; the signal stands without them",
+				"namespace", pod.Namespace, "pod", pod.Name, "error", err.Error())
+		} else {
+			result = podEvents{items: list.Items, ok: true}
 		}
-		total += eventCount(ev)
+	}
+	b.pods[key] = result
+	return result
+}
+
+// eventMatcher selects events by reason and message.
+type eventMatcher struct {
+	reason  string
+	message func(string) bool
+}
+
+var killMatch = eventMatcher{
+	reason:  eventReasonKilling,
+	message: func(m string) bool { return strings.Contains(m, livenessKillMarker) },
+}
+
+func unhealthyMatch(prefix string) eventMatcher {
+	return eventMatcher{reason: eventReasonUnhealthy, message: func(m string) bool { return strings.HasPrefix(m, prefix) }}
+}
+
+// count adds up the matching events for the container no older than since, and
+// returns it as text for the signal's metadata: a number, or "unavailable" when the
+// events could not be read, so a missing count is never mistaken for zero.
+func (e podEvents) count(pod corev1.Pod, cs corev1.ContainerStatus, since time.Time, m eventMatcher) (int32, string) {
+	if !e.ok {
+		return 0, evidenceUnavailable
+	}
+	var total int32
+	for i := range e.items {
+		if ev := &e.items[i]; eventMatches(ev, pod, cs, m, since) {
+			total += eventCountSince(ev, since)
+		}
 	}
 	return total, strconv.Itoa(int(total))
 }
 
 func probeEventMatches(ev *corev1.Event, pod corev1.Pod, cs corev1.ContainerStatus, prefix string, since time.Time) bool {
-	if ev.Reason != eventReasonUnhealthy || !strings.HasPrefix(ev.Message, prefix) {
+	return eventMatches(ev, pod, cs, unhealthyMatch(prefix), since)
+}
+
+func eventMatches(ev *corev1.Event, pod corev1.Pod, cs corev1.ContainerStatus, m eventMatcher, since time.Time) bool {
+	if ev.Reason != m.reason || !m.message(ev.Message) {
 		return false
 	}
 	io := ev.InvolvedObject
@@ -289,6 +413,21 @@ func probeEventMatches(ev *corev1.Event, pod corev1.Pod, cs corev1.ContainerStat
 		return false
 	}
 	return !eventTime(ev).Before(since)
+}
+
+// eventCountSince is how many times an event happened inside the window. An
+// aggregated event reports a count since its first occurrence, which can be days
+// ago: when it began before the window, all that is known is that it happened at
+// least once inside it (its last occurrence is, or the event would not match).
+func eventCountSince(ev *corev1.Event, since time.Time) int32 {
+	first := ev.FirstTimestamp.Time
+	if ev.Series != nil {
+		first = ev.EventTime.Time
+	}
+	if first.IsZero() || !first.Before(since) {
+		return eventCount(ev)
+	}
+	return 1
 }
 
 func eventTime(ev *corev1.Event) time.Time {
@@ -323,19 +462,29 @@ func restartKey(pod corev1.Pod, cs corev1.ContainerStatus) string {
 // restartTracker remembers recent restart counts per container, because the pod
 // status only holds the lifetime count. It is safe for concurrent use: the
 // health-check loop and the remediation verifier both collect.
+//
+// It stores the points where a container's count changed, plus the baseline at
+// the edge of the window, not one sample per cycle: memory is proportional to the
+// restarts in the window, however long the window or short the interval.
 type restartTracker struct {
-	window  time.Duration
-	mu      sync.Mutex
-	samples map[string][]restartSample
+	window   time.Duration
+	mu       sync.Mutex
+	samples  map[string][]restartSample
+	observed map[string]time.Time
 }
 
+// restartSample is a count and when it was first observed.
 type restartSample struct {
 	at    time.Time
 	count int32
 }
 
 func newRestartTracker(window time.Duration) *restartTracker {
-	return &restartTracker{window: window, samples: make(map[string][]restartSample)}
+	return &restartTracker{
+		window:   window,
+		samples:  make(map[string][]restartSample),
+		observed: make(map[string]time.Time),
+	}
 }
 
 // restartHistory says what observe knows about a container.
@@ -344,42 +493,56 @@ type restartHistory int
 const (
 	// historyFirstSight: the collector has never seen this container.
 	historyFirstSight restartHistory = iota
-	// historyNone: it has, but not within the window, so no delta can be given.
+	// historyNone: it has, but no usable history: the count went down (a new
+	// container under the same key) or the collector was not looking for longer
+	// than the window, so a delta would span time it cannot account for.
 	historyNone
-	// historyInWindow: an earlier sample is inside the window; the delta is valid.
+	// historyInWindow: the delta is valid.
 	historyInWindow
 )
 
 // observe records the current count and returns how many restarts happened since
-// the earliest sample still inside the window, and what history that rests on.
+// the window's start, and what history that rests on.
 //
-// The delta is a lower bound by construction: it counts from the earliest sample
-// in the window, never from before it, so it can miss a restart between the
-// window's edge and that sample but can never claim one that was outside it.
+// Restarts are dated by when they were observed, so a restart can read up to one
+// cycle younger than it is; and the delta counts from the earliest observation
+// inside the window when the collector has not been looking that long, so it is a
+// lower bound, never a claim about time the collector did not see.
 func (t *restartTracker) observe(key string, now time.Time, count int32) (delta int32, history restartHistory) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	previous, seenBefore := t.samples[key]
-	cutoff := now.Add(-t.window)
-	kept := make([]restartSample, 0, len(previous)+1)
-	for _, s := range previous {
-		// A count that went down is a different container under the same key: start over.
-		if s.at.Before(cutoff) || s.count > count {
-			continue
-		}
-		kept = append(kept, s)
+	points, seen := t.samples[key]
+	reseed := func(h restartHistory) (int32, restartHistory) {
+		t.samples[key] = []restartSample{{at: now, count: count}}
+		t.observed[key] = now
+		return 0, h
 	}
 	switch {
-	case len(kept) > 0:
-		history, delta = historyInWindow, count-kept[0].count
-	case seenBefore:
-		history = historyNone
-	default:
-		history = historyFirstSight
+	case !seen:
+		return reseed(historyFirstSight)
+	case now.Sub(t.observed[key]) > t.window, count < points[len(points)-1].count:
+		return reseed(historyNone)
 	}
-	t.samples[key] = append(kept, restartSample{at: now, count: count})
-	return delta, history
+
+	if count > points[len(points)-1].count {
+		points = append(points, restartSample{at: now, count: count})
+	}
+	// The baseline is the count at the window's edge: the latest point at or before
+	// the cutoff, or the earliest one when the collector has not been looking that
+	// long. Points before it can never be a baseline again.
+	cutoff := now.Add(-t.window)
+	base := 0
+	for i := range points {
+		if points[i].at.After(cutoff) {
+			break
+		}
+		base = i
+	}
+	delta = count - points[base].count
+	t.samples[key] = append([]restartSample(nil), points[base:]...)
+	t.observed[key] = now
+	return delta, historyInWindow
 }
 
 // retain drops every container not in seen.
@@ -389,6 +552,7 @@ func (t *restartTracker) retain(seen map[string]struct{}) {
 	for key := range t.samples {
 		if _, ok := seen[key]; !ok {
 			delete(t.samples, key)
+			delete(t.observed, key)
 		}
 	}
 }

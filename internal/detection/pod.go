@@ -182,6 +182,7 @@ func (p *PodCollector) Collect(ctx context.Context) ([]Signal, error) {
 	now := p.now()
 	var signals []Signal
 	seen := make(map[string]struct{})
+	book := newEventBook(p)
 
 	// Each namespace is asked about once per cycle.
 	skip := make(map[string]bool)
@@ -198,7 +199,7 @@ func (p *PodCollector) Collect(ctx context.Context) ([]Signal, error) {
 			continue
 		}
 
-		signals = append(signals, p.checkPod(ctx, pod, now)...)
+		signals = append(signals, p.checkPod(ctx, pod, now, book)...)
 		for _, cs := range pod.Status.ContainerStatuses {
 			seen[restartKey(pod, cs)] = struct{}{}
 		}
@@ -213,7 +214,7 @@ func (p *PodCollector) Collect(ctx context.Context) ([]Signal, error) {
 }
 
 // checkPod examines a single pod for all failure modes.
-func (p *PodCollector) checkPod(ctx context.Context, pod corev1.Pod, now time.Time) []Signal {
+func (p *PodCollector) checkPod(ctx context.Context, pod corev1.Pod, now time.Time, book *eventBook) []Signal {
 	var signals []Signal
 
 	// Check eviction
@@ -230,7 +231,7 @@ func (p *PodCollector) checkPod(ctx context.Context, pod corev1.Pod, now time.Ti
 	for _, cs := range pod.Status.ContainerStatuses {
 		found := p.checkContainer(pod, cs, now)
 		signals = append(signals, found...)
-		signals = append(signals, p.probeSignals(ctx, pod, cs, now, found)...)
+		signals = append(signals, p.probeSignals(ctx, pod, cs, now, found, book)...)
 	}
 	for _, cs := range pod.Status.InitContainerStatuses {
 		signals = append(signals, p.checkContainer(pod, cs, now)...)

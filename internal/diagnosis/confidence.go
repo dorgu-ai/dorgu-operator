@@ -87,6 +87,7 @@ var signalClarity = map[detection.SignalType]float64{
 	detection.SignalProbeFailure:          0.7,
 	detection.SignalContainerRestart:      0.6,
 	detection.SignalLivenessRestarts:      0.8,
+	detection.SignalRestartLoop:           0.6,
 	detection.SignalReadinessNotReady:     0.7,
 	detection.SignalNodeMemoryPressure:    0.9,
 	detection.SignalNodeDiskPressure:      0.9,

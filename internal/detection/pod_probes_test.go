@@ -231,17 +231,43 @@ func restartedRunning(c *fakeClock, restarts int32, reason string, exit int32, f
 	}
 }
 
-// livenessFixture runs two collection cycles over one collector, as the
-// operator does every minute.
+// livenessCycles runs one collection cycle per container status over one
+// collector, a minute apart, as the operator does.
 func livenessCycles(t *testing.T, c *fakeClock, opts []PodCollectorOption, cycles ...corev1.ContainerStatus) [][]Signal {
+	t.Helper()
+	return livenessCyclesWithEvents(t, c, opts, nil, cycles...)
+}
+
+// livenessCyclesWithEvents is livenessCycles with kubelet events in the cluster
+// and the collector reading them.
+func livenessCyclesWithEvents(
+	t *testing.T, c *fakeClock, opts []PodCollectorOption, events []corev1.Event, cycles ...corev1.ContainerStatus,
+) [][]Signal {
+	t.Helper()
+	return livenessCyclesFn(t, c, opts, events, len(cycles), func(i int) corev1.ContainerStatus { return cycles[i] })
+}
+
+// livenessCyclesFn builds each cycle's status when the cycle runs, so timestamps
+// are relative to that cycle's clock.
+func livenessCyclesFn(
+	t *testing.T, c *fakeClock, opts []PodCollectorOption, events []corev1.Event, n int, status func(i int) corev1.ContainerStatus,
+) [][]Signal {
 	t.Helper()
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
-	cl := fake.NewClientBuilder().WithScheme(scheme).Build()
-	p := NewPodCollector(cl, zap.New(zap.UseDevMode(true)), append([]PodCollectorOption{withClock(c.now)}, opts...)...)
-	out := make([][]Signal, 0, len(cycles))
-	for i, cs := range cycles {
-		pod := runningPod("api-1", cs)
+	b := fake.NewClientBuilder().WithScheme(scheme).
+		WithIndex(&corev1.Event{}, "involvedObject.name", func(o client.Object) []string {
+			return []string{o.(*corev1.Event).InvolvedObject.Name}
+		})
+	for i := range events {
+		b = b.WithObjects(&events[i])
+	}
+	cl := b.Build()
+	all := append([]PodCollectorOption{withClock(c.now), WithEventReader(cl)}, opts...)
+	p := NewPodCollector(cl, zap.New(zap.UseDevMode(true)), all...)
+	out := make([][]Signal, 0, n)
+	for i := range n {
+		pod := runningPod("api-1", status(i))
 		if i == 0 {
 			require.NoError(t, cl.Create(context.Background(), &pod))
 		} else {
@@ -256,6 +282,12 @@ func livenessCycles(t *testing.T, c *fakeClock, opts []PodCollectorOption, cycle
 		c.advance(time.Minute)
 	}
 	return out
+}
+
+// hasLoop reports whether a container is reported as restarting repeatedly, as a
+// liveness failure or as a restart loop of unknown cause.
+func hasLoop(sigs []Signal) bool {
+	return hasType(sigs, SignalLivenessRestarts) || hasType(sigs, SignalRestartLoop)
 }
 
 func hasType(sigs []Signal, t SignalType) bool {
@@ -275,14 +307,15 @@ func TestLiveness_RestartDeltaWithinWindowIsAHealthSignal(t *testing.T) {
 		restartedRunning(c, 5, "Error", 137, 10*time.Second),
 	)
 
-	assert.False(t, hasType(cycles[0], SignalLivenessRestarts), "first sight with an old last kill is only a baseline")
-	require.True(t, hasType(cycles[1], SignalLivenessRestarts), "got %v", signalTypes(cycles[1]))
+	assert.False(t, hasLoop(cycles[0]), "first sight only seeds the history")
+	require.True(t, hasLoop(cycles[1]), "got %v", signalTypes(cycles[1]))
 	var s Signal
 	for _, x := range cycles[1] {
-		if x.Type == SignalLivenessRestarts {
+		if x.Type == SignalRestartLoop {
 			s = x
 		}
 	}
+	require.Equal(t, SignalRestartLoop, s.Type, "no kubelet event says a probe did it, so it is a restart loop")
 	assert.Equal(t, CategoryHealth, s.Category)
 	assert.Equal(t, SeverityWarning, s.Severity)
 	assert.Equal(t, "2", s.Metadata["restartsInWindow"])
@@ -294,7 +327,7 @@ func TestLiveness_OneRestartIsNotASignal(t *testing.T) {
 		restartedRunning(c, 3, "Error", 137, 3*time.Hour),
 		restartedRunning(c, 4, "Error", 137, 10*time.Second),
 	)
-	assert.False(t, hasType(cycles[1], SignalLivenessRestarts))
+	assert.False(t, hasLoop(cycles[1]))
 }
 
 func TestLiveness_RestartsOutsideTheWindowAreNotASignal(t *testing.T) {
@@ -317,10 +350,12 @@ func TestLiveness_RestartsOutsideTheWindowAreNotASignal(t *testing.T) {
 	require.NoError(t, cl.Status().Update(context.Background(), &cur))
 	sigs, err := p.Collect(context.Background())
 	require.NoError(t, err)
-	assert.False(t, hasType(sigs, SignalLivenessRestarts), "+2 restarts over 15 minutes is not 2 in 10")
+	assert.False(t, hasLoop(sigs), "+2 restarts over 15 minutes is not 2 in 10")
 }
 
 func TestLiveness_LastTerminationMustBeAnErrorOrASigkill(t *testing.T) {
+	// Without a kubelet event that blames a probe, only an Error or a SIGKILL that
+	// is not an OOM kill counts, and it is reported as a restart loop.
 	tests := []struct {
 		name   string
 		reason string
@@ -340,21 +375,29 @@ func TestLiveness_LastTerminationMustBeAnErrorOrASigkill(t *testing.T) {
 				restartedRunning(c, 3, tt.reason, tt.exit, 3*time.Hour),
 				restartedRunning(c, 5, tt.reason, tt.exit, 10*time.Second),
 			)
-			assert.Equal(t, tt.want, hasType(cycles[1], SignalLivenessRestarts), "got %v", signalTypes(cycles[1]))
+			assert.Equal(t, tt.want, hasType(cycles[1], SignalRestartLoop), "got %v", signalTypes(cycles[1]))
+			assert.False(t, hasType(cycles[1], SignalLivenessRestarts), "no event blames a probe: never a liveness failure")
 		})
 	}
 }
 
-func TestLiveness_FirstSightFallsBackToTheLastKill(t *testing.T) {
+// F-7: after an operator restart the status holds only a lifetime count. It is
+// not evidence of anything inside the window, so first sight seeds the history
+// and the next cycle's delta decides.
+func TestLiveness_FirstSightOnlySeedsTheHistory(t *testing.T) {
 	c := newClock()
-	// An operator that has just started has no history. A fresh kill and a count
-	// of at least the threshold is still evidence.
-	cycles := livenessCycles(t, c, nil, restartedRunning(c, 6, "Error", 137, 30*time.Second))
-	assert.True(t, hasType(cycles[0], SignalLivenessRestarts))
-
-	c = newClock()
-	cycles = livenessCycles(t, c, nil, restartedRunning(c, 6, "Error", 137, 3*time.Hour))
-	assert.False(t, hasType(cycles[0], SignalLivenessRestarts), "an old kill at first sight is history")
+	cycles := livenessCycles(t, c, nil,
+		restartedRunning(c, 6, "Error", 137, 30*time.Second),
+		restartedRunning(c, 8, "Error", 137, 10*time.Second),
+	)
+	assert.False(t, hasLoop(cycles[0]), "a lifetime count of 6 with a fresh kill is not 6 restarts in 10 minutes")
+	require.True(t, hasLoop(cycles[1]), "the delta over the next cycle is: %v", signalTypes(cycles[1]))
+	for _, s := range cycles[1] {
+		if s.Type == SignalRestartLoop {
+			assert.Equal(t, "2", s.Metadata["restartsInWindow"], "what was observed, not the lifetime count")
+			assert.NotContains(t, s.Message, "8 times")
+		}
+	}
 }
 
 func TestLiveness_ThresholdAndWindowAreConfigurable(t *testing.T) {
@@ -363,31 +406,7 @@ func TestLiveness_ThresholdAndWindowAreConfigurable(t *testing.T) {
 		restartedRunning(c, 3, "Error", 137, 3*time.Hour),
 		restartedRunning(c, 5, "Error", 137, 10*time.Second),
 	)
-	assert.False(t, hasType(cycles[1], SignalLivenessRestarts), "+2 is under a threshold of 3")
-}
-
-func TestLiveness_SupportingKubeletEvents(t *testing.T) {
-	c := newClock()
-	scheme := runtime.NewScheme()
-	require.NoError(t, corev1.AddToScheme(scheme))
-	ev := probeEvent("api-1", "Liveness probe failed: connection refused", 4, ago(c, 10*time.Second))
-	cl := fake.NewClientBuilder().WithScheme(scheme).
-		WithIndex(&corev1.Event{}, "involvedObject.name", func(o client.Object) []string {
-			return []string{o.(*corev1.Event).InvolvedObject.Name}
-		}).WithObjects(&ev).Build()
-	p := NewPodCollector(cl, zap.New(zap.UseDevMode(true)), withClock(c.now), WithEventReader(cl))
-	pod := runningPod("api-1", restartedRunning(c, 6, "Error", 137, 30*time.Second))
-	require.NoError(t, cl.Create(context.Background(), &pod))
-
-	sigs, err := p.Collect(context.Background())
-	require.NoError(t, err)
-	require.True(t, hasType(sigs, SignalLivenessRestarts))
-	for _, s := range sigs {
-		if s.Type == SignalLivenessRestarts {
-			assert.Equal(t, "4", s.Metadata["livenessProbeEvents"])
-			assert.Contains(t, s.Message, "4 kubelet liveness probe failure events")
-		}
-	}
+	assert.False(t, hasLoop(cycles[1]), "+2 is under a threshold of 3")
 }
 
 func TestRestartTracker_ForgetsContainersThatAreGone(t *testing.T) {
@@ -420,7 +439,7 @@ func TestPrecedence_CrashLoopBackOffOwnsTheContainer(t *testing.T) {
 	sigs := collectWith(t, c, []corev1.Pod{pod}, nil)
 
 	assert.True(t, hasType(sigs, SignalCrashLoopBackOff))
-	assert.False(t, hasType(sigs, SignalLivenessRestarts), "CrashLoopBackOff already reports this container")
+	assert.False(t, hasLoop(sigs), "CrashLoopBackOff already reports this container")
 	assert.False(t, hasType(sigs, SignalReadinessNotReady))
 }
 
@@ -433,7 +452,7 @@ func TestPrecedence_CrashLoopBackOffOwnsTheContainerAcrossCycles(t *testing.T) {
 		return cs
 	}
 	cycles := livenessCycles(t, c, nil, waiting(3), waiting(6))
-	assert.False(t, hasType(cycles[1], SignalLivenessRestarts))
+	assert.False(t, hasLoop(cycles[1]))
 }
 
 func TestPrecedence_LiveOOMKilledOwnsTheContainer(t *testing.T) {
@@ -443,7 +462,7 @@ func TestPrecedence_LiveOOMKilledOwnsTheContainer(t *testing.T) {
 		restartedRunning(c, 5, "OOMKilled", 137, 10*time.Second),
 	)
 	assert.True(t, hasType(cycles[1], SignalOOMKilled))
-	assert.False(t, hasType(cycles[1], SignalLivenessRestarts))
+	assert.False(t, hasLoop(cycles[1]))
 }
 
 func TestPrecedence_LivenessOwnsAContainerThatIsAlsoNotReady(t *testing.T) {
@@ -455,7 +474,7 @@ func TestPrecedence_LivenessOwnsAContainerThatIsAlsoNotReady(t *testing.T) {
 		return cs
 	}
 	cycles := livenessCycles(t, c, nil, mk(3), mk(5))
-	assert.True(t, hasType(cycles[1], SignalLivenessRestarts))
+	assert.True(t, hasLoop(cycles[1]))
 	assert.False(t, hasType(cycles[1], SignalReadinessNotReady), "a restart loop explains not-ready: one finding, not two")
 }
 
@@ -530,7 +549,7 @@ func TestStaleTermination_StaleKillIsNotALivenessSignalEither(t *testing.T) {
 		return cs
 	}
 	cycles := livenessCycles(t, c, nil, mk(3), mk(5))
-	assert.False(t, hasType(cycles[1], SignalLivenessRestarts),
+	assert.False(t, hasLoop(cycles[1]),
 		"restarts that ended 14 minutes ago with the container Ready since are not a live loop")
 }
 

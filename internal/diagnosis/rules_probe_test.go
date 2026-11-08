@@ -66,7 +66,7 @@ func TestProbeRule_LivenessIsAHealthDiagnosis(t *testing.T) {
 	assert.Equal(t, string(detection.CategoryHealth), d.Category)
 	assert.Equal(t, actionInvestigate, d.SuggestedAction)
 	assert.Equal(t, detection.SignalLivenessRestarts, d.Contributing[0].Signal.Type)
-	assert.Contains(t, d.Summary, "restarted")
+	assert.Contains(t, d.Summary, "liveness probe")
 }
 
 // Two pods of one app, one failing each way: two findings, each filed under its
@@ -95,4 +95,34 @@ func TestProbeRule_NothingToDiagnoseWithoutItsSignal(t *testing.T) {
 	assert.Nil(t, diagnoseReadinessNotReady(nil))
 	assert.False(t, matchLivenessRestarts([]detection.Signal{probeSignal(detection.SignalReadinessNotReady, "p")}))
 	assert.False(t, matchReadinessNotReady([]detection.Signal{probeSignal(detection.SignalLivenessRestarts, "p")}))
+}
+
+// F-4: a restart loop with no kubelet event blaming a probe is a health finding of
+// its own, and its summary must not claim a probe failure.
+func TestProbeRule_RestartLoopIsNotCalledAProbeFailure(t *testing.T) {
+	diags, err := newTestProvider().Diagnose(context.Background(),
+		[]detection.Signal{probeSignal(detection.SignalRestartLoop, "api-1")})
+	require.NoError(t, err)
+	require.Len(t, diags, 1)
+	d := diags[0]
+	assert.Equal(t, string(detection.CategoryHealth), d.Category)
+	assert.Equal(t, actionInvestigate, d.SuggestedAction)
+	assert.Equal(t, detection.SignalRestartLoop, d.Contributing[0].Signal.Type)
+	assert.NotContains(t, d.Summary, "liveness probe")
+	assert.Contains(t, d.Summary, "restart")
+	assert.Greater(t, SignalClarity(detection.SignalRestartLoop), 0.5)
+}
+
+func TestProbeRule_LivenessSummaryIsNowEvidenceBacked(t *testing.T) {
+	diags, err := newTestProvider().Diagnose(context.Background(),
+		[]detection.Signal{probeSignal(detection.SignalLivenessRestarts, "api-1")})
+	require.NoError(t, err)
+	require.Len(t, diags, 1)
+	assert.Contains(t, diags[0].Summary, "liveness probe")
+	assert.NotContains(t, diags[0].Summary, "most likely", "the kubelet said so; this is no longer a guess")
+}
+
+func TestProbeRule_RestartLoopNeedsItsSignal(t *testing.T) {
+	assert.Nil(t, diagnoseRestartLoop(nil))
+	assert.False(t, matchRestartLoop([]detection.Signal{probeSignal(detection.SignalReadinessNotReady, "p")}))
 }

@@ -49,21 +49,15 @@ func TestReview_ReadinessGateHeldPodIsExcluded_Characterization(t *testing.T) {
 	assert.Empty(t, collectWith(t, c, []corev1.Pod{pod}, nil))
 }
 
-// R-7. First sight after an operator restart: the lifetime RestartCount stands in
-// for "restarts in the window". One kill 40s ago plus one a week ago reads as
-// "restarted 2 times in 10m0s". Passes; documents the false claim in the message.
-func TestReview_FirstSightUsesLifetimeCount_Characterization(t *testing.T) {
+// R-7 (F-7). First sight after an operator restart used to report the lifetime
+// RestartCount as "restarts in the window": one kill 40s ago plus one a week ago
+// read as "restarted 2 times in 10m0s". It now only seeds the history.
+func TestReview_FirstSightDoesNotClaimTheLifetimeCount(t *testing.T) {
 	c := newClock()
 	cs := restartedRunning(c, 2, "Error", 137, 40*time.Second) // second restart ever; first was last week
 	sigs := collectWith(t, c, []corev1.Pod{runningPod("api-1", cs)}, nil)
 
-	require.True(t, hasType(sigs, SignalLivenessRestarts))
-	for _, s := range sigs {
-		if s.Type == SignalLivenessRestarts {
-			assert.Equal(t, "2", s.Metadata["restartsInWindow"], "only ONE of those restarts is inside the window")
-			assert.Contains(t, s.Message, "restarted 2 times in 10m0s")
-		}
-	}
+	assert.False(t, hasLoop(sigs), "only ONE of those restarts is inside the window: %v", signalTypes(sigs))
 }
 
 // R-8. Staleness trusts the node's clock against the operator's. A node whose
@@ -124,10 +118,10 @@ func TestReview_ReplacementPodDoesNotInheritRestartHistory_Characterization(t *t
 	assert.Zero(t, delta)
 }
 
-// R-11. The tracker keeps EVERY sample inside the window, not just the points
-// where the count changed: memory is containers x window/interval for the whole
-// cluster, user-tunable through --liveness-restart-window. Passes; documents it.
-func TestReview_TrackerKeepsOneSamplePerObservation_Characterization(t *testing.T) {
+// R-11 (F-9). The tracker used to keep EVERY sample inside the window: memory was
+// containers x window/interval for the whole cluster, user-tunable through
+// --liveness-restart-window. It keeps the points where the count changed.
+func TestReview_TrackerKeepsChangePointsNotEveryObservation(t *testing.T) {
 	tr := newRestartTracker(24 * time.Hour)
 	now := time.Now()
 	for i := range 1440 { // a day at 60s
@@ -136,38 +130,46 @@ func TestReview_TrackerKeepsOneSamplePerObservation_Characterization(t *testing.
 	tr.mu.Lock()
 	n := len(tr.samples["shop/api-1/uid/main"])
 	tr.mu.Unlock()
-	assert.Equal(t, 1440, n, "one sample per cycle, although the count never moved")
+	assert.Equal(t, 1, n, "the count never moved: one point")
 	_ = resource.Quantity{}
 	_ = metav1.Time{}
 }
 
-// R-12. --liveness-restart-window shorter than the health-check interval makes
-// every sample fall out of the window before the next cycle, so history is always
-// "none" and the liveness signal can only ever fire at first sight. Nothing
-// validates the flag against --health-check-interval. Expected to FAIL: a
-// container restarted 3 -> 5 -> 7 times over three cycles raises nothing.
-func TestReview_WindowShorterThanTheCycleSilentlyDisablesLiveness_Bug(t *testing.T) {
+// R-12 (F-6). A --liveness-restart-window shorter than the health-check interval
+// drops every sample before the next cycle, so nothing could ever fire. The
+// collector cannot know the interval, so the operator rejects the combination at
+// startup (cmd: TestValidate_RejectsLivenessWindowShorterThanTwoCycles). This pins
+// the collector side of that contract: a window of two cycles works.
+func TestReview_WindowOfTwoCyclesWorks(t *testing.T) {
 	c := newClock()
-	opts := []PodCollectorOption{WithLivenessRestarts(2, 30*time.Second)}
-	cycles := livenessCycles(t, c, opts,
-		restartedRunning(c, 3, "Error", 137, 10*time.Second),
-		restartedRunning(c, 5, "Error", 137, 10*time.Second),
-		restartedRunning(c, 7, "Error", 137, 10*time.Second),
-	)
-	assert.True(t, hasType(cycles[2], SignalLivenessRestarts),
-		"a container restarted twice a minute, every minute, for three minutes must raise the signal (cycle 3 saw: %v)",
-		signalTypes(cycles[2]))
+	opts := []PodCollectorOption{WithLivenessRestarts(2, 2*time.Minute)}
+	cycles := livenessCyclesFn(t, c, opts, nil, 3, func(i int) corev1.ContainerStatus {
+		return restartedRunning(c, int32(3+2*i), "Error", 137, 10*time.Second)
+	})
+	assert.True(t, hasLoop(cycles[2]),
+		"a container restarted twice a minute, every minute, must raise the signal (cycle 3 saw: %v)", signalTypes(cycles[2]))
 }
 
-// R-14. A liveness kill is SIGTERM first. An app that traps SIGTERM and exits 0
-// leaves reason "Completed", exit 0: killedByProbeOrError rejects it, so a
-// liveness-probe fault against a gracefully-exiting app is still invisible (the
-// D0.8 hole B9 exists to close). Passes; documents the recall gap.
-func TestReview_LivenessKillThatExitsZeroOnSigtermIsMissed_Characterization(t *testing.T) {
+// R-14 (F-4). A liveness kill is SIGTERM first. An app that traps SIGTERM and exits
+// 0 leaves "Completed"/0, which the exit-code match rejects, so a liveness fault
+// against a gracefully-exiting app was invisible (the D0.8 hole). The kubelet's
+// own "failed liveness probe, will be restarted" Killing events are the primary
+// evidence now; without them an exit 0 is still not reported.
+func TestReview_LivenessKillThatExitsZeroOnSigtermIsDetectedFromKubeletEvents(t *testing.T) {
+	c := newClock()
+	evs := []corev1.Event{killingEvent("api-1", 2, ago(c, 20*time.Second))}
+	cycles := livenessCyclesWithEvents(t, c, nil, evs,
+		restartedRunning(c, 3, "Completed", 0, 10*time.Second),
+		restartedRunning(c, 5, "Completed", 0, 10*time.Second),
+	)
+	assert.True(t, hasType(cycles[1], SignalLivenessRestarts), "5 restarts in 2 minutes with kubelet kill events: got %v", signalTypes(cycles[1]))
+}
+
+func TestReview_ExitZeroWithoutKubeletEventsIsStillNotReported(t *testing.T) {
 	c := newClock()
 	cycles := livenessCycles(t, c, nil,
 		restartedRunning(c, 3, "Completed", 0, 10*time.Second),
 		restartedRunning(c, 5, "Completed", 0, 10*time.Second),
 	)
-	assert.False(t, hasType(cycles[1], SignalLivenessRestarts), "5 restarts in 2 minutes, exit 0: not reported")
+	assert.False(t, hasLoop(cycles[1]), "nothing says why it restarted, and exit 0 is not an error")
 }
