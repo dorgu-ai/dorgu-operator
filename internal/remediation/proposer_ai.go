@@ -167,15 +167,18 @@ func (p *Proposer) proposeWithPlanner(
 	// or refuse, whichever code above produced it: a step the proposer derived, a
 	// command that survived shaping, a plan that applies nothing for a diagnosed
 	// resource change (CR-01).
-	if refusal := p.seal(ctx, action, diag, incident, ruleEngineDeclined); refusal != nil {
+	sealed, refusal := p.seal(ctx, action, diag, incident, ruleEngineDeclined)
+	if refusal != nil {
 		return refusal, nil
 	}
 
-	return p.persist(ctx, action, dec)
+	// status.gate is the seal's decision: the first run ruled on a draft of this
+	// plan, and the seal on the object about to be written (R7).
+	return p.persist(ctx, action, sealed)
 }
 
-// seal runs the gate on the final shape of a plan and reports a refusal when it
-// would be anything but a clean pass. The plan was already clamped by the first
+// seal runs the gate on the final shape of a plan. It returns the sealing decision,
+// or a refusal when that would be anything but a clean pass. The plan was already clamped by the first
 // run, so a Clamp here means something after the gate changed it.
 func (p *Proposer) seal(
 	ctx context.Context,
@@ -183,27 +186,27 @@ func (p *Proposer) seal(
 	diag diagnosis.Diagnosis,
 	incident *dorguv1.IncidentMemory,
 	ruleEngineDeclined bool,
-) *ProposalResult {
+) (*gate.Decision, *ProposalResult) {
 	cand := candidateFor(action, diag, incident, true)
 	cand.Facts.AdvisoryAllowed = ruleEngineDeclined
 
 	final, err := p.gate.Run(ctx, cand, gate.PhaseProposal)
 	if err != nil {
 		p.logger.Error(err, "the gate could not re-verify the final plan; not proposing it", "action", action.Name)
-		return &ProposalResult{SkipReason: "the gate could not re-verify the final plan"}
+		return nil, &ProposalResult{SkipReason: "the gate could not re-verify the final plan"}
 	}
 	switch {
 	case !final.Allowed():
-		return skipped(final)
+		return nil, skipped(final)
 	case final.Result != gate.ResultPass:
 		p.logger.Info("the final plan was changed after the gate ruled on it; not proposing it",
 			"action", action.Name, "result", final.Result)
-		return &ProposalResult{
+		return nil, &ProposalResult{
 			SkipReason: "the final plan differed from what the gate cleared, so it was not proposed",
 			Decision:   final,
 		}
 	}
-	return nil
+	return final, nil
 }
 
 // mapPlannedSteps converts the planner's ordered steps into RemediationStep[].

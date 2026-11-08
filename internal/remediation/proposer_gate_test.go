@@ -109,7 +109,17 @@ func TestProposer_AIPath_StripsAPolicyChangeSmuggledIntoAPlan(t *testing.T) {
 		}
 	}
 	assert.Equal(t, []string{gate.ResourcePathMemory}, all, "only the memory quantity survives")
-	assert.Equal(t, string(gate.ResultClamp), result.Action.Status.Gate.Result)
+	// status.gate is the seal's decision on the plan that was written (R7): that plan
+	// is already clean, so the seal passes it. What was removed is recorded on the
+	// step itself, as data.
+	assert.Equal(t, string(gate.ResultPass), result.Action.Status.Gate.Result)
+	var removed []string
+	for _, step := range result.Action.Spec.Steps {
+		for _, rec := range step.Safety {
+			removed = append(removed, rec.Field)
+		}
+	}
+	assert.NotEmpty(t, removed, "the stripped fields stay on record in step.safety")
 }
 
 func TestProposer_GateRefusalIsReportedAsASkip(t *testing.T) {

@@ -20,13 +20,16 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/go-logr/logr"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
@@ -214,6 +217,9 @@ func (p *Proposer) Propose(ctx context.Context, diag diagnosis.Diagnosis, incide
 			"category", diag.Category)
 	} else if p.planner != nil {
 		result, err := p.proposeWithPlanner(ctx, diag, incident, pre)
+		if errors.Is(err, errPersistFailed) {
+			return nil, err
+		}
 		if err != nil {
 			p.logger.V(0).Info("AI remediation planning failed, falling back to rules",
 				"error", err, "category", diag.Category)
@@ -357,24 +363,57 @@ func installDecision(action *dorguv1.RemediationAction, dec *gate.Decision) {
 	action.Spec.Rollback = &verify
 }
 
+// errPersistFailed marks a RemediationAction that could not be recorded. It is not
+// a planning failure, so Propose must not fall back to a second proposal for it.
+var errPersistFailed = errors.New("recording the remediation failed")
+
 // persist writes the RemediationAction and records the gate's decision on its
 // status. The spec fields the gate also derives (workloadRef, step verdicts,
 // prePatchState) stay populated for one release; status.gate is the record to
 // trust.
+//
+// A RemediationAction whose status could not be written is not proposed (R11): it
+// would sit with no phase, which no controller acts on and the dedup check cannot
+// tell from a live one. The write is retried on a conflict; if it still fails the
+// action is deleted and the error returned, so the caller reports a failure
+// instead of a proposal that does not exist.
 func (p *Proposer) persist(ctx context.Context, action *dorguv1.RemediationAction, dec *gate.Decision) (*ProposalResult, error) {
 	if err := p.client.Create(ctx, action); err != nil {
 		return nil, fmt.Errorf("creating RemediationAction: %w", err)
 	}
 
-	action.Status = dorguv1.RemediationActionStatus{
-		Phase: phasePending,
-		Gate:  dec.Status(),
-	}
-	if err := p.client.Status().Update(ctx, action); err != nil {
-		p.logger.Error(err, "RemediationAction created but status update failed", "name", action.Name)
+	status := dorguv1.RemediationActionStatus{Phase: phasePending, Gate: dec.Status()}
+	key := client.ObjectKeyFromObject(action)
+	err := retry.OnError(retry.DefaultBackoff, retriableStatusWrite, func() error {
+		var fresh dorguv1.RemediationAction
+		if err := p.client.Get(ctx, key, &fresh); err != nil {
+			return err
+		}
+		fresh.Status = status
+		if err := p.client.Status().Update(ctx, &fresh); err != nil {
+			return err
+		}
+		fresh.DeepCopyInto(action)
+		return nil
+	})
+	if err != nil {
+		p.logger.Error(err, "RemediationAction created but its status could not be written; removing it",
+			"name", action.Name)
+		if delErr := p.client.Delete(ctx, action); delErr != nil && !apierrors.IsNotFound(delErr) {
+			p.logger.Error(delErr, "could not remove the RemediationAction that has no status; it needs deleting by hand",
+				"name", action.Name, "namespace", action.Namespace)
+		}
+		return nil, fmt.Errorf("%w: status of %s/%s: %w", errPersistFailed, action.Namespace, action.Name, err)
 	}
 
 	return &ProposalResult{Action: action, Proposed: true, Decision: dec}, nil
+}
+
+// retriableStatusWrite reports whether a failed status write is worth another
+// attempt: a conflict, or a read of an object the cache has not caught up with.
+func retriableStatusWrite(err error) bool {
+	return apierrors.IsConflict(err) || apierrors.IsNotFound(err) ||
+		apierrors.IsServerTimeout(err) || apierrors.IsTooManyRequests(err)
 }
 
 // resourceAdjustment is the outcome of sizing a resource change: the persona
