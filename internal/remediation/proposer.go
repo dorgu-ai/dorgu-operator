@@ -412,8 +412,9 @@ var errPersistFailed = errors.New("recording the remediation failed")
 // instead of a proposal that does not exist.
 func (p *Proposer) persist(ctx context.Context, action *dorguv1.RemediationAction, dec *gate.Decision) (*ProposalResult, error) {
 	// spec.action is a notification and nothing more (F7). It used to carry the
-	// merged persona patch for one release of back-compat, and a CLI from before
-	// tickets applies whatever patch it finds there without asking the operator.
+	// merged persona patch for one release of back-compat. Dropping it does not stop
+	// a CLI from before tickets: it reads steps[] first and patches without asking
+	// the operator, so the CLI has to be upgraded with the operator (CHANGELOG, B5).
 	// steps[] is the only plan, and what is applied is the ticket the gate issues at
 	// approval. The patch stays in the working copy above because the proposer
 	// still shapes a plan through it; it is stripped here, on the way out.

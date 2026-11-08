@@ -554,7 +554,7 @@ func TestTicket_DorgusOwnPatchAndStatusWritesAreNotSomeoneElse(t *testing.T) {
 	issued := fixedNow
 	touched := deployment("256Mi", func(d *appsv1.Deployment) { d.ResourceVersion = "99" })
 	g := newTestGate(t, withManagedFields(t, []metav1.ManagedFieldsEntry{
-		managed(DorguFieldManager, issued.Add(time.Second), ""),
+		stampedBy(DorguFieldManager, fieldsTicketMemory),
 		managed("kube-controller-manager", issued.Add(2*time.Second), "status"),
 		managed("kubectl-edit", issued.Add(-time.Hour), ""),
 	}, persona("256Mi"), touched))

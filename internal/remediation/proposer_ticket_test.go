@@ -139,8 +139,9 @@ func TestProposer_RuleBasedActionIsDerivedFromItsStep(t *testing.T) {
 
 // --- B5 fix round: F7, F9, V2 -----------------------------------------------------
 
-// F7: spec.action is a notification only. A pre-0.14 CLI applies the patch it finds
-// in spec.action without a ticket; there must be none to find.
+// F7: spec.action is a notification only: there is no second copy of the patch to
+// read. (A pre-0.14 CLI reads steps[] and still patches without a ticket; only
+// upgrading the CLI closes that, see the CHANGELOG.)
 func TestF7_TheProposedSpecActionCarriesNoPatch(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(newTestScheme()).
 		WithRuntimeObjects(newTestPersona(defaultNamespace, "my-app")).

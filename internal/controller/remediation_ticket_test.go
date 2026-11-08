@@ -436,12 +436,11 @@ func TestVerifyingHealthy_TheCLIsOwnPatchIsNotDivergence(t *testing.T) {
 				return err
 			}
 			if deployments, ok := list.(*appsv1.DeploymentList); ok {
-				stamp := metav1.NewTime(time.Now().Add(time.Second))
 				for i := range deployments.Items {
-					deployments.Items[i].ManagedFields = []metav1.ManagedFieldsEntry{{
-						Manager: gate.DorguFieldManager, Operation: metav1.ManagedFieldsOperationUpdate,
-						APIVersion: "apps/v1", FieldsType: "FieldsV1", Time: &stamp,
-					}}
+					deployments.Items[i].ManagedFields = []metav1.ManagedFieldsEntry{
+						lcStamp(gate.DorguFieldManager, lcTicketFields),
+						lcStamp("kube-controller-manager", lcRevisionFields),
+					}
 				}
 			}
 			return nil

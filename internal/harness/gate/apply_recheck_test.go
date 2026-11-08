@@ -200,15 +200,15 @@ func TestF5_AnOperatorClockAheadOfTheAPIServerStillCatchesTheWrite(t *testing.T)
 }
 
 func TestF5_TheDeploymentControllersRevisionStampIsNotSomeoneElse(t *testing.T) {
-	rollout := managed("kube-controller-manager", fixedNow.Add(time.Second), "")
-	assert.Nil(t, divergedBy(t, []metav1.ManagedFieldsEntry{managed(DorguFieldManager, fixedNow.Add(time.Second), ""), rollout}),
+	rollout := stampedBy(kubeControllerManager, fieldsRevisionAnnotation)
+	assert.Nil(t, divergedBy(t, []metav1.ManagedFieldsEntry{stampedBy(DorguFieldManager, fieldsTicketMemory), rollout}),
 		"the Deployment controller stamps the revision annotation after the CLI's own patch")
 	assert.NotNil(t, divergedBy(t, []metav1.ManagedFieldsEntry{managed("kube-controller-manager-x", fixedNow.Add(time.Second), "")}))
 }
 
 func TestF5_AWriteLongBeforeTheTicketIsNotDivergence(t *testing.T) {
 	old := managed("kubectl-edit", fixedNow.Add(-time.Hour), "")
-	assert.Nil(t, divergedBy(t, []metav1.ManagedFieldsEntry{old, managed(DorguFieldManager, fixedNow.Add(time.Second), "")}))
+	assert.Nil(t, divergedBy(t, []metav1.ManagedFieldsEntry{old, stampedBy(DorguFieldManager, fieldsTicketMemory)}))
 }
 
 func TestF5_OnlyTheExactDorguManagerNameIsDorgus(t *testing.T) {

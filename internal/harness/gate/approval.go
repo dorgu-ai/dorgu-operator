@@ -26,7 +26,6 @@ import (
 	"strings"
 	"time"
 
-	appsv1 "k8s.io/api/apps/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -60,9 +59,12 @@ const ClockSkewMargin = 5 * time.Second
 
 // kubeControllerManager is the field manager of the Deployment controller. It
 // stamps the rollout revision annotation after every template change (the CLI's
-// own patch included) and writes status through the status subresource. It never
-// changes what a human or a pipeline asked for, so a write by it is not someone
-// else moving the workload. Matched exactly.
+// own patch included) and writes status through the status subresource.
+//
+// Manager names are chosen by the client, so the name alone proves nothing: an
+// entry under this name is exempt from "somebody else wrote the Deployment" only
+// when what it owns is the revision annotation and nothing else (see
+// controllerOwnedPaths). Matched exactly.
 const kubeControllerManager = "kube-controller-manager"
 
 // ApprovalCandidate builds the candidate the approval re-check runs on from the
@@ -349,9 +351,12 @@ func (g *Gate) WorkloadDivergence(ctx context.Context, action *dorguv1.Remediati
 // workloadMoved compares the live Deployment to the ticket.
 //
 // A resourceVersion that moved is explained away only by evidence: managedFields
-// must show that every non-subresource write since the ticket was Dorgu's CLI.
-// Missing evidence is not an explanation. A Deployment with no managedFields at
-// all, or an entry with no timestamp, counts as changed by someone else (F5).
+// must show that every write since the ticket was Dorgu's CLI patching the
+// ticket's own fields, or the Deployment controller stamping the revision
+// annotation (stampsSince). Missing evidence is not an explanation: a Deployment
+// with no managedFields at all, or an entry with no timestamp, counts as changed
+// by someone else (F5). A write that leaves no stamp (a field deletion) still
+// moves metadata.generation, so the generation is bounded too (generationProblem, N2).
 func (g *Gate) workloadMoved(ctx context.Context, action *dorguv1.RemediationAction) (*TicketProblem, error) {
 	ticket := action.Status.ApplyTicket
 	key := ticketKey(action)
@@ -375,34 +380,15 @@ func (g *Gate) workloadMoved(ctx context.Context, action *dorguv1.RemediationAct
 	if string(dep.UID) != ticket.WorkloadUID {
 		return &TicketProblem{GuardrailLiveWorkload, "the Deployment was replaced since the ticket was written (its UID changed)"}, nil
 	}
-	if dep.ResourceVersion != ticket.ObservedResourceVersion {
-		if manager := changedByOthersSince(dep, ticketIssuedAt(ticket)); manager != "" {
-			return &TicketProblem{GuardrailLiveWorkload,
-				fmt.Sprintf("the Deployment was changed by %q since the ticket was written", manager)}, nil
-		}
+	stamps := stampsSince(dep, ticket, ticketIssuedAt(ticket))
+	if dep.ResourceVersion != ticket.ObservedResourceVersion && stamps.other != "" {
+		return &TicketProblem{GuardrailLiveWorkload,
+			fmt.Sprintf("the Deployment was changed by %q since the ticket was written", stamps.other)}, nil
+	}
+	if reason := generationProblem(dep, action, stamps); reason != "" {
+		return &TicketProblem{GuardrailLiveWorkload, reason}, nil
 	}
 	return nil, nil
-}
-
-// WorkloadGeneration is metadata.generation of the live Deployment the ticket is
-// bound to, read uncached. It errors when the workload cannot be read or is not the
-// ticket's: a generation of some other Deployment says nothing about this heal.
-func (g *Gate) WorkloadGeneration(ctx context.Context, action *dorguv1.RemediationAction) (int64, error) {
-	if g == nil || action.Status.ApplyTicket == nil {
-		return 0, errors.New("no gate or no ticket to read the workload for")
-	}
-	key := ticketKey(action)
-	obs, err := workload.Observe(ctx, g.reader, key.Namespace, key.Name)
-	if err != nil {
-		return 0, fmt.Errorf("reading the live workload for %s/%s: %w", key.Namespace, key.Name, err)
-	}
-	if obs == nil || obs.Deployment == nil {
-		return 0, errors.New("the Deployment the ticket was written against no longer exists")
-	}
-	if string(obs.Deployment.UID) != action.Status.ApplyTicket.WorkloadUID {
-		return 0, errors.New("the Deployment is not the one the ticket was written against")
-	}
-	return obs.Deployment.Generation, nil
 }
 
 // ticketIssuedAt is when the ticket was written. A ticket from before the issue
@@ -424,39 +410,6 @@ func ticketKey(action *dorguv1.RemediationAction) workloadKey {
 }
 
 type workloadKey struct{ Namespace, Name string }
-
-// unknownWriter is what changedByOthersSince reports when it can tell the
-// Deployment moved but not who moved it.
-const unknownWriter = "an unknown writer (no usable managedFields)"
-
-// changedByOthersSince names a field manager other than Dorgu's CLI that wrote the
-// Deployment (not a subresource such as status or scale) at or after since, or "".
-//
-// Only the exact manager name DorguFieldManager is Dorgu's. The stamps are the
-// apiserver's own, compared with a margin of ClockSkewMargin before since because
-// the issue time is the operator's clock. managedFields stamps whole seconds, so
-// the comparison is made at that resolution. No entries at all, or an entry with
-// no stamp, is reported as an unknown writer: the caller only asks once the
-// resourceVersion has moved, and a move nothing explains is not clean.
-func changedByOthersSince(dep *appsv1.Deployment, since time.Time) string {
-	cut := since.Add(-ClockSkewMargin).Truncate(time.Second)
-	if len(dep.ManagedFields) == 0 {
-		return unknownWriter
-	}
-	for i := range dep.ManagedFields {
-		mf := &dep.ManagedFields[i]
-		if mf.Subresource != "" || mf.Manager == DorguFieldManager || mf.Manager == kubeControllerManager {
-			continue
-		}
-		if mf.Time == nil {
-			return unknownWriter
-		}
-		if !mf.Time.Time.Before(cut) {
-			return mf.Manager
-		}
-	}
-	return ""
-}
 
 // ticketPatchProblem checks the ticket's patch is still a shape and content the
 // executor may apply, whoever wrote it: an object, no dotted keys, and only
