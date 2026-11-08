@@ -56,7 +56,10 @@ func NewVerifier(det *detection.Engine, c client.Client, logger logr.Logger) *Ve
 // Verify checks whether the remediation was effective by re-running detection
 // and comparing current signals against the original incident.
 func (v *Verifier) Verify(ctx context.Context, action *dorguv1.RemediationAction) (VerificationResult, error) {
-	// 1. Collect current signals from the detection engine.
+	// 1. Collect current signals from the detection engine. Any collector
+	// failure, even with other collectors reporting, means the absence of the
+	// original signal proves nothing: the one that could not look may be the one
+	// that would have seen it. Fail closed. Unknown retries end in a rollback.
 	signals, err := v.detection.CollectAll(ctx)
 	if err != nil {
 		v.logger.Error(err, "detection engine failed during verification")

@@ -176,23 +176,6 @@ func TestVerifier_Verify_Degraded_NewCriticalSignals(t *testing.T) {
 	}
 }
 
-func TestVerifier_Verify_Healthy_CollectorError(t *testing.T) {
-	// When a collector errors, the engine logs it and returns empty signals.
-	// Empty signals means the original signal is gone → Healthy.
-	incident := testIncident()
-
-	v := newTestVerifier(nil, fmt.Errorf("collector failure"), incident)
-	action := testRemediationAction()
-
-	result, err := v.Verify(context.Background(), action)
-	if err != nil {
-		t.Fatalf("expected no error (engine absorbs collector errors), got: %v", err)
-	}
-	if result != VerificationHealthy {
-		t.Errorf("expected Healthy (no signals found), got %s", result)
-	}
-}
-
 func TestVerifier_Verify_Unknown_MissingIncident(t *testing.T) {
 	// No incident in client → Unknown.
 	v := newTestVerifier(nil, nil)
@@ -332,5 +315,51 @@ func TestVerifier_Verify_UnidentifiableNamespaceIsUnknownNotHealthy(t *testing.T
 	}
 	if result != VerificationUnknown {
 		t.Errorf("expected Unknown, got %s", result)
+	}
+}
+
+// A verifier whose collectors cannot look must not call the change healthy:
+// "no signal seen" and "could not look" are different things. Unknown retries
+// end in a rollback (B2), so failing closed here is safe.
+func TestVerifier_Verify_CollectorFailureIsUnknownNotHealthy(t *testing.T) {
+	v := newTestVerifier(nil, fmt.Errorf("connection refused"), testIncident())
+
+	result, err := v.Verify(context.Background(), testRemediationAction())
+
+	if result != VerificationUnknown {
+		t.Errorf("expected Unknown when every collector failed, got %s", result)
+	}
+	if err == nil {
+		t.Error("expected an error naming the failed collector")
+	}
+}
+
+type failingCollector struct{ name string }
+
+func (f failingCollector) Name() string { return f.name }
+func (f failingCollector) Collect(_ context.Context) ([]detection.Signal, error) {
+	return nil, fmt.Errorf("%s: forbidden", f.name)
+}
+
+// One healthy collector that sees nothing does not make up for a blind one:
+// the signal may have been in the collector that failed.
+func TestVerifier_Verify_PartialCollectorFailureIsUnknownNotHealthy(t *testing.T) {
+	engine := detection.NewEngine(logr.Discard(),
+		&mockCollector{},
+		failingCollector{name: "pods"},
+	)
+	c := fake.NewClientBuilder().
+		WithScheme(newTestScheme()).
+		WithObjects(testIncident()).
+		Build()
+	v := NewVerifier(engine, c, logr.Discard())
+
+	result, err := v.Verify(context.Background(), testRemediationAction())
+
+	if result != VerificationUnknown {
+		t.Errorf("expected Unknown when one collector failed, got %s", result)
+	}
+	if err == nil {
+		t.Error("expected an error naming the failed collector")
 	}
 }

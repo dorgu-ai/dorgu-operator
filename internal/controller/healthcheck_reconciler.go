@@ -152,11 +152,20 @@ func (r *HealthCheckReconciler) Start(ctx context.Context) error {
 func (r *HealthCheckReconciler) reconcile(ctx context.Context) {
 	r.Logger.V(1).Info("starting reconciliation cycle")
 
-	// 1. Collect all signals from detection engine.
+	// 1. Collect all signals from detection engine. A partial failure still
+	// yields the signals the working collectors saw, and those are recorded as
+	// usual. What a partial cycle cannot do is conclude anything from silence:
+	// the collector that failed may be the one that would have reported the
+	// incident, so nothing is resolved this cycle (B2b).
 	signals, err := r.Detection.CollectAll(ctx)
+	incomplete := false
 	if err != nil {
-		r.Logger.Error(err, "failed to collect signals")
-		return
+		if !detection.IsPartial(err) {
+			r.Logger.Error(err, "failed to collect signals")
+			return
+		}
+		incomplete = true
+		r.Logger.Error(err, "signal collection incomplete: open incidents are kept and none are resolved this cycle")
 	}
 
 	// 2. Split the signals by application before diagnosing anything. Diagnosis
@@ -181,9 +190,12 @@ func (r *HealthCheckReconciler) reconcile(ctx context.Context) {
 	)
 	r.logCycleSummary(attempted, discarded)
 
-	// 4. Check for resolved incidents.
-	if err := r.resolveCleared(ctx, activeSignalKeys); err != nil {
-		r.Logger.Error(err, "failed to resolve cleared incidents")
+	// 4. Check for resolved incidents, unless detection was blind to part of the
+	// cluster: absence of a signal is only evidence when every collector ran.
+	if !incomplete {
+		if err := r.resolveCleared(ctx, activeSignalKeys); err != nil {
+			r.Logger.Error(err, "failed to resolve cleared incidents")
+		}
 	}
 
 	// 5. Publish the aggregate health update to whoever is listening.

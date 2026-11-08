@@ -210,7 +210,7 @@ func TestVerifyingUnknown_RetryCounterAdvancesThenRollsBack(t *testing.T) {
 	ra := lcRA("Verifying")
 
 	_, got := lcReconcile(t, rc, ra)
-	if got.Status.Phase != "Verifying" {
+	if got.Status.Phase != RemediationPhaseVerifying {
 		t.Fatalf("pass 1: phase = %q, want Verifying", got.Status.Phase)
 	}
 	if msg := lcCondition(got, ConditionVerified).Message; !strings.Contains(msg, "retry 1/2") {
@@ -218,7 +218,7 @@ func TestVerifyingUnknown_RetryCounterAdvancesThenRollsBack(t *testing.T) {
 	}
 
 	_, got = lcReconcile(t, rc, ra)
-	if got.Status.Phase != "Verifying" {
+	if got.Status.Phase != RemediationPhaseVerifying {
 		t.Fatalf("pass 2: phase = %q, want Verifying", got.Status.Phase)
 	}
 	if msg := lcCondition(got, ConditionVerified).Message; !strings.Contains(msg, "retry 2/2") {
@@ -235,6 +235,35 @@ func TestVerifyingUnknown_RetryCounterAdvancesThenRollsBack(t *testing.T) {
 	rb := lcCondition(got, ConditionRolledBack)
 	if rb == nil || rb.Reason != "VerificationUnknown" {
 		t.Errorf("RolledBack condition = %+v, want reason VerificationUnknown", rb)
+	}
+}
+
+// B2b: the verifier used to see no signals when every collector failed and
+// report Healthy, so a remediation was marked Completed without ever having
+// been checked. With the incident readable (the case that reached Healthy), a
+// blind detection engine must read as Unknown, burn the retries, and roll back.
+func TestVerifyingBlindCollectors_NeverCompleteAndRollBack(t *testing.T) {
+	blind := &stubCollector{name: "lc", err: fmt.Errorf("pods is forbidden")}
+	rc, c := lcControllerWithCollector(t,
+		[]client.Object{lcPersonaObj(lcApplied), lcIncidentObj(), lcRA("Verifying")}, blind)
+	ra := lcRA("Verifying")
+
+	for pass := 1; pass <= 2; pass++ {
+		_, got := lcReconcile(t, rc, ra)
+		if got.Status.Phase != RemediationPhaseVerifying {
+			t.Fatalf("pass %d: phase = %q, want Verifying: a blind verifier must not complete the action", pass, got.Status.Phase)
+		}
+		if got.Status.VerificationResult != string(remediation.VerificationUnknown) {
+			t.Fatalf("pass %d: verificationResult = %q, want Unknown", pass, got.Status.VerificationResult)
+		}
+	}
+
+	_, got := lcReconcile(t, rc, ra)
+	if got.Status.Phase != RemediationPhaseRolledBack {
+		t.Fatalf("pass 3: phase = %q, want RolledBack", got.Status.Phase)
+	}
+	if mem := lcPersonaMemory(t, c); mem != lcBaseline {
+		t.Errorf("persona memory = %s, want the pre-change %s", mem, lcBaseline)
 	}
 }
 

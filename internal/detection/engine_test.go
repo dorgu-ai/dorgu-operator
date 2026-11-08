@@ -19,6 +19,7 @@ package detection
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -108,8 +109,20 @@ func TestEngine_CollectAll_PartialFailure(t *testing.T) {
 	engine := NewEngine(logger, bad, good)
 	signals, err := engine.CollectAll(context.Background())
 
-	require.NoError(t, err)
+	// The working collector's signals still come back, but the failure is
+	// reported: a caller must never mistake "bad could not look" for "bad saw
+	// nothing".
+	require.Error(t, err)
 	assert.Len(t, signals, 1, "should still return signals from working collectors")
+
+	var collErr *CollectionError
+	require.True(t, errors.As(err, &collErr), "the error must be a *CollectionError")
+	require.Len(t, collErr.Failures, 1)
+	assert.Equal(t, "bad", collErr.Failures[0].Collector)
+	assert.EqualError(t, collErr.Failures[0].Err, "connection refused")
+	assert.Equal(t, []string{"bad"}, collErr.Collectors())
+	assert.Contains(t, err.Error(), "bad")
+	assert.Contains(t, err.Error(), "connection refused")
 }
 
 func TestEngine_CollectAll_SortsBySeverityThenTime(t *testing.T) {
@@ -154,6 +167,19 @@ func TestEngine_CollectAll_AllCollectorsFail(t *testing.T) {
 	engine := NewEngine(logger, bad1, bad2)
 	signals, err := engine.CollectAll(context.Background())
 
-	require.NoError(t, err)
+	require.Error(t, err, "a blind engine must say so, not return an empty healthy-looking result")
 	assert.Empty(t, signals)
+
+	var collErr *CollectionError
+	require.True(t, errors.As(err, &collErr))
+	assert.Equal(t, []string{"bad1", "bad2"}, collErr.Collectors())
+	assert.ErrorIs(t, err, bad1.err, "the wrapped collector errors stay reachable")
+	assert.ErrorIs(t, err, bad2.err)
+}
+
+func TestIsPartial(t *testing.T) {
+	assert.False(t, IsPartial(nil))
+	assert.False(t, IsPartial(errors.New("other")))
+	assert.True(t, IsPartial(&CollectionError{Failures: []CollectorFailure{{Collector: "x", Err: errors.New("e")}}}))
+	assert.True(t, IsPartial(fmt.Errorf("wrapped: %w", &CollectionError{})))
 }
