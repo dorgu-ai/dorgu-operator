@@ -237,9 +237,14 @@ spec:
                           this flag. Use mode: observe to stop at diagnosis.
                         type: boolean
                       excludeNamespaces:
-                        description: excludeNamespaces lists namespaces excluded from
-                          auto-remediation.
+                        description: |-
+                          excludeNamespaces lists namespaces excluded from auto-remediation. Each entry
+                          is a namespace name, so it must be a DNS-1123 label: a capital letter, a
+                          wildcard or a stray space can never match a namespace and would protect
+                          nothing while looking as if it did.
                         items:
+                          maxLength: 63
+                          pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
                           type: string
                         type: array
                       maxRemediationsPerHour:

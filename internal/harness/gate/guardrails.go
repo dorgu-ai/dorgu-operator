@@ -137,7 +137,11 @@ func (s guardrailsStage) personaWide(ctx context.Context, cand *Candidate, d *De
 		namespace = cand.Namespace
 	}
 	if v := s.g.NamespaceDenied(ctx, namespace); v != nil {
-		d.refuse(StageGuardrails, GuardrailDenyList, v.Message, nil)
+		guardrail := GuardrailDenyList
+		if v.Rule == RuleOperatorNamespace {
+			guardrail = GuardrailOperatorNamespace
+		}
+		d.refuse(StageGuardrails, guardrail, v.Message, nil)
 	} else {
 		d.pass(StageGuardrails, GuardrailDenyList, "namespace is not protected", nil)
 	}
@@ -577,7 +581,8 @@ func (g *Gate) siblings(ctx context.Context, cand *Candidate) ([]dorguv1.Remedia
 	return out, nil
 }
 
-// maxRemediationsPerHour reads the rate limit from the ClusterPersonas. A list
+// maxRemediationsPerHour reads the rate limit from the ClusterPersonas (the lowest
+// one set). A list
 // error is returned, not defaulted: an unreadable limit is unknown, and unknown
 // fails closed.
 func (g *Gate) maxRemediationsPerHour(ctx context.Context) (int32, error) {
@@ -586,11 +591,20 @@ func (g *Gate) maxRemediationsPerHour(ctx context.Context) (int32, error) {
 		return 0, fmt.Errorf("listing ClusterPersonas: %w", err)
 	}
 
+	// Several ClusterPersonas each may set a limit: the lowest wins, whatever order
+	// the list comes back in.
+	limit := int32(0)
 	for i := range clusterPersonas.Items {
 		cp := &clusterPersonas.Items[i]
-		if cp.Spec.Policies != nil && cp.Spec.Policies.SelfHealing != nil && cp.Spec.Policies.SelfHealing.MaxRemediationsPerHour > 0 {
-			return cp.Spec.Policies.SelfHealing.MaxRemediationsPerHour, nil
+		if cp.Spec.Policies == nil || cp.Spec.Policies.SelfHealing == nil {
+			continue
 		}
+		if v := cp.Spec.Policies.SelfHealing.MaxRemediationsPerHour; v > 0 && (limit == 0 || v < limit) {
+			limit = v
+		}
+	}
+	if limit > 0 {
+		return limit, nil
 	}
 	return DefaultMaxRemediationsPerHour, nil
 }

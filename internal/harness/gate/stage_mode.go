@@ -18,6 +18,7 @@ package gate
 
 import (
 	"context"
+	"fmt"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 )
@@ -36,54 +37,77 @@ type modePolicyStage struct{ g *Gate }
 func (modePolicyStage) Name() string { return StageModePolicy }
 
 func (s modePolicyStage) Run(ctx context.Context, cand *Candidate, d *Decision) error {
-	mode := s.selfHealingMode(ctx)
+	mode, err := s.selfHealingMode(ctx)
+	if err != nil {
+		// Fail closed: a policy that cannot be read is not the default policy.
+		s.g.logger.Error(err, "cannot read the ClusterPersona selfHealing mode; refusing until it is readable")
+		d.refuse(StageModePolicy, GuardrailSelfHealingMode,
+			"the self-healing mode could not be read, so nothing can be cleared", nil)
+		return nil
+	}
 	numbers := map[string]string{"mode": mode}
-
 	switch mode {
 	case dorguv1.SelfHealingModeObserve:
 		s.g.logger.Info(SkipReasonObserveMode,
 			"persona", cand.Target.Name, "incident", cand.IncidentRef.Name,
 			"hint", "set spec.policies.selfHealing.mode=propose on the ClusterPersona to receive remediation proposals")
 		d.refuse(StageModePolicy, GuardrailSelfHealingMode, SkipReasonObserveMode, numbers)
-
 	case dorguv1.SelfHealingModeAutoApprove:
 		s.g.logger.Info("selfHealing.mode=auto-approve is not implemented — treating as propose; human approval is still required",
 			"persona", cand.Target.Name, "incident", cand.IncidentRef.Name)
 		d.pass(StageModePolicy, GuardrailSelfHealingMode,
 			"auto-approve is not implemented; treated as propose, human approval still required", numbers)
-
 	case dorguv1.SelfHealingModePropose:
 		d.pass(StageModePolicy, GuardrailSelfHealingMode, "mode is propose", numbers)
-
 	default:
-		s.g.logger.Info("unrecognized selfHealing.mode — treating as propose",
-			"mode", mode, "persona", cand.Target.Name, "incident", cand.IncidentRef.Name)
-		d.pass(StageModePolicy, GuardrailSelfHealingMode, "unrecognized mode treated as propose", numbers)
+		// The CRD enumerates the modes, so this is an object that predates or
+		// bypassed it. It is not a mode the harness knows how to honour.
+		s.g.logger.Info("unrecognized selfHealing.mode; refusing", "mode", mode,
+			"persona", cand.Target.Name, "incident", cand.IncidentRef.Name)
+		d.refuse(StageModePolicy, GuardrailSelfHealingMode,
+			"the self-healing mode is not one the harness recognizes, so nothing can be cleared", numbers)
 	}
 	return nil
 }
 
-// selfHealingMode resolves the cluster-wide selfHealing mode: the first
-// ClusterPersona that declares one wins. It falls back to propose, the CRD
-// default, when none does or the list fails, so a lookup error degrades to the
-// documented default rather than silently disabling healing. (The Guardrails
-// stage fails closed on the same list, so a persistent failure still stops
-// proposals.)
-func (s modePolicyStage) selfHealingMode(ctx context.Context) string {
+// modeRank orders the modes by how little they allow: a higher rank is more
+// restrictive. An unrecognized mode outranks every real one.
+func modeRank(mode string) int {
+	switch mode {
+	case dorguv1.SelfHealingModeAutoApprove:
+		return 1
+	case dorguv1.SelfHealingModePropose:
+		return 2
+	case dorguv1.SelfHealingModeObserve:
+		return 3
+	default:
+		return 4
+	}
+}
+
+// selfHealingMode resolves the cluster-wide selfHealing mode across every
+// ClusterPersona: the MOST restrictive declared mode wins (observe over propose
+// over auto-approve), whatever order the list comes back in, because the order
+// of a list is not a policy. With none declared it is propose, the CRD default.
+// A list error is returned: an unreadable policy is unknown, and unknown fails
+// closed.
+func (s modePolicyStage) selfHealingMode(ctx context.Context) (string, error) {
 	var clusterPersonas dorguv1.ClusterPersonaList
 	if err := s.g.client.List(ctx, &clusterPersonas); err != nil {
-		s.g.logger.V(1).Info("failed to list ClusterPersonas for selfHealing mode, assuming propose", "error", err)
-		return dorguv1.SelfHealingModePropose
+		return "", fmt.Errorf("listing ClusterPersonas: %w", err)
 	}
-
+	resolved := ""
 	for i := range clusterPersonas.Items {
 		policies := clusterPersonas.Items[i].Spec.Policies
-		if policies == nil || policies.SelfHealing == nil {
+		if policies == nil || policies.SelfHealing == nil || policies.SelfHealing.Mode == "" {
 			continue
 		}
-		if mode := policies.SelfHealing.Mode; mode != "" {
-			return mode
+		if mode := policies.SelfHealing.Mode; resolved == "" || modeRank(mode) > modeRank(resolved) {
+			resolved = mode
 		}
 	}
-	return dorguv1.SelfHealingModePropose
+	if resolved == "" {
+		return dorguv1.SelfHealingModePropose, nil
+	}
+	return resolved, nil
 }

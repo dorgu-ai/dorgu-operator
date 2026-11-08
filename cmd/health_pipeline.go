@@ -63,9 +63,17 @@ func buildHealthPipeline(
 	// The gate is built first because it is the single deny-list and the single
 	// decision point: it gates the remediation proposer and the diagnosis
 	// provider's model call alike.
-	g := gate.New(c, log,
+	gateOpts := []gate.Option{
 		gate.WithProtectedNamespaces(operatorNS),
-		gate.WithProtectedNamespaces(cfg.safetyExcludedNamespaces...))
+		gate.WithProtectedNamespaces(cfg.safetyExcludedNamespaces...),
+	}
+	if operatorNS == "" {
+		// The deny-list cannot protect a namespace it cannot name. Fail closed: the
+		// gate refuses every proposal, rule-based ones included, rather than risk
+		// planning a change in the namespace Dorgu itself runs in.
+		gateOpts = append(gateOpts, gate.WithOperatorNamespaceUnknown())
+	}
+	g := gate.New(c, log, gateOpts...)
 
 	providers := []diagnosis.DiagnosisProvider{diagnosis.NewRuleBasedProvider(log)}
 

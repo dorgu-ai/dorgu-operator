@@ -133,6 +133,10 @@ const (
 	// RuleFailedCooldown is the quiet period after a remediation that went wrong.
 	RuleFailedCooldown = "failed-cooldown"
 
+	// RuleOperatorNamespace is the refusal when the operator's own namespace is
+	// unknown, so the deny-list cannot protect it.
+	RuleOperatorNamespace = "operator-namespace"
+
 	// RuleBlastRadius is the cap on how far one change may move a value.
 	RuleBlastRadius = "blast-radius"
 )

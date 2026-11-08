@@ -125,7 +125,12 @@ type SelfHealingPolicy struct {
 	// +kubebuilder:default=5
 	MaxRemediationsPerHour int32 `json:"maxRemediationsPerHour"`
 
-	// excludeNamespaces lists namespaces excluded from auto-remediation.
+	// excludeNamespaces lists namespaces excluded from auto-remediation. Each entry
+	// is a namespace name, so it must be a DNS-1123 label: a capital letter, a
+	// wildcard or a stray space can never match a namespace and would protect
+	// nothing while looking as if it did.
+	// +kubebuilder:validation:items:MaxLength=63
+	// +kubebuilder:validation:items:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
 	// +optional
 	ExcludeNamespaces []string `json:"excludeNamespaces,omitempty"`
 

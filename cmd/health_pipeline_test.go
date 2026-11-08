@@ -21,11 +21,13 @@ import (
 	"testing"
 
 	"github.com/go-logr/logr"
+	appsv1 "k8s.io/api/apps/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
+	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
 )
 
 const testOperatorNS = "dorgu-system"
@@ -42,6 +44,9 @@ func buildForTest(t *testing.T, cfg operatorConfig, operatorNS string) healthPip
 	t.Helper()
 	scheme := runtime.NewScheme()
 	if err := dorguv1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := appsv1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
 	c := fake.NewClientBuilder().WithScheme(scheme).Build()
@@ -68,17 +73,17 @@ func TestBuildHealthPipeline_AIProviderGateProtectsOperatorNamespace(t *testing.
 	ai := aiProvider(t, p)
 	ctx := context.Background()
 
-	gate := ai.Gate()
-	if gate == nil {
+	g := ai.Gate()
+	if g == nil {
 		t.Fatal("AI provider has no gate: it would send nothing, or worse, be mis-wired")
 	}
-	if !gate.NamespaceProtected(ctx, testOperatorNS) {
+	if !g.NamespaceProtected(ctx, testOperatorNS) {
 		t.Errorf("AI provider's gate does not protect the operator namespace %q", testOperatorNS)
 	}
-	if !gate.NamespaceProtected(ctx, "kube-system") {
+	if !g.NamespaceProtected(ctx, "kube-system") {
 		t.Error("AI provider's gate does not protect kube-system")
 	}
-	if gate.NamespaceProtected(ctx, "shop") {
+	if g.NamespaceProtected(ctx, "shop") {
 		t.Error("AI provider's gate protects an ordinary namespace; the deny-list is over-broad")
 	}
 }
@@ -103,6 +108,55 @@ func TestBuildHealthPipeline_OneDenyListSharedByProviderAndProposer(t *testing.T
 		if !p.Gate.NamespaceProtected(ctx, ns) {
 			t.Errorf("namespace %q is not protected", ns)
 		}
+	}
+}
+
+// TestBuildHealthPipeline_ProviderAndProposerShareOneGateInstance is design answer
+// 2 of the B1 review: the AI diagnosis provider and the proposer are handed the
+// SAME *gate.Gate, not two gates that happen to be configured alike. A second gate
+// built without the operator namespace, or one that missed an exclusion, would
+// let one path through that the other refuses.
+func TestBuildHealthPipeline_ProviderAndProposerShareOneGateInstance(t *testing.T) {
+	p := buildForTest(t, aiConfig(), testOperatorNS)
+
+	providerGate, ok := aiProvider(t, p).Gate().(*gate.Gate)
+	if !ok {
+		t.Fatalf("the AI provider's gate is a %T, want the pipeline's *gate.Gate", aiProvider(t, p).Gate())
+	}
+	if providerGate != p.Proposer.Gate() {
+		t.Error("the AI provider and the proposer hold different gate instances")
+	}
+	if providerGate != p.Gate {
+		t.Error("the providers' gate is not the pipeline's gate")
+	}
+}
+
+// R12: with the operator namespace unknown the pipeline's gate refuses every
+// proposal, rule-based included, and a known namespace leaves proposals alone.
+func TestBuildHealthPipeline_UnknownOperatorNamespaceBlocksProposals(t *testing.T) {
+	ctx := context.Background()
+	cand := gate.Candidate{
+		Target:    dorguv1.PersonaReference{Kind: "ApplicationPersona", Name: "web", Namespace: "shop"},
+		Namespace: "shop",
+		Action:    dorguv1.RemediationActionDetail{Type: dorguv1.ActionTypeNotification},
+	}
+
+	unknown := buildForTest(t, aiConfig(), "")
+	dec, err := unknown.Gate.Run(ctx, cand, gate.PhaseProposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, guardrail := dec.RefusedBy(); dec.Allowed() || guardrail != gate.GuardrailOperatorNamespace {
+		t.Errorf("unknown operator namespace: allowed=%v guardrail=%q, want a refusal by %q",
+			dec.Allowed(), guardrail, gate.GuardrailOperatorNamespace)
+	}
+	if !unknown.Gate.NamespaceProtected(ctx, "shop") {
+		t.Error("an ordinary namespace must read as protected while the operator namespace is unknown")
+	}
+
+	known := buildForTest(t, aiConfig(), testOperatorNS)
+	if known.Gate.NamespaceProtected(ctx, "shop") {
+		t.Error("a known operator namespace must not block ordinary namespaces")
 	}
 }
 

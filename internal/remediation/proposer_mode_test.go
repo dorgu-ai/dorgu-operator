@@ -113,9 +113,9 @@ func TestProposer_SelfHealingModeGate(t *testing.T) {
 			wantLogSubstr: "not implemented",
 		},
 		{
-			name:          "unrecognized_mode_falls_back_to_propose",
+			name:          "unrecognized_mode_fails_closed",
 			clusterMode:   "yolo",
-			wantProposed:  true,
+			wantProposed:  false,
 			wantLogSubstr: "unrecognized selfHealing.mode",
 		},
 		{

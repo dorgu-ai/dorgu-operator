@@ -73,6 +73,7 @@ type Option func(*Gate)
 func WithProtectedNamespaces(namespaces ...string) Option {
 	return func(g *Gate) {
 		for _, ns := range namespaces {
+			ns = NormalizeNamespace(ns)
 			if ns != "" && !slices.Contains(g.protected, ns) {
 				g.protected = append(g.protected, ns)
 			}

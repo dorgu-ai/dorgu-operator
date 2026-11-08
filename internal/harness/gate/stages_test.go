@@ -103,8 +103,8 @@ func TestModePolicy(t *testing.T) {
 			dorguv1.SelfHealingModeObserve, false},
 		{"auto-approve is not implemented and acts as propose", []clientObject{clusterPersona(func(p *dorguv1.SelfHealingPolicy) { p.Mode = dorguv1.SelfHealingModeAutoApprove })},
 			dorguv1.SelfHealingModeAutoApprove, true},
-		{"an unrecognised mode acts as propose", []clientObject{clusterPersona(func(p *dorguv1.SelfHealingPolicy) { p.Mode = "yolo" })},
-			"yolo", true},
+		{"an unrecognised mode fails closed (R6)", []clientObject{clusterPersona(func(p *dorguv1.SelfHealingPolicy) { p.Mode = "yolo" })},
+			"yolo", false},
 		{"a persona without a mode is skipped", []clientObject{
 			clusterPersona(nil),
 			func() clientObject {
@@ -121,16 +121,11 @@ func TestModePolicy(t *testing.T) {
 
 			assert.Equal(t, tt.allowed, d.Allowed(), d.SkipReason())
 			assert.Equal(t, tt.want, verdict(d, GuardrailSelfHealingMode).Numbers["mode"])
-			if !tt.allowed {
+			if !tt.allowed && tt.want == dorguv1.SelfHealingModeObserve {
 				assert.Equal(t, SkipReasonObserveMode, d.SkipReason())
 			}
 		})
 	}
-}
-
-func TestModePolicy_ListFailureDegradesToPropose(t *testing.T) {
-	g := newTestGate(t, failingListClient(t, isKind[*dorguv1.ClusterPersonaList], persona("256Mi")))
-	assert.Equal(t, dorguv1.SelfHealingModePropose, modePolicyStage{g}.selfHealingMode(t.Context()))
 }
 
 func TestModePolicy_AlsoGatesAnApproval(t *testing.T) {

@@ -20,9 +20,18 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 )
+
+// NormalizeNamespace is the form namespaces are compared in: trimmed and
+// lowercased. A namespace name is a DNS label, so " Shop" can only have meant
+// "shop"; matching byte for byte made an entry with a stray space or a capital
+// protect nothing while looking as if it did (R5).
+func NormalizeNamespace(namespace string) string {
+	return strings.ToLower(strings.TrimSpace(namespace))
+}
 
 // NamespaceProtected is NamespaceDenied as a yes/no, for callers that only need
 // the verdict. It satisfies diagnosis.NamespaceGate, so the diagnosis provider
@@ -48,10 +57,19 @@ func (g *Gate) NamespaceDenied(ctx context.Context, namespace string) *Violation
 		}
 	}
 
+	namespace = NormalizeNamespace(namespace)
 	if namespace == "" {
 		return &Violation{
 			Rule:    RuleDenyList,
 			Message: "namespace could not be determined, so the deny list cannot clear it",
+		}
+	}
+	// The operator could not learn its own namespace, so the deny-list cannot say
+	// which namespace is Dorgu's. Nothing is cleared until it can (R12).
+	if g.operatorNamespaceUnknown {
+		return &Violation{
+			Rule:    RuleOperatorNamespace,
+			Message: "the operator's own namespace is unknown, so no namespace can be cleared",
 		}
 	}
 
@@ -98,7 +116,9 @@ func (g *Gate) excludedNamespaces(ctx context.Context) ([]string, error) {
 	for i := range clusterPersonas.Items {
 		cp := &clusterPersonas.Items[i]
 		if cp.Spec.Policies != nil && cp.Spec.Policies.SelfHealing != nil {
-			excluded = append(excluded, cp.Spec.Policies.SelfHealing.ExcludeNamespaces...)
+			for _, ns := range cp.Spec.Policies.SelfHealing.ExcludeNamespaces {
+				excluded = append(excluded, NormalizeNamespace(ns))
+			}
 		}
 	}
 	return excluded, nil
