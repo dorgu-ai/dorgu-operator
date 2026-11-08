@@ -20,49 +20,32 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"net/http"
-	"net/http/httptest"
-	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/dorgu-ai/dorgu-operator/internal/llm"
+	"github.com/dorgu-ai/dorgu-operator/internal/llm/llmtest"
 )
 
-// toolUseResponse builds an Anthropic Messages API response carrying a single
-// tool_use block with the given input.
-func toolUseResponse(input map[string]any) claudeResponse {
+// planReply is the structured reply the real providers hand back for a plan.
+func planReply(input map[string]any) *llm.Response {
 	raw, _ := json.Marshal(input)
-	return claudeResponse{
-		StopReason: "tool_use",
-		Content: []claudeContent{
-			{Type: "tool_use", Name: planToolName, Input: raw},
-		},
-	}
+	return &llm.Response{JSON: raw, Usage: llm.Usage{InputTokens: 900, OutputTokens: 300}}
 }
 
-func writeJSON(t *testing.T, w http.ResponseWriter, v any) {
-	t.Helper()
-	w.Header().Set("Content-Type", "application/json")
-	require.NoError(t, json.NewEncoder(w).Encode(v))
+func planWith(client llm.Client) *LLMPlanner {
+	p, err := New(client)
+	if err != nil {
+		panic(err)
+	}
+	return p
 }
 
 func TestPlanRemediation_WellFormed(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Verify request shape: forced tool use with the plan tool.
-		assert.Equal(t, http.MethodPost, r.Method)
-		assert.Equal(t, "test-key", r.Header.Get("x-api-key"))
-		assert.Equal(t, anthropicVersion, r.Header.Get("anthropic-version"))
-
-		var req claudeRequest
-		require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
-		assert.Equal(t, "tool", req.ToolChoice.Type)
-		assert.Equal(t, planToolName, req.ToolChoice.Name)
-		require.Len(t, req.Tools, 1)
-		assert.True(t, req.Tools[0].Strict)
-		assert.Equal(t, planMaxTokens, req.MaxTokens)
-
-		writeJSON(t, w, toolUseResponse(map[string]any{
+	client := llmtest.New(func(llm.Request) (*llm.Response, error) {
+		return planReply(map[string]any{
 			"rootCause":  "memory limit too low for workload peak",
 			"confidence": 0.9,
 			"steps": []map[string]any{
@@ -82,13 +65,10 @@ func TestPlanRemediation_WellFormed(t *testing.T) {
 					"risk":        "medium",
 				},
 			},
-		}))
-	}))
-	defer server.Close()
+		}), nil
+	})
 
-	p := &ClaudePlanner{apiKey: "test-key", model: defaultClaudeModel, client: server.Client(), baseURL: server.URL}
-
-	plan, err := p.PlanRemediation(context.Background(), RemediationContext{})
+	plan, err := planWith(client).PlanRemediation(context.Background(), RemediationContext{})
 	require.NoError(t, err)
 	require.NotNil(t, plan)
 	assert.Equal(t, "memory limit too low for workload peak", plan.RootCause)
@@ -102,107 +82,101 @@ func TestPlanRemediation_WellFormed(t *testing.T) {
 
 	assert.Equal(t, "restart", plan.Steps[1].Type)
 	assert.Empty(t, plan.Steps[1].Patch, "advisory step carries no patch")
+
+	// The request is the planning request: structured, with the plan tool.
+	require.Equal(t, 1, client.Calls())
+	req := client.Requests()[0]
+	assert.Equal(t, llm.PurposePlanning, req.Purpose)
+	assert.Equal(t, planSystemPrompt, req.System)
+	assert.Equal(t, planMaxTokens, req.MaxTokens)
+	assert.Equal(t, planTimeout, req.Timeout)
+	require.NotNil(t, req.Schema)
+	assert.Equal(t, planToolName, req.Schema.Name)
+	assert.Equal(t, planToolSchema(), req.Schema.Definition)
 }
 
 func TestPlanRemediation_MalformedRetriesThenErrors(t *testing.T) {
-	var calls int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		atomic.AddInt32(&calls, 1)
-		// No tool_use block — malformed for our purposes.
-		writeJSON(t, w, claudeResponse{
-			StopReason: "end_turn",
-			Content:    []claudeContent{{Type: "text", Text: "I cannot produce JSON"}},
-		})
-	}))
-	defer server.Close()
+	// No structured reply at all: prose, which is malformed for our purposes.
+	client := llmtest.New(func(llm.Request) (*llm.Response, error) {
+		return llmtest.TextReply("I cannot produce JSON"), nil
+	})
 
-	p := &ClaudePlanner{apiKey: "test-key", model: defaultClaudeModel, client: server.Client(), baseURL: server.URL}
-
-	plan, err := p.PlanRemediation(context.Background(), RemediationContext{})
+	plan, err := planWith(client).PlanRemediation(context.Background(), RemediationContext{})
 	require.Error(t, err)
 	assert.Nil(t, plan)
 	assert.True(t, errors.Is(err, ErrMalformedPlan), "expected ErrMalformedPlan, got %v", err)
-	assert.Equal(t, int32(2), atomic.LoadInt32(&calls), "should retry once (2 total attempts)")
+	assert.Equal(t, 2, client.Calls(), "should retry once (2 total attempts)")
+}
+
+func TestPlanRemediation_UnparseableStructuredReplyIsMalformed(t *testing.T) {
+	client := llmtest.New(func(llm.Request) (*llm.Response, error) {
+		return &llm.Response{JSON: json.RawMessage(`{"rootCause": 7}`)}, nil
+	})
+
+	_, err := planWith(client).PlanRemediation(context.Background(), RemediationContext{})
+	assert.True(t, errors.Is(err, ErrMalformedPlan), "got %v", err)
 }
 
 func TestPlanRemediation_MalformedThenValidSucceeds(t *testing.T) {
-	var calls int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		n := atomic.AddInt32(&calls, 1)
-		if n == 1 {
-			// First attempt: malformed (no tool_use).
-			writeJSON(t, w, claudeResponse{Content: []claudeContent{{Type: "text", Text: "oops"}}})
-			return
+	calls := 0
+	client := llmtest.New(func(llm.Request) (*llm.Response, error) {
+		calls++
+		if calls == 1 {
+			return llmtest.TextReply("oops"), nil
 		}
-		writeJSON(t, w, toolUseResponse(map[string]any{
+		return planReply(map[string]any{
 			"rootCause":  "ok",
 			"confidence": 0.7,
 			"steps": []map[string]any{
 				{"order": 1, "type": "manual", "description": "investigate", "rationale": "n/a", "risk": "low"},
 			},
-		}))
-	}))
-	defer server.Close()
+		}), nil
+	})
 
-	p := &ClaudePlanner{apiKey: "test-key", model: defaultClaudeModel, client: server.Client(), baseURL: server.URL}
-
-	plan, err := p.PlanRemediation(context.Background(), RemediationContext{})
+	plan, err := planWith(client).PlanRemediation(context.Background(), RemediationContext{})
 	require.NoError(t, err)
 	require.NotNil(t, plan)
-	assert.Equal(t, int32(2), atomic.LoadInt32(&calls))
+	assert.Equal(t, 2, client.Calls())
 	require.Len(t, plan.Steps, 1)
 	assert.Equal(t, "manual", plan.Steps[0].Type)
 }
 
-func TestPlanRemediation_HTTPErrorNoRetry(t *testing.T) {
-	var calls int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		atomic.AddInt32(&calls, 1)
-		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = w.Write([]byte(`{"error":"boom"}`))
-	}))
-	defer server.Close()
+func TestPlanRemediation_RequestErrorNoRetry(t *testing.T) {
+	boom := errors.New("API returned status 500")
+	client := llmtest.Failing(boom)
 
-	p := &ClaudePlanner{apiKey: "test-key", model: defaultClaudeModel, client: server.Client(), baseURL: server.URL}
-
-	plan, err := p.PlanRemediation(context.Background(), RemediationContext{})
+	plan, err := planWith(client).PlanRemediation(context.Background(), RemediationContext{})
 	require.Error(t, err)
 	assert.Nil(t, plan)
-	assert.False(t, errors.Is(err, ErrMalformedPlan), "HTTP error is not a malformed-plan error")
-	assert.Equal(t, int32(1), atomic.LoadInt32(&calls), "transport/HTTP errors are not retried")
+	assert.ErrorIs(t, err, boom)
+	assert.False(t, errors.Is(err, ErrMalformedPlan), "a failed request is not a malformed-plan error")
+	assert.Equal(t, 1, client.Calls(), "failed requests are not retried")
 }
 
 func TestPlanRemediation_InvalidPatchDropped(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(t, w, toolUseResponse(map[string]any{
+	client := llmtest.New(func(llm.Request) (*llm.Response, error) {
+		return planReply(map[string]any{
 			"rootCause":  "x",
 			"confidence": 0.5,
 			"steps": []map[string]any{
 				{"order": 1, "type": "persona-update", "description": "d", "rationale": "r", "risk": "low", "patch": "not-json{"},
 			},
-		}))
-	}))
-	defer server.Close()
+		}), nil
+	})
 
-	p := &ClaudePlanner{apiKey: "test-key", model: defaultClaudeModel, client: server.Client(), baseURL: server.URL}
-
-	plan, err := p.PlanRemediation(context.Background(), RemediationContext{})
+	plan, err := planWith(client).PlanRemediation(context.Background(), RemediationContext{})
 	require.NoError(t, err)
 	require.Len(t, plan.Steps, 1)
 	assert.Empty(t, plan.Steps[0].Patch, "invalid patch JSON is dropped")
 }
 
-func TestNewClaudePlanner_RequiresKey(t *testing.T) {
-	_, err := NewClaudePlanner("")
+func TestNew_RequiresAClient(t *testing.T) {
+	_, err := New(nil)
 	require.Error(t, err)
 
-	p, err := NewClaudePlanner("k")
+	p, err := New(llmtest.Failing(errors.New("x")))
 	require.NoError(t, err)
-	assert.Equal(t, defaultClaudeModel, p.model)
-	p.SetModel("claude-custom")
-	assert.Equal(t, "claude-custom", p.model)
-	p.SetModel("") // empty is ignored
-	assert.Equal(t, "claude-custom", p.model)
+	assert.NotNil(t, p)
 }
 
 // TestPlanRemediation_ObjectPatchAccepted covers the shape the tool schema does
@@ -213,8 +187,8 @@ func TestNewClaudePlanner_RequiresKey(t *testing.T) {
 // so a perfectly good plan was retried once, failed identically, and degraded to
 // the rule-based path with its diagnosis thrown away.
 func TestPlanRemediation_ObjectPatchAccepted(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(t, w, toolUseResponse(map[string]any{
+	client := llmtest.New(func(llm.Request) (*llm.Response, error) {
+		return planReply(map[string]any{
 			"rootCause":  "oom",
 			"confidence": 0.8,
 			"steps": []map[string]any{{
@@ -223,13 +197,10 @@ func TestPlanRemediation_ObjectPatchAccepted(t *testing.T) {
 					"resources": map[string]any{"limits": map[string]any{"memory": "512Mi"}},
 				}},
 			}},
-		}))
-	}))
-	defer server.Close()
+		}), nil
+	})
 
-	p := &ClaudePlanner{apiKey: "test-key", model: defaultClaudeModel, client: server.Client(), baseURL: server.URL}
-
-	plan, err := p.PlanRemediation(context.Background(), RemediationContext{})
+	plan, err := planWith(client).PlanRemediation(context.Background(), RemediationContext{})
 	require.NoError(t, err)
 	require.Len(t, plan.Steps, 1)
 	assert.JSONEq(t, `{"spec":{"resources":{"limits":{"memory":"512Mi"}}}}`, string(plan.Steps[0].Patch))

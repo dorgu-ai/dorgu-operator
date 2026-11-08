@@ -68,8 +68,91 @@ var (
 	}, []string{"from", "to"})
 )
 
+// LLM request outcomes, the values of the outcome label on
+// dorgu_llm_requests_total.
+const (
+	// LLMOutcomeSuccess means the provider answered with HTTP 200 and a body.
+	LLMOutcomeSuccess = "success"
+	// LLMOutcomeError means the request failed: transport error, non-200 status,
+	// unreadable body or timeout.
+	LLMOutcomeError = "error"
+)
+
+// LLM purposes, the values of the purpose label on the LLM metrics.
+const (
+	// LLMPurposeDiagnosis is the AI explanation of a rule-based diagnosis.
+	LLMPurposeDiagnosis = "diagnosis"
+	// LLMPurposePlanning is the AI remediation planner.
+	LLMPurposePlanning = "planning"
+)
+
+// LLM token kinds, the values of the kind label on dorgu_llm_tokens_total.
+const (
+	LLMTokensInput  = "input"
+	LLMTokensOutput = "output"
+)
+
+// LLM cache results, the values of the result label on dorgu_llm_cache_total.
+const (
+	// LLMCacheHit means a model call was avoided because the signal fingerprint
+	// had not changed since the last answer.
+	LLMCacheHit = "hit"
+	// LLMCacheMiss means the fingerprint was new or expired and a call was made.
+	LLMCacheMiss = "miss"
+)
+
+var (
+	llmRequestsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "dorgu_llm_requests_total",
+		Help: "Requests sent to the LLM provider, by provider, purpose (diagnosis, planning) and outcome " +
+			"(success, error). KPI Q3: model calls per incident.",
+	}, []string{"provider", "purpose", "outcome"})
+
+	llmTokensTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "dorgu_llm_tokens_total",
+		Help: "Tokens the LLM provider reported using, by provider, purpose and kind (input, output).",
+	}, []string{"provider", "purpose", "kind"})
+
+	llmInvalidOutputTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "dorgu_llm_invalid_output_total",
+		Help: "Model replies that failed schema validation and were replaced by the rule-based result, " +
+			"by provider and purpose.",
+	}, []string{"provider", "purpose"})
+
+	llmCacheTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "dorgu_llm_cache_total",
+		Help: "Model calls avoided (hit) or made (miss) by the signal-fingerprint cache, by purpose.",
+	}, []string{"purpose", "result"})
+)
+
 func init() {
-	ctrlmetrics.Registry.MustRegister(incidentsTotal, proposalsTotal, transitionsTotal)
+	ctrlmetrics.Registry.MustRegister(incidentsTotal, proposalsTotal, transitionsTotal,
+		llmRequestsTotal, llmTokensTotal, llmInvalidOutputTotal, llmCacheTotal)
+}
+
+// RecordLLMRequest counts one request to the LLM provider.
+func RecordLLMRequest(provider, purpose, outcome string) {
+	llmRequestsTotal.WithLabelValues(provider, purpose, outcome).Inc()
+}
+
+// RecordLLMTokens adds the tokens one request used. Non-positive counts are
+// ignored: a provider that reports no usage must not register a zero series
+// as if it had.
+func RecordLLMTokens(provider, purpose, kind string, n int) {
+	if n <= 0 {
+		return
+	}
+	llmTokensTotal.WithLabelValues(provider, purpose, kind).Add(float64(n))
+}
+
+// RecordLLMInvalidOutput counts a model reply that failed validation.
+func RecordLLMInvalidOutput(provider, purpose string) {
+	llmInvalidOutputTotal.WithLabelValues(provider, purpose).Inc()
+}
+
+// RecordLLMCache counts a cache decision.
+func RecordLLMCache(purpose, result string) {
+	llmCacheTotal.WithLabelValues(purpose, result).Inc()
 }
 
 // RecordIncident counts a newly opened incident.

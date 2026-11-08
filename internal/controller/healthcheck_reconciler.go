@@ -213,19 +213,27 @@ func (r *HealthCheckReconciler) processGroup(
 	group *detection.SignalGroup,
 	activeSignalKeys map[string]bool,
 ) (attempted, discarded int) {
-	diagnoses, err := r.Diagnosis.Analyze(ctx, group.Signals)
-	if err != nil {
-		r.Logger.Error(err, "failed to analyze signals", "group", group.Key)
+	// Decide who the group is about before diagnosing it. A cluster-scoped group
+	// (nodes, control plane) belongs to no application and is dropped below, so
+	// diagnosing it would spend a model call on a finding nothing records (H-3).
+	subject, ok := incidentSubjectFor(group)
+	if !ok {
+		r.Logger.V(1).Info("skipping cluster-scoped group: no application to file it against",
+			"group", group.Key, "signals", len(group.Signals))
 		return 0, 0
 	}
 
-	subject, ok := incidentSubjectFor(group)
-	if !ok {
-		// Cluster-scoped findings (nodes, control plane) belong to no
-		// application. They are diagnosed and logged, but giving them an owner
-		// they do not have is the mistake this change exists to undo.
-		r.Logger.V(1).Info("skipping cluster-scoped diagnoses: no application to file them against",
-			"group", group.Key, "diagnoses", len(diagnoses))
+	// An unattributed incident is reported but never remediated (see
+	// processDiagnosis), so an AI explanation of it would be paid for and used by
+	// nobody: keep the group away from the model. The rules still diagnose it.
+	ctx = diagnosis.WithCallOptions(ctx, diagnosis.CallOptions{
+		NoModel:             subject.unattributed,
+		PreviousOccurrences: r.previousOccurrences(subject),
+	})
+
+	diagnoses, err := r.Diagnosis.Analyze(ctx, group.Signals)
+	if err != nil {
+		r.Logger.Error(err, "failed to analyze signals", "group", group.Key)
 		return 0, 0
 	}
 
@@ -242,6 +250,21 @@ func (r *HealthCheckReconciler) processGroup(
 	}
 
 	return attempted, discarded
+}
+
+// previousOccurrences answers, for the diagnosis provider's prompt, how many times
+// the incident behind a diagnosis has already been recorded. It reads the same
+// IncidentMemory processDiagnosis is about to update, so the model is told the
+// real history, and nothing when there is none. A lookup that fails answers 0:
+// the prompt then says "first sighting", which is the more cautious claim.
+func (r *HealthCheckReconciler) previousOccurrences(subject incidentSubject) func(context.Context, diagnosis.Diagnosis) int32 {
+	return func(ctx context.Context, d diagnosis.Diagnosis) int32 {
+		existing, err := r.findMatchingIncident(ctx, subject, &d)
+		if err != nil || existing == nil {
+			return 0
+		}
+		return existing.Status.OccurrenceCount
+	}
 }
 
 // logCycleSummary closes each cycle with a count of the diagnoses it could not

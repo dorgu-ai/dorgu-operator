@@ -18,6 +18,7 @@ package diagnosis
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -26,6 +27,7 @@ import (
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
 	"github.com/dorgu-ai/dorgu-operator/internal/llm"
+	"github.com/dorgu-ai/dorgu-operator/internal/llm/llmtest"
 )
 
 // fakeGate protects a fixed set of namespaces, and treats the empty namespace
@@ -55,7 +57,7 @@ func (allowAll) NamespaceProtected(context.Context, string) bool { return false 
 
 func enhancingLLM() *mockLLMClient {
 	return &mockLLMClient{response: &llm.DiagnosisResponse{
-		EnhancedSummary:   "model narrative",
+		Summary:           "model narrative",
 		RecommendedAction: actionResourceAdjustment,
 	}}
 }
@@ -224,10 +226,8 @@ func TestAIProvider_DenyList_AllowedDiagnosisStillEnhancedBesideProtectedOne(t *
 		t.Fatalf("AI diagnoses = %d, want 1", len(diagnoses))
 	}
 	for _, req := range rec.requests {
-		for _, sig := range req.Signals {
-			if sig.Resource == "Pod/kube-system/api-1" {
-				t.Errorf("the protected namespace's resource reached the model: %q", sig.Resource)
-			}
+		if strings.Contains(req.User, "Pod/kube-system/api-1") {
+			t.Errorf("the protected namespace's resource reached the model: %q", req.User)
 		}
 	}
 	if len(rec.requests) != 1 {
@@ -235,11 +235,11 @@ func TestAIProvider_DenyList_AllowedDiagnosisStillEnhancedBesideProtectedOne(t *
 	}
 }
 
-type recordingLLM struct{ requests []llm.DiagnosisRequest }
+type recordingLLM struct{ requests []llm.Request }
 
-func (r *recordingLLM) EnhanceDiagnosis(_ context.Context, req llm.DiagnosisRequest) (*llm.DiagnosisResponse, error) {
+func (r *recordingLLM) Complete(_ context.Context, req llm.Request) (*llm.Response, error) {
 	r.requests = append(r.requests, req)
-	return &llm.DiagnosisResponse{EnhancedSummary: "narrative"}, nil
+	return llmtest.DiagnosisReply("narrative", "cause", actionResourceAdjustment, 0.5), nil
 }
 
 func (r *recordingLLM) Provider() string { return "recording" }

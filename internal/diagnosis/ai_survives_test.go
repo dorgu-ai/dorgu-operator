@@ -153,7 +153,7 @@ func TestEngine_HigherConfidenceWinsOverProviderOrder(t *testing.T) {
 func TestEngine_RealProviders_AIEnhancedSurvives(t *testing.T) {
 	mock := &mockLLMClient{
 		response: &llm.DiagnosisResponse{
-			EnhancedSummary:   "report-worker was OOM-killed: it needs ~120M, the limit is 48Mi.",
+			Summary:           "report-worker was OOM-killed: it needs ~120M, the limit is 48Mi.",
 			RecommendedAction: actionResourceAdjustment,
 		},
 	}
@@ -184,7 +184,7 @@ func TestEngine_RealProviders_AIEnhancedSurvives(t *testing.T) {
 	if diagnoses[0].Provider != providerNameAI {
 		t.Fatalf("provider = %q, want %q", diagnoses[0].Provider, providerNameAI)
 	}
-	if diagnoses[0].Summary != mock.response.EnhancedSummary {
-		t.Errorf("summary = %q, want the AI summary %q", diagnoses[0].Summary, mock.response.EnhancedSummary)
+	if diagnoses[0].Summary != mock.response.Summary {
+		t.Errorf("summary = %q, want the AI summary %q", diagnoses[0].Summary, mock.response.Summary)
 	}
 }

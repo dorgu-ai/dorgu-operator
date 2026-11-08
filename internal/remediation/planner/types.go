@@ -146,8 +146,8 @@ type PlannedStep struct {
 }
 
 // Planner generates an ordered remediation plan from a RemediationContext.
-// It is intentionally separate from the diagnosis-enhancement LLM path
-// (llm.Client.EnhanceDiagnosis) — this is remediation planning, not root-cause
+// It shares the one llm.Client provider interface with diagnosis, but the
+// requests are separate: this is remediation planning, not root-cause
 // summarization.
 type Planner interface {
 	// PlanRemediation asks the backing model for an ordered, validated plan.

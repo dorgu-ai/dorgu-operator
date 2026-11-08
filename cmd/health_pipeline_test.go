@@ -19,6 +19,7 @@ package main
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/go-logr/logr"
 	appsv1 "k8s.io/api/apps/v1"
@@ -28,6 +29,7 @@ import (
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
 	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
+	"github.com/dorgu-ai/dorgu-operator/internal/remediation/planner"
 )
 
 const testOperatorNS = "dorgu-system"
@@ -176,6 +178,18 @@ func TestBuildHealthPipeline_AIPlannerWiredIntoProposer(t *testing.T) {
 	p := buildForTest(t, aiConfig(), testOperatorNS)
 	if p.Planner == nil || p.Proposer.Planner() == nil {
 		t.Fatal("AI remediation is enabled with a Claude key: the planner must reach the proposer")
+	}
+}
+
+// The planner is wired behind the fingerprint cache, so an unchanged situation
+// costs one planning call however many cycles it lasts (KPI Q3).
+func TestBuildHealthPipeline_PlannerSitsBehindTheFingerprintCache(t *testing.T) {
+	cfg := aiConfig()
+	cfg.llmCacheTTL = 30 * time.Minute
+	p := buildForTest(t, cfg, testOperatorNS)
+
+	if _, ok := p.Planner.(*planner.CachedPlanner); !ok {
+		t.Fatalf("planner is %T, want *planner.CachedPlanner", p.Planner)
 	}
 }
 

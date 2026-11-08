@@ -132,9 +132,7 @@ func TestExtractPlan_CarriesTheCommandThrough(t *testing.T) {
 		]
 	}`
 
-	plan, err := extractPlan(claudeResponse{Content: []claudeContent{
-		{Type: "tool_use", Name: planToolName, Input: json.RawMessage(input)},
-	}})
+	plan, err := extractPlan(json.RawMessage(input))
 	require.NoError(t, err)
 	require.Len(t, plan.Steps, 2)
 

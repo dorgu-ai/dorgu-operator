@@ -62,6 +62,9 @@ type Gate struct {
 
 	now    func() time.Time
 	stages []Stage
+
+	// logLimit throttles the "ClusterPersona unreadable" ERROR lines.
+	logLimit *logLimiter
 }
 
 // Option configures a Gate.
@@ -101,6 +104,7 @@ func New(c client.Client, logger logr.Logger, opts ...Option) *Gate {
 		logger:    logger.WithName("gate"),
 		protected: []string{defaultKubeSystem},
 		now:       time.Now,
+		logLimit:  newLogLimiter(unreadableLogInterval),
 	}
 	for _, opt := range opts {
 		opt(g)

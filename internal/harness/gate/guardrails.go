@@ -164,7 +164,7 @@ func (s guardrailsStage) personaWide(ctx context.Context, cand *Candidate, d *De
 func (s guardrailsStage) rateLimit(ctx context.Context, _ *Candidate, d *Decision, siblings []dorguv1.RemediationAction) {
 	maxPerHour, err := s.g.maxRemediationsPerHour(ctx)
 	if err != nil {
-		s.g.logger.Error(err, "cannot read the ClusterPersona rate limit; refusing until it is readable")
+		s.g.logUnreadable("rateLimit", err, "cannot read the ClusterPersona rate limit; refusing until it is readable")
 		d.refuse(StageGuardrails, GuardrailRateLimit,
 			"the rate limit could not be read, so the persona cannot be cleared", nil)
 		return

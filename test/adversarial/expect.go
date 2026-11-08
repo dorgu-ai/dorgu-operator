@@ -61,7 +61,6 @@ var openScenarios = map[string]openScenario{
 	"OP-07": {"CP1", "the executor merges any persona path, including policies and null deletes"},
 	"OP-08": {"CP1", "healthCheckAfter and rollback.enabled are author-supplied and unbounded"},
 	"OP-09": {"CP1", "steps[].safety is a spec field the operator never recomputes"},
-	"OP-11": {"CP1", "a substring match on model prose overwrites SuggestedAction and the dedup key"},
 	"ID-01": {"CP2", "no admission policy on remediationactions/status; any status writer approves"},
 	"ID-02": {"CP2", "no proposer-is-not-approver rule"},
 	"ID-03": {"CP2", "approvedBy is free text from the status writer"},

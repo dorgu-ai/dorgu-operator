@@ -26,6 +26,7 @@ import (
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
 	"github.com/dorgu-ai/dorgu-operator/internal/llm"
+	"github.com/dorgu-ai/dorgu-operator/internal/llm/llmtest"
 )
 
 // mockLLMClient implements llm.Client for testing.
@@ -35,9 +36,24 @@ type mockLLMClient struct {
 	calls    int
 }
 
-func (m *mockLLMClient) EnhanceDiagnosis(_ context.Context, _ llm.DiagnosisRequest) (*llm.DiagnosisResponse, error) {
+// Complete answers with the scripted response as the structured reply the real
+// providers return, filling in the fields a test does not care about.
+func (m *mockLLMClient) Complete(_ context.Context, _ llm.Request) (*llm.Response, error) {
 	m.calls++
-	return m.response, m.err
+	if m.err != nil {
+		return nil, m.err
+	}
+	r := llm.DiagnosisResponse{RootCause: "cause", RecommendedAction: actionResourceAdjustment, Confidence: 0.5, Summary: "narrative"}
+	if m.response != nil {
+		r = *m.response
+		if r.RootCause == "" {
+			r.RootCause = "cause"
+		}
+		if r.RecommendedAction == "" {
+			r.RecommendedAction = actionResourceAdjustment
+		}
+	}
+	return llmtest.DiagnosisReply(r.Summary, r.RootCause, r.RecommendedAction, r.Confidence), nil
 }
 
 func (m *mockLLMClient) Provider() string { return "mock" }
@@ -52,7 +68,7 @@ func TestAIProvider_Name(t *testing.T) {
 func TestAIProvider_Diagnose_EnhancesRuleBasedSummary(t *testing.T) {
 	mock := &mockLLMClient{
 		response: &llm.DiagnosisResponse{
-			EnhancedSummary:   "Memory limit of 256Mi is insufficient. The workload peaks at ~280Mi during startup. Increase to 512Mi.",
+			Summary:           "Memory limit of 256Mi is insufficient. The workload peaks at ~280Mi during startup. Increase to 512Mi.",
 			RecommendedAction: actionResourceAdjustment,
 		},
 	}
@@ -156,10 +172,13 @@ func TestBuildLLMRequest(t *testing.T) {
 		},
 	}
 
-	req := buildLLMRequest(d)
+	req := buildLLMRequest(d, 4)
 
 	if req.Summary != "OOM kill detected" {
 		t.Errorf("summary = %q", req.Summary)
+	}
+	if req.PreviousOccurrences != 4 {
+		t.Errorf("previous occurrences = %d, want the real count 4", req.PreviousOccurrences)
 	}
 	if req.Category != "resource" {
 		t.Errorf("category = %q", req.Category)

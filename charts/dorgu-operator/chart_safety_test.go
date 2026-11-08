@@ -43,3 +43,18 @@ func TestRemediationPendingTTL(t *testing.T) {
 	mustContain(t, custom, "--remediation-pending-ttl=2h", "a configured TTL reaches the flag")
 	mustNotContain(t, custom, "--remediation-pending-ttl=24h", "the override replaces the default")
 }
+
+func TestLLMCacheTTL(t *testing.T) {
+	off := helmTemplate(t)
+	mustNotContain(t, off, "--llm-cache-ttl", "no AI provider, no AI flags")
+
+	out := helmTemplate(t, "llm.provider=claude")
+	mustContain(t, out, "--llm-cache-ttl=30m", "the default is rendered explicitly when AI is on")
+
+	custom := helmTemplate(t, "llm.provider=claude", "llm.cacheTTL=5m")
+	mustContain(t, custom, "--llm-cache-ttl=5m", "a configured TTL reaches the flag")
+	mustNotContain(t, custom, "--llm-cache-ttl=30m", "the override replaces the default")
+
+	disabled := helmTemplate(t, "llm.provider=claude", "llm.cacheTTL=0")
+	mustContain(t, disabled, "--llm-cache-ttl=0", "0 disables the cache")
+}

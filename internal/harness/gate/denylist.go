@@ -86,7 +86,7 @@ func (g *Gate) NamespaceDenied(ctx context.Context, namespace string) *Violation
 	if err != nil {
 		// Logged loudly: while this persists (lost RBAC, missing CRD) every AI call
 		// and proposal is refused, and that must not be silent.
-		g.logger.Error(err, "cannot read ClusterPersona excludeNamespaces; refusing the namespace until the deny list is readable",
+		g.logUnreadable("excludeNamespaces", err, "cannot read ClusterPersona excludeNamespaces; refusing the namespace until the deny list is readable",
 			"namespace", namespace)
 		return &Violation{
 			Rule: RuleDenyList,

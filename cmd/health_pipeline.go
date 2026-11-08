@@ -89,29 +89,26 @@ func buildHealthPipeline(
 	} else if cfg.llmProvider != "" {
 		apiKey := resolveLLMAPIKey(cfg)
 		if apiKey != "" {
-			llmClient, llmErr := llm.NewClient(cfg.llmProvider, apiKey)
+			// One client serves diagnosis and planning, so there is one place
+			// that sends a request and one place that counts it.
+			llmClient, llmErr := llm.NewClient(cfg.llmProvider, apiKey, llm.WithModel(cfg.llmModel))
 			if llmErr != nil {
 				log.Error(llmErr, "failed to create LLM client, continuing without AI diagnosis")
 			} else {
-				if cfg.llmModel != "" {
-					if setter, ok := llmClient.(interface{ SetModel(string) }); ok {
-						setter.SetModel(cfg.llmModel)
-					}
-				}
-				providers = append(providers, diagnosis.NewAIProvider(llmClient, g, log))
-				log.Info("AI diagnosis enabled", "provider", cfg.llmProvider)
-			}
+				providers = append(providers, diagnosis.NewAIProvider(llmClient, g, log,
+					diagnosis.WithCacheTTL(cfg.llmCacheTTL)))
+				log.Info("AI diagnosis enabled", "provider", cfg.llmProvider, "cacheTTL", cfg.llmCacheTTL)
 
-			// AI remediation planning is Anthropic-only for v1 and toggled
-			// independently of AI diagnosis.
-			if cfg.enableAIRemediation && cfg.llmProvider == "claude" {
-				claudePlanner, plannerErr := planner.NewClaudePlanner(apiKey)
-				if plannerErr != nil {
-					log.Error(plannerErr, "failed to create AI remediation planner, continuing with rule-based remediation")
-				} else {
-					claudePlanner.SetModel(cfg.llmModel)
-					aiPlanner = claudePlanner
-					log.Info("AI remediation planning enabled", "provider", cfg.llmProvider)
+				// AI remediation planning is Anthropic-only for v1 and toggled
+				// independently of AI diagnosis.
+				if cfg.enableAIRemediation && cfg.llmProvider == "claude" {
+					llmPlanner, plannerErr := planner.New(llmClient)
+					if plannerErr != nil {
+						log.Error(plannerErr, "failed to create AI remediation planner, continuing with rule-based remediation")
+					} else {
+						aiPlanner = planner.NewCachedPlanner(llmPlanner, cfg.llmCacheTTL, log)
+						log.Info("AI remediation planning enabled", "provider", cfg.llmProvider)
+					}
 				}
 			}
 		} else {

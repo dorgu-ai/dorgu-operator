@@ -93,3 +93,81 @@ func TestRecordTransitionIgnoresSamePhase(t *testing.T) {
 		t.Errorf("transitions delta = %v, want 0", got)
 	}
 }
+
+func TestRecordLLMRequestAndTokens(t *testing.T) {
+	req := llmRequestsTotal.WithLabelValues("claude", LLMPurposeDiagnosis, LLMOutcomeSuccess)
+	in := llmTokensTotal.WithLabelValues("claude", LLMPurposeDiagnosis, LLMTokensInput)
+	out := llmTokensTotal.WithLabelValues("claude", LLMPurposeDiagnosis, LLMTokensOutput)
+	reqBefore, inBefore, outBefore := testutil.ToFloat64(req), testutil.ToFloat64(in), testutil.ToFloat64(out)
+
+	RecordLLMRequest("claude", LLMPurposeDiagnosis, LLMOutcomeSuccess)
+	RecordLLMTokens("claude", LLMPurposeDiagnosis, LLMTokensInput, 120)
+	RecordLLMTokens("claude", LLMPurposeDiagnosis, LLMTokensOutput, 30)
+
+	if got := testutil.ToFloat64(req) - reqBefore; got != 1 {
+		t.Errorf("requests delta = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(in) - inBefore; got != 120 {
+		t.Errorf("input tokens delta = %v, want 120", got)
+	}
+	if got := testutil.ToFloat64(out) - outBefore; got != 30 {
+		t.Errorf("output tokens delta = %v, want 30", got)
+	}
+}
+
+// A provider that reports no usage must not create a series as if it had.
+func TestRecordLLMTokensIgnoresNonPositiveCounts(t *testing.T) {
+	series := llmTokensTotal.WithLabelValues("gemini", LLMPurposePlanning, LLMTokensInput)
+	before := testutil.ToFloat64(series)
+	RecordLLMTokens("gemini", LLMPurposePlanning, LLMTokensInput, 0)
+	RecordLLMTokens("gemini", LLMPurposePlanning, LLMTokensInput, -5)
+	if got := testutil.ToFloat64(series) - before; got != 0 {
+		t.Errorf("tokens delta = %v, want 0", got)
+	}
+}
+
+func TestRecordLLMInvalidOutputAndCache(t *testing.T) {
+	invalid := llmInvalidOutputTotal.WithLabelValues("claude", LLMPurposeDiagnosis)
+	hit := llmCacheTotal.WithLabelValues(LLMPurposePlanning, LLMCacheHit)
+	miss := llmCacheTotal.WithLabelValues(LLMPurposePlanning, LLMCacheMiss)
+	invalidBefore, hitBefore, missBefore := testutil.ToFloat64(invalid), testutil.ToFloat64(hit), testutil.ToFloat64(miss)
+
+	RecordLLMInvalidOutput("claude", LLMPurposeDiagnosis)
+	RecordLLMCache(LLMPurposePlanning, LLMCacheHit)
+	RecordLLMCache(LLMPurposePlanning, LLMCacheMiss)
+	RecordLLMCache(LLMPurposePlanning, LLMCacheMiss)
+
+	if got := testutil.ToFloat64(invalid) - invalidBefore; got != 1 {
+		t.Errorf("invalid output delta = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(hit) - hitBefore; got != 1 {
+		t.Errorf("cache hit delta = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(miss) - missBefore; got != 2 {
+		t.Errorf("cache miss delta = %v, want 2", got)
+	}
+}
+
+func TestLLMCountersAreRegistered(t *testing.T) {
+	RecordLLMRequest("claude", LLMPurposePlanning, LLMOutcomeError)
+	RecordLLMTokens("claude", LLMPurposePlanning, LLMTokensInput, 1)
+	RecordLLMInvalidOutput("claude", LLMPurposePlanning)
+	RecordLLMCache(LLMPurposeDiagnosis, LLMCacheHit)
+
+	families, err := ctrlmetrics.Registry.Gather()
+	if err != nil {
+		t.Fatalf("gathering: %v", err)
+	}
+	found := map[string]bool{}
+	for _, f := range families {
+		found[f.GetName()] = true
+	}
+	for _, name := range []string{
+		"dorgu_llm_requests_total", "dorgu_llm_tokens_total",
+		"dorgu_llm_invalid_output_total", "dorgu_llm_cache_total",
+	} {
+		if !found[name] {
+			t.Errorf("%s is not registered on controller-runtime's registry", name)
+		}
+	}
+}

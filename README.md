@@ -219,6 +219,7 @@ kubectl get clusterpersona           # dorgu-cluster, auto-created
 | `metricsServer.enabled` | metrics-server integration for container-level CPU/memory detection | `true` |
 | `llm.provider` | AI provider: `claude` (Anthropic) or `gemini` (Google); empty disables AI. The chart injects `ANTHROPIC_API_KEY` or `GEMINI_API_KEY` to match | `""` |
 | `llm.model` | Model override (empty = provider default) | `""` |
+| `llm.cacheTTL` | How long an AI diagnosis or plan is reused while an incident's signals are unchanged; a change asks the model again at once, `0` asks every health-check cycle (maps to `--llm-cache-ttl`) | `30m` |
 | `llm.existingSecret` | Name of a pre-created Secret holding the API key (**preferred**) | `""` |
 | `llm.existingSecretKey` | Key within that Secret; empty means the provider's env var name | `""` (`ANTHROPIC_API_KEY` / `GEMINI_API_KEY`) |
 | `llm.apiKey` | **Dev only:** raw key; requires `createSecret=true` to be stored in a Secret | `""` |
