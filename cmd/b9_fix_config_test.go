@@ -39,7 +39,8 @@ func TestRecurrenceAndRetentionFlags_Defaults(t *testing.T) {
 	if cfg.resolvedRetention != 30*24*time.Hour {
 		t.Errorf("resolved retention = %s, want 720h", cfg.resolvedRetention)
 	}
-	if cfg.recurrenceCap != controller.DefaultRecurrenceCap || cfg.resolvedRetention != controller.DefaultResolvedRetention {
+	if cfg.recurrenceCap != controller.DefaultRecurrenceCap ||
+		cfg.resolvedRetention != controller.DefaultResolvedRetention {
 		t.Error("the flag defaults must be the controller's defaults")
 	}
 }

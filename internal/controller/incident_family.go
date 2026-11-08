@@ -68,6 +68,8 @@ import (
 // it escalates, so the proposal for the worse shape waits for the earlier one to be
 // answered or to expire, as any second proposal for one incident does.
 
+const kindPod = "Pod"
+
 // faultRank orders the signals of the family. Liveness, with the kubelet's own
 // event behind it, outranks a restart loop of unknown cause.
 var faultRank = map[detection.SignalType]int{
@@ -128,11 +130,11 @@ func (r *HealthCheckReconciler) findFamilyPeer(
 // sharesPod reports whether two resource lists name a pod in common.
 func sharesPod(a, b []dorguv1.ResourceReference) bool {
 	for i := range a {
-		if a[i].Kind != "Pod" {
+		if a[i].Kind != kindPod {
 			continue
 		}
 		for j := range b {
-			if b[j].Kind == "Pod" && b[j].Name == a[i].Name && b[j].Namespace == a[i].Namespace {
+			if b[j].Kind == kindPod && b[j].Name == a[i].Name && b[j].Namespace == a[i].Namespace {
 				return true
 			}
 		}

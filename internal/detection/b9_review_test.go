@@ -114,7 +114,7 @@ func TestReview_ReplacementPodDoesNotInheritRestartHistory_Characterization(t *t
 	now := time.Now()
 	tr.observe("shop/api-1/uid-a/main", now, 5)
 	delta, history := tr.observe("shop/api-1/uid-b/main", now.Add(time.Minute), 1)
-	assert.Equal(t, restartHistory(historyFirstSight), history)
+	assert.Equal(t, historyFirstSight, history)
 	assert.Zero(t, delta)
 }
 
@@ -157,7 +157,7 @@ func TestReview_WindowOfTwoCyclesWorks(t *testing.T) {
 // evidence now; without them an exit 0 is still not reported.
 func TestReview_LivenessKillThatExitsZeroOnSigtermIsDetectedFromKubeletEvents(t *testing.T) {
 	c := newClock()
-	evs := []corev1.Event{killingEvent("api-1", 2, ago(c, 20*time.Second))}
+	evs := []corev1.Event{killingEvent(2, ago(c, 20*time.Second))}
 	cycles := livenessCyclesWithEvents(t, c, nil, evs,
 		restartedRunning(c, 3, "Completed", 0, 10*time.Second),
 		restartedRunning(c, 5, "Completed", 0, 10*time.Second),

@@ -37,7 +37,8 @@ import (
 
 // killingEvent is the kubelet's record that it killed a container for failing its
 // liveness probe.
-func killingEvent(pod string, count int32, at metav1.Time) corev1.Event {
+func killingEvent(count int32, at metav1.Time) corev1.Event {
+	const pod = "api-1"
 	return corev1.Event{
 		ObjectMeta: metav1.ObjectMeta{Name: pod + "-killing", Namespace: "shop"},
 		InvolvedObject: corev1.ObjectReference{
@@ -65,7 +66,7 @@ func loopSignal(sigs []Signal) (Signal, bool) {
 func TestLiveness_KubeletKillEventsMakeItALivenessFailure(t *testing.T) {
 	c := newClock()
 	evs := []corev1.Event{
-		killingEvent("api-1", 2, ago(c, 20*time.Second)),
+		killingEvent(2, ago(c, 20*time.Second)),
 		probeEvent("api-1", "Liveness probe failed: connection refused", 4, ago(c, 20*time.Second)),
 	}
 	cycles := livenessCyclesWithEvents(t, c, nil, evs,
@@ -86,7 +87,7 @@ func TestLiveness_KillEventsAloneAreEnoughAtFirstSight(t *testing.T) {
 	c := newClock()
 	// An operator that has just started has no restart history, but the kubelet's
 	// events are cluster state, not operator memory.
-	evs := []corev1.Event{killingEvent("api-1", 3, ago(c, 20*time.Second))}
+	evs := []corev1.Event{killingEvent(3, ago(c, 20*time.Second))}
 	cycles := livenessCyclesWithEvents(t, c, nil, evs, restartedRunning(c, 6, "Completed", 0, 30*time.Second))
 
 	s, ok := loopSignal(cycles[0])
@@ -96,14 +97,14 @@ func TestLiveness_KillEventsAloneAreEnoughAtFirstSight(t *testing.T) {
 
 func TestLiveness_OneKillEventAtFirstSightIsNotALoop(t *testing.T) {
 	c := newClock()
-	evs := []corev1.Event{killingEvent("api-1", 1, ago(c, 20*time.Second))}
+	evs := []corev1.Event{killingEvent(1, ago(c, 20*time.Second))}
 	cycles := livenessCyclesWithEvents(t, c, nil, evs, restartedRunning(c, 6, "Completed", 0, 30*time.Second))
 	assert.False(t, hasLoop(cycles[0]))
 }
 
 func TestLiveness_KillEventsOutsideTheWindowDoNotCount(t *testing.T) {
 	c := newClock()
-	evs := []corev1.Event{killingEvent("api-1", 5, ago(c, time.Hour))}
+	evs := []corev1.Event{killingEvent(5, ago(c, time.Hour))}
 	cycles := livenessCyclesWithEvents(t, c, nil, evs,
 		restartedRunning(c, 3, "Error", 137, 10*time.Second),
 		restartedRunning(c, 5, "Error", 137, 10*time.Second),
@@ -117,7 +118,7 @@ func TestLiveness_KillEventsOutsideTheWindowDoNotCount(t *testing.T) {
 // last one a minute ago says "at least one in the window", not fifty.
 func TestLiveness_AggregatedEventsAreCountedOnlyInsideTheWindow(t *testing.T) {
 	c := newClock()
-	ev := killingEvent("api-1", 50, ago(c, time.Minute))
+	ev := killingEvent(50, ago(c, time.Minute))
 	ev.FirstTimestamp = ago(c, 72*time.Hour)
 	cycles := livenessCyclesWithEvents(t, c, nil, []corev1.Event{ev},
 		restartedRunning(c, 3, "Completed", 0, 10*time.Second),
@@ -157,7 +158,7 @@ func TestLiveness_UnreadableEventsDegradeToARestartLoop(t *testing.T) {
 
 func TestLiveness_KillEventsDoNotOverrideAnOOMKill(t *testing.T) {
 	c := newClock()
-	evs := []corev1.Event{killingEvent("api-1", 3, ago(c, 20*time.Second))}
+	evs := []corev1.Event{killingEvent(3, ago(c, 20*time.Second))}
 	cycles := livenessCyclesWithEvents(t, c, nil, evs,
 		restartedRunning(c, 3, "OOMKilled", 137, 3*time.Hour),
 		restartedRunning(c, 5, "OOMKilled", 137, 10*time.Second),

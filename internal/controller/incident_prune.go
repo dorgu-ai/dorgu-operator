@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -131,12 +132,7 @@ func (r *HealthCheckReconciler) incidentsNamedByActiveRemediations(ctx context.C
 }
 
 func isActiveRemediationPhase(phase string) bool {
-	for _, p := range activeRemediationPhases {
-		if p == phase {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(activeRemediationPhases, phase)
 }
 
 // newestPerLineage returns, for every fault (namespace and lineage), the newest of

@@ -274,8 +274,9 @@ func (c operatorConfig) validateLivenessWindow() error {
 		window = detection.DefaultLivenessWindow
 	}
 	if window < 2*interval {
-		return fmt.Errorf("--liveness-restart-window=%s is shorter than two health-check cycles (--health-check-interval=%s): "+
-			"the liveness signal could never fire. Use at least %s", window, interval, 2*interval)
+		return fmt.Errorf("--liveness-restart-window=%s is shorter than two health-check cycles "+
+			"(--health-check-interval=%s): the liveness signal could never fire. Use at least %s",
+			window, interval, 2*interval)
 	}
 	return nil
 }

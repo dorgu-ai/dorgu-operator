@@ -443,16 +443,42 @@ func TestPrecedence_CrashLoopBackOffOwnsTheContainer(t *testing.T) {
 	assert.False(t, hasType(sigs, SignalReadinessNotReady))
 }
 
-func TestPrecedence_CrashLoopBackOffOwnsTheContainerAcrossCycles(t *testing.T) {
+// The signal changes shape between cycles, as a worsening fault does: not Ready,
+// then restarted by the kubelet, then CrashLoopBackOff. Each cycle reports exactly
+// one shape for the container. (An earlier version of this test fed
+// CrashLoopBackOff twice and never changed shape.)
+func TestPrecedence_OneShapePerCycleAsAFaultWorsens(t *testing.T) {
 	c := newClock()
-	waiting := func(n int32) corev1.ContainerStatus {
-		cs := restartedRunning(c, n, "Error", 1, 10*time.Second)
-		cs.Ready = false
-		cs.State = corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"}}
-		return cs
+	shapes := []corev1.ContainerStatus{
+		runningNotReady(c, 10*time.Minute),
+		restartedRunning(c, 2, "Error", 137, 10*time.Second),
+		{
+			RestartCount: 4,
+			State:        corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"}},
+			LastTerminationState: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
+				Reason: "Error", ExitCode: 137, FinishedAt: ago(c, 5*time.Second),
+			}},
+		},
 	}
-	cycles := livenessCycles(t, c, nil, waiting(3), waiting(6))
-	assert.False(t, hasLoop(cycles[1]))
+	cycles := livenessCyclesFn(t, c, nil, nil, len(shapes), func(i int) corev1.ContainerStatus { return shapes[i] })
+
+	only := func(sigs []Signal) SignalType {
+		types := map[SignalType]bool{}
+		for _, s := range sigs {
+			switch s.Type {
+			case SignalReadinessNotReady, SignalRestartLoop, SignalLivenessRestarts, SignalCrashLoopBackOff:
+				types[s.Type] = true
+			}
+		}
+		require.Len(t, types, 1, "exactly one of the family per cycle, got %v", signalTypes(sigs))
+		for typ := range types {
+			return typ
+		}
+		return ""
+	}
+	assert.Equal(t, SignalReadinessNotReady, only(cycles[0]))
+	assert.Equal(t, SignalRestartLoop, only(cycles[1]))
+	assert.Equal(t, SignalCrashLoopBackOff, only(cycles[2]), "CrashLoopBackOff owns the container once it is in it")
 }
 
 func TestPrecedence_LiveOOMKilledOwnsTheContainer(t *testing.T) {
