@@ -40,3 +40,23 @@ func setCondition(conditions *[]metav1.Condition, condType string, status metav1
 		LastTransitionTime: now,
 	})
 }
+
+// upsertCondition sets a condition and always rewrites its message. Use it when
+// the message carries state (a retry counter) that must advance while status and
+// reason stay the same; setCondition deliberately leaves an unchanged
+// condition alone. LastTransitionTime moves only when status or reason does.
+func upsertCondition(conditions *[]metav1.Condition, condType string, status metav1.ConditionStatus, reason, message string) {
+	for i, c := range *conditions {
+		if c.Type != condType {
+			continue
+		}
+		if c.Status != status || c.Reason != reason {
+			(*conditions)[i].LastTransitionTime = metav1.Now()
+		}
+		(*conditions)[i].Status = status
+		(*conditions)[i].Reason = reason
+		(*conditions)[i].Message = message
+		return
+	}
+	setCondition(conditions, condType, status, reason, message)
+}

@@ -237,3 +237,100 @@ func TestVerifier_Verify_Healthy_SignalForDifferentPersona(t *testing.T) {
 		t.Errorf("expected Healthy, got %s", result)
 	}
 }
+
+func oomSignalFor(namespace, persona string) detection.Signal {
+	return detection.Signal{
+		Type:     detection.SignalOOMKilled,
+		Severity: detection.SeverityCritical,
+		Category: detection.CategoryResource,
+		Source:   "pod-failure-detector",
+		PersonaRef: &dorguv1.PersonaReference{
+			Kind: kindApplicationPersona, Name: persona, Namespace: namespace,
+		},
+		DetectedAt: time.Now(),
+	}
+}
+
+// OP-13: personaRef.namespace is optional in the API. The verifier compared it
+// verbatim, so an empty namespace never matched the persona's signals and a
+// still-failing application verified Healthy.
+func TestVerifier_Verify_EmptyPersonaNamespaceFallsBackToTheActionNamespace(t *testing.T) {
+	v := newTestVerifier([]detection.Signal{oomSignalFor(defaultNamespace, "test-persona")}, nil, testIncident())
+	action := testRemediationAction()
+	action.Namespace = defaultNamespace
+	action.Spec.PersonaRef.Namespace = ""
+
+	result, err := v.Verify(context.Background(), action)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if result != VerificationDegraded {
+		t.Errorf("expected Degraded (the OOMKilled signal is still firing), got %s", result)
+	}
+}
+
+func TestVerifier_Verify_EmptyPersonaNamespaceStillMatchesNewCriticalSignals(t *testing.T) {
+	crash := oomSignalFor(defaultNamespace, "test-persona")
+	crash.Type = detection.SignalCrashLoopBackOff
+	v := newTestVerifier([]detection.Signal{crash}, nil, testIncident())
+	action := testRemediationAction()
+	action.Namespace = defaultNamespace
+	action.Spec.PersonaRef.Namespace = ""
+
+	result, err := v.Verify(context.Background(), action)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if result != VerificationDegraded {
+		t.Errorf("expected Degraded (a new critical signal for the persona), got %s", result)
+	}
+}
+
+func TestVerifier_Verify_EmptyPersonaNamespaceFallsBackToTheIncidentNamespace(t *testing.T) {
+	// Neither the persona ref nor the action names a namespace; the incident does.
+	v := newTestVerifier([]detection.Signal{oomSignalFor(defaultNamespace, "test-persona")}, nil, testIncident())
+	action := testRemediationAction()
+	action.Namespace = ""
+	action.Spec.PersonaRef.Namespace = ""
+	action.Spec.IncidentRef.Namespace = defaultNamespace
+
+	result, err := v.Verify(context.Background(), action)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if result != VerificationDegraded {
+		t.Errorf("expected Degraded, got %s", result)
+	}
+}
+
+// When the persona cannot be identified at all the verifier must not claim the
+// application is healthy: it says it does not know.
+func TestVerifier_Verify_UnidentifiablePersonaIsUnknownNotHealthy(t *testing.T) {
+	v := newTestVerifier(nil, nil, testIncident())
+	action := testRemediationAction()
+	action.Spec.PersonaRef.Name = ""
+
+	result, err := v.Verify(context.Background(), action)
+	if err == nil {
+		t.Error("expected an error explaining the persona could not be identified")
+	}
+	if result != VerificationUnknown {
+		t.Errorf("expected Unknown, got %s", result)
+	}
+}
+
+func TestVerifier_Verify_UnidentifiableNamespaceIsUnknownNotHealthy(t *testing.T) {
+	v := newTestVerifier(nil, nil, testIncident())
+	action := testRemediationAction()
+	action.Namespace = ""
+	action.Spec.PersonaRef.Namespace = ""
+	action.Spec.IncidentRef.Namespace = ""
+
+	result, err := v.Verify(context.Background(), action)
+	if err == nil {
+		t.Error("expected an error: no namespace could be determined")
+	}
+	if result != VerificationUnknown {
+		t.Errorf("expected Unknown, got %s", result)
+	}
+}

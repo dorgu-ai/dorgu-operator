@@ -85,6 +85,9 @@ spec:
             {{- if .Values.llm.provider }}
             - --enable-ai-remediation={{ .Values.aiRemediation.enabled }}
             {{- end }}
+            {{- /* Rendered unconditionally so the pod spec states how long a proposal
+                   may wait for approval before it expires. */}}
+            - --remediation-pending-ttl={{ .Values.remediation.pendingTTL }}
             {{- with .Values.safety.excludedNamespaces }}
             - --safety-excluded-namespaces={{ join "," . }}
             {{- end }}

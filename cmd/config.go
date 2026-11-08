@@ -18,6 +18,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"strings"
 	"time"
 
@@ -25,6 +26,10 @@ import (
 
 	"github.com/dorgu-ai/dorgu-operator/internal/events"
 )
+
+// DefaultRemediationPendingTTL is how long a proposal may wait for a human
+// before it expires.
+const DefaultRemediationPendingTTL = 24 * time.Hour
 
 // operatorConfig holds all operator configuration parsed from command-line flags.
 type operatorConfig struct {
@@ -64,6 +69,10 @@ type operatorConfig struct {
 	// Safety: namespaces the deny-list refuses on top of kube-system and the
 	// operator's own namespace.
 	safetyExcludedNamespaces []string
+
+	// Remediation: how long a proposal may wait for approval before it expires.
+	// Zero disables the TTL.
+	remediationPendingTTL time.Duration
 
 	// LLM (AI diagnosis)
 	llmProvider string // "claude", "gemini", or "" (disabled)
@@ -130,6 +139,11 @@ func parseFlags() operatorConfig {
 		"Maximum DorguEvent records to keep regardless of age; the oldest are removed first. "+
 			"Set to 0 to drop the cap and rely on --dorgu-event-retention alone.")
 
+	flag.DurationVar(&cfg.remediationPendingTTL, "remediation-pending-ttl", DefaultRemediationPendingTTL,
+		"How long a RemediationAction may wait for approval, counted from its creation, before it becomes "+
+			"Expired. Expired is terminal, applies nothing and starts no cooldown. 0 disables the TTL; "+
+			"a spec.approval.deadline set by the proposal is still honoured, and can only shorten the window.")
+
 	// LLM flags
 	flag.StringVar(&cfg.llmProvider, "llm-provider", "",
 		"LLM provider for AI-enhanced diagnosis: 'claude' or 'gemini' (default: disabled).")
@@ -157,6 +171,15 @@ func parseFlags() operatorConfig {
 
 	cfg.safetyExcludedNamespaces = splitNamespaces(excludedNamespaces)
 	return cfg
+}
+
+// validate rejects configuration the operator must not start with.
+func (c operatorConfig) validate() error {
+	if c.remediationPendingTTL < 0 {
+		return fmt.Errorf("--remediation-pending-ttl must not be negative (use 0 to disable), got %s",
+			c.remediationPendingTTL)
+	}
+	return nil
 }
 
 // splitNamespaces parses a comma-separated namespace list, dropping blanks.

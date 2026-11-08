@@ -19,6 +19,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"fmt"
 	"os"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
@@ -60,6 +61,11 @@ func init() {
 
 func main() {
 	cfg := parseFlags()
+	if err := cfg.validate(); err != nil {
+		// The logger is not configured yet; flag errors belong on stderr.
+		fmt.Fprintln(os.Stderr, "invalid configuration:", err)
+		os.Exit(2)
+	}
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&cfg.zapOpts)))
 
@@ -347,6 +353,8 @@ func main() {
 			Rollback:  rollbackHandler,
 			Logger:    setupLog.WithName("remediation-controller"),
 			WebSocket: wsServer,
+
+			PendingTTL: cfg.remediationPendingTTL,
 		}).SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "RemediationAction")
 			os.Exit(1)

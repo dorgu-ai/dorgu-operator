@@ -71,8 +71,13 @@ func (v *Verifier) Verify(ctx context.Context, action *dorguv1.RemediationAction
 	}
 
 	originalSignal := incident.Spec.Detection.Signal
-	personaName := action.Spec.PersonaRef.Name
-	personaNamespace := action.Spec.PersonaRef.Namespace
+	personaName, personaNamespace, err := verificationSubject(action, incident)
+	if err != nil {
+		// Without an identity the signals cannot be matched, and "no signal
+		// matched" would read as Healthy. Say we do not know instead.
+		v.logger.Error(err, "cannot identify the persona to verify")
+		return VerificationUnknown, err
+	}
 
 	// 3. Check if the original signal is still present for this persona.
 	if v.hasSignalForPersona(signals, originalSignal, personaName, personaNamespace) {
@@ -96,6 +101,33 @@ func (v *Verifier) Verify(ctx context.Context, action *dorguv1.RemediationAction
 		"persona", fmt.Sprintf("%s/%s", personaNamespace, personaName),
 	)
 	return VerificationHealthy, nil
+}
+
+// verificationSubject names the persona whose signals decide the verdict.
+//
+// personaRef.namespace is optional in the API. Comparing it verbatim made an
+// empty namespace match no signal at all, so an application that was still
+// failing verified Healthy (OP-13). The namespace falls back to the action's
+// own, then to the incident's; if none can be determined, or the persona has no
+// name, there is nothing to match against and the caller must report Unknown
+// rather than guess.
+func verificationSubject(action *dorguv1.RemediationAction, incident *dorguv1.IncidentMemory) (name, namespace string, err error) {
+	name = action.Spec.PersonaRef.Name
+	if name == "" {
+		return "", "", fmt.Errorf("RemediationAction %s has no persona name, so its health cannot be verified", action.Name)
+	}
+
+	for _, candidate := range []string{
+		action.Spec.PersonaRef.Namespace,
+		action.Namespace,
+		incident.Spec.PersonaRef.Namespace,
+		incident.Namespace,
+	} {
+		if candidate != "" {
+			return name, candidate, nil
+		}
+	}
+	return "", "", fmt.Errorf("no namespace could be determined for persona %s, so its health cannot be verified", name)
 }
 
 // getIncident fetches the IncidentMemory referenced by the action.
