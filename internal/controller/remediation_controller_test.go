@@ -168,7 +168,8 @@ var _ = Describe("RemediationController", func() {
 		engine := detection.NewEngine(testLogger, collector)
 		return &RemediationController{
 			Client:   k8sClient,
-			Executor: remediation.NewExecutor(k8sClient, testLogger),
+			Gate:     envtestGate(testLogger),
+			Executor: remediation.NewExecutor(k8sClient, envtestGate(testLogger), testLogger),
 			Verifier: remediation.NewVerifier(engine, k8sClient, testLogger),
 			Rollback: remediation.NewRollback(k8sClient, testLogger),
 			Logger:   testLogger.WithName("remediation-controller-test"),
@@ -206,9 +207,9 @@ var _ = Describe("RemediationController", func() {
 			incident := createTestIncident("rc-complete-incident", "default", persona.Name, reasonOOMKilled)
 			action := createTestAction("rc-complete-action", "default", persona.Name, incident.Name)
 
-			// Set status to Approved.
-			action.Status = dorguv1.RemediationActionStatus{Phase: RemediationPhaseApproved}
-			Expect(k8sClient.Status().Update(ctx, action)).To(Succeed())
+			// The gate clears the plan at proposal, then a human approves it.
+			ensurePersonaDeployment(ctx, persona.Name)
+			approveProposed(ctx, action)
 
 			// No signals → verification will be Healthy.
 			controller := newController(nil)
@@ -272,9 +273,9 @@ var _ = Describe("RemediationController", func() {
 			incident := createTestIncident("rc-rollback-incident", "default", persona.Name, reasonOOMKilled)
 			action := createTestAction("rc-rollback-action", "default", persona.Name, incident.Name)
 
-			// Set status to Approved.
-			action.Status = dorguv1.RemediationActionStatus{Phase: RemediationPhaseApproved}
-			Expect(k8sClient.Status().Update(ctx, action)).To(Succeed())
+			// The gate clears the plan at proposal, then a human approves it.
+			ensurePersonaDeployment(ctx, persona.Name)
+			approveProposed(ctx, action)
 
 			// Signal still present → Degraded.
 			signals := []detection.Signal{
@@ -398,8 +399,8 @@ var _ = Describe("RemediationController", func() {
 			incident := createTestIncident("rc-im-incident", "default", persona.Name, reasonOOMKilled)
 			action := createTestAction("rc-im-action", "default", persona.Name, incident.Name)
 
-			action.Status = dorguv1.RemediationActionStatus{Phase: RemediationPhaseApproved}
-			Expect(k8sClient.Status().Update(ctx, action)).To(Succeed())
+			ensurePersonaDeployment(ctx, persona.Name)
+			approveProposed(ctx, action)
 
 			controller := newController(nil)
 

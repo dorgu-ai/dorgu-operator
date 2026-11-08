@@ -40,7 +40,8 @@ var _ = Describe("RemediationController advisory plans", func() {
 		engine := detection.NewEngine(testLogger, &remediationMockCollector{})
 		return &RemediationController{
 			Client:   k8sClient,
-			Executor: remediation.NewExecutor(k8sClient, testLogger),
+			Gate:     envtestGate(testLogger),
+			Executor: remediation.NewExecutor(k8sClient, envtestGate(testLogger), testLogger),
 			Verifier: remediation.NewVerifier(engine, k8sClient, testLogger),
 			Rollback: remediation.NewRollback(k8sClient, testLogger),
 			Logger:   testLogger.WithName("advisory-controller-test"),
@@ -178,12 +179,11 @@ var _ = Describe("RemediationController advisory plans", func() {
 		Expect(updated.Status.Phase).To(Equal(RemediationPhaseAcknowledged))
 	})
 
-	It("marks a plan the executor refuses as rejected before apply, not as a failure to apply", func() {
+	It("refuses an approval the gate never cleared at proposal, persisted, with no cooldown", func() {
 		persona := newPersona("rc-precondition-persona")
 		incident := newIncident("rc-precondition-incident", persona.Name)
-		// A persona-update carrying a patch but no pre-patch snapshot: there is
-		// something to apply, so it reaches the executor, which refuses it
-		// because it could never be rolled back.
+		// A hand-made persona-update: nobody proposed it, so the approval re-check
+		// has no record of what the cluster looked like to compare it to.
 		action := newApprovedAction("rc-precondition-action", persona.Name, incident.Name,
 			dorguv1.RemediationActionDetail{
 				Type:  dorguv1.ActionTypePersonaUpdate,
@@ -204,11 +204,20 @@ var _ = Describe("RemediationController advisory plans", func() {
 		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(action), &updated)).To(Succeed())
 		Expect(updated.Status.Phase).To(Equal(RemediationPhaseFailed))
 		Expect(updated.Status.AppliedAt).To(BeNil())
+		Expect(updated.Status.ApplyTicket).To(BeNil())
 
 		applied := findCondition(updated.Status.Conditions, ConditionApplied)
 		Expect(applied).NotTo(BeNil())
-		Expect(applied.Reason).To(Equal(dorguv1.ReasonPreconditionRejected))
+		Expect(applied.Reason).To(Equal(dorguv1.ReasonGateRefusedAtApproval))
 		Expect(applied.Message).To(ContainSubstring("nothing was applied"))
+
+		// The refusal is persisted with its reason as an enum, not only as prose.
+		refused := findCondition(updated.Status.Conditions, dorguv1.ConditionGateRefused)
+		Expect(refused).NotTo(BeNil())
+		Expect(refused.Reason).To(Equal("NoProposalRecord"))
+		Expect(updated.Status.Gate).NotTo(BeNil())
+		Expect(updated.Status.Gate.Phase).To(Equal("ApprovalRecheck"))
+		Expect(updated.Status.Gate.Result).To(Equal("Refuse"))
 
 		// The persona was left alone.
 		var updatedPersona dorguv1.ApplicationPersona

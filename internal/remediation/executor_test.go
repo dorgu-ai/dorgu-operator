@@ -19,27 +19,55 @@ package remediation
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/go-logr/logr"
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
+	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
 )
 
+// testDeployment is the live workload the executor tests' tickets are bound to.
+func testDeployment() *appsv1.Deployment {
+	labels := map[string]string{"app": "test-persona"}
+	return &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-persona", Namespace: defaultNamespace, Labels: labels,
+			UID: "uid-1", ResourceVersion: "42",
+		},
+		Spec: appsv1.DeploymentSpec{
+			Selector: &metav1.LabelSelector{MatchLabels: labels},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: labels},
+				Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "app"}}},
+			},
+		},
+	}
+}
+
+// newTestExecutor builds an executor over a fake cluster holding objs plus the
+// live Deployment the tickets are bound to, behind a real gate.
 func newTestExecutor(objs ...client.Object) *Executor {
 	c := fake.NewClientBuilder().
 		WithScheme(newTestScheme()).
-		WithObjects(objs...).
+		WithObjects(append(objs, testDeployment())...).
 		WithStatusSubresource(&dorguv1.RemediationAction{}, &dorguv1.ApplicationPersona{}).
 		Build()
-	return NewExecutor(c, logr.Discard())
+	return NewExecutor(c, gate.New(c, logr.Discard()), logr.Discard())
 }
 
+// baseRemediationAction is a Ticketed action: approved, re-checked, and holding
+// the gate's ticket for a 256Mi -> 512Mi memory change. spec.action carries a
+// DIFFERENT value on purpose: the executor applies the ticket, never the spec.
 func baseRemediationAction() *dorguv1.RemediationAction {
 	return &dorguv1.RemediationAction{
 		ObjectMeta: metav1.ObjectMeta{
@@ -60,13 +88,20 @@ func baseRemediationAction() *dorguv1.RemediationAction {
 			Confidence: "0.85",
 			Action: dorguv1.RemediationActionDetail{
 				Type:          "persona-update",
-				Patch:         &apiextensionsv1.JSON{Raw: []byte(`{"spec":{"resources":{"limits":{"memory":"512Mi"}}}}`)},
+				Patch:         &apiextensionsv1.JSON{Raw: []byte(`{"spec":{"resources":{"limits":{"memory":"999Gi"}}}}`)},
 				PrePatchState: &apiextensionsv1.JSON{Raw: []byte(`{"spec":{"resources":{"limits":{"memory":"256Mi"}}}}`)},
 			},
 			Explanation: "Increase memory limit from 256Mi to 512Mi",
 		},
 		Status: dorguv1.RemediationActionStatus{
-			Phase: phaseApproved,
+			Phase: phaseTicketed,
+			ApplyTicket: &dorguv1.ApplyTicket{
+				WorkloadUID:             "uid-1",
+				Container:               "app",
+				Patch:                   &apiextensionsv1.JSON{Raw: []byte(`{"spec":{"resources":{"limits":{"memory":"512Mi"}}}}`)},
+				ObservedResourceVersion: "42",
+				ExpiresAt:               metav1.NewTime(time.Now().Add(5 * time.Minute)),
+			},
 		},
 	}
 }
@@ -117,67 +152,124 @@ func TestExecutor_Apply_ValidPatch(t *testing.T) {
 	}
 }
 
-func TestExecutor_Apply_RejectNonPersonaUpdateType(t *testing.T) {
-	action := baseRemediationAction()
-	action.Spec.Action.Type = "notification"
+// The ticket is what is applied: spec.action, which an author can edit, is not
+// consulted (spec.action is deprecated and derived).
+func TestExecutor_Apply_AppliesTheTicketNotTheSpecAction(t *testing.T) {
+	persona := baseApplicationPersona()
+	executor := newTestExecutor(persona)
 
-	executor := newTestExecutor(baseApplicationPersona())
-
-	err := executor.Apply(context.Background(), action)
-	if err == nil {
-		t.Fatal("expected error for non-persona-update type")
+	if err := executor.Apply(context.Background(), baseRemediationAction()); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
 	}
 
-	if want := "unsupported action type"; !containsStr(err.Error(), want) {
-		t.Errorf("expected error containing %q, got: %v", want, err)
+	var updated dorguv1.ApplicationPersona
+	if err := executor.client.Get(context.Background(), client.ObjectKeyFromObject(persona), &updated); err != nil {
+		t.Fatalf("failed to get updated persona: %v", err)
 	}
-}
-
-func TestExecutor_Apply_RejectNilPatch(t *testing.T) {
-	action := baseRemediationAction()
-	action.Spec.Action.Patch = nil
-
-	executor := newTestExecutor(baseApplicationPersona())
-
-	err := executor.Apply(context.Background(), action)
-	if err == nil {
-		t.Fatal("expected error for nil patch")
-	}
-
-	if want := "patch must not be nil"; !containsStr(err.Error(), want) {
-		t.Errorf("expected error containing %q, got: %v", want, err)
+	if updated.Spec.Resources.Limits.Memory != "512Mi" {
+		t.Errorf("expected the ticket's 512Mi, got %s", updated.Spec.Resources.Limits.Memory)
 	}
 }
 
-func TestExecutor_Apply_RejectNilPrePatchState(t *testing.T) {
-	action := baseRemediationAction()
-	action.Spec.Action.PrePatchState = nil
-
-	executor := newTestExecutor(baseApplicationPersona())
-
-	err := executor.Apply(context.Background(), action)
-	if err == nil {
-		t.Fatal("expected error for nil prePatchState")
+func TestExecutor_Apply_RefusesWithoutAValidTicket(t *testing.T) {
+	tests := map[string]struct {
+		mutate func(*dorguv1.RemediationAction)
+		want   string
+	}{
+		"no ticket": {
+			func(a *dorguv1.RemediationAction) { a.Status.ApplyTicket = nil },
+			"no apply ticket",
+		},
+		"expired": {
+			func(a *dorguv1.RemediationAction) {
+				a.Status.ApplyTicket.ExpiresAt = metav1.NewTime(time.Now().Add(-time.Second))
+			},
+			"expired",
+		},
+		"workload replaced": {
+			func(a *dorguv1.RemediationAction) { a.Status.ApplyTicket.WorkloadUID = "another-deployment" },
+			"replaced",
+		},
+		"unbound": {
+			func(a *dorguv1.RemediationAction) { a.Status.ApplyTicket.WorkloadUID = "" },
+			"not bound",
+		},
+		"nil patch": {
+			func(a *dorguv1.RemediationAction) { a.Status.ApplyTicket.Patch = nil },
+			"no patch",
+		},
+		"patch outside the allowlist": {
+			func(a *dorguv1.RemediationAction) {
+				a.Status.ApplyTicket.Patch = &apiextensionsv1.JSON{Raw: []byte(`{"spec":{"policies":{"security":{"runAsNonRoot":false}}}}`)}
+			},
+			"allowlist",
+		},
+		"invalid patch JSON": {
+			func(a *dorguv1.RemediationAction) {
+				a.Status.ApplyTicket.Patch = &apiextensionsv1.JSON{Raw: []byte(`not-json`)}
+			},
+			"not valid JSON",
+		},
+		"wrong phase": {
+			func(a *dorguv1.RemediationAction) { a.Status.Phase = phaseApproved },
+			"must be in Ticketed phase",
+		},
 	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			persona := baseApplicationPersona()
+			executor := newTestExecutor(persona)
+			action := baseRemediationAction()
+			tt.mutate(action)
 
-	if want := "prePatchState must not be nil"; !containsStr(err.Error(), want) {
-		t.Errorf("expected error containing %q, got: %v", want, err)
+			err := executor.Apply(context.Background(), action)
+			var precondition *PreconditionError
+			if !errors.As(err, &precondition) {
+				t.Fatalf("expected a PreconditionError (nothing written), got %v", err)
+			}
+			if !containsStr(precondition.Reason, tt.want) {
+				t.Errorf("expected reason containing %q, got %q", tt.want, precondition.Reason)
+			}
+
+			var untouched dorguv1.ApplicationPersona
+			if getErr := executor.client.Get(context.Background(), client.ObjectKeyFromObject(persona), &untouched); getErr != nil {
+				t.Fatal(getErr)
+			}
+			if untouched.Spec.Resources.Limits.Memory != "256Mi" {
+				t.Errorf("a refused apply wrote to the persona: %s", untouched.Spec.Resources.Limits.Memory)
+			}
+		})
 	}
 }
 
-func TestExecutor_Apply_RejectWrongPhase(t *testing.T) {
-	action := baseRemediationAction()
-	action.Status.Phase = phasePending
+func TestExecutor_Apply_WithoutAGateAppliesNothing(t *testing.T) {
+	c := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(baseApplicationPersona(), testDeployment()).Build()
+	executor := NewExecutor(c, nil, logr.Discard())
 
-	executor := newTestExecutor(baseApplicationPersona())
+	err := executor.Apply(context.Background(), baseRemediationAction())
 
-	err := executor.Apply(context.Background(), action)
-	if err == nil {
-		t.Fatal("expected error for wrong phase")
+	var precondition *PreconditionError
+	if !errors.As(err, &precondition) {
+		t.Fatalf("expected a PreconditionError, got %v", err)
 	}
+}
 
-	if want := "must be in Approved phase"; !containsStr(err.Error(), want) {
-		t.Errorf("expected error containing %q, got: %v", want, err)
+func TestExecutor_Apply_AnUnreadableWorkloadIsARefusalNotAPass(t *testing.T) {
+	broken := interceptor.NewClient(
+		fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(baseApplicationPersona(), testDeployment()).Build(),
+		interceptor.Funcs{List: func(_ context.Context, _ client.WithWatch, list client.ObjectList, _ ...client.ListOption) error {
+			if _, ok := list.(*appsv1.DeploymentList); ok {
+				return errors.New("the API server is unavailable")
+			}
+			return nil
+		}})
+	executor := NewExecutor(broken, gate.New(broken, logr.Discard()), logr.Discard())
+
+	err := executor.Apply(context.Background(), baseRemediationAction())
+
+	var precondition *PreconditionError
+	if !errors.As(err, &precondition) {
+		t.Fatalf("expected a PreconditionError, got %v", err)
 	}
 }
 
@@ -213,22 +305,6 @@ func TestExecutor_Apply_PersonaBeingDeleted(t *testing.T) {
 	}
 
 	if want := "is being deleted"; !containsStr(err.Error(), want) {
-		t.Errorf("expected error containing %q, got: %v", want, err)
-	}
-}
-
-func TestExecutor_Apply_InvalidPatchJSON(t *testing.T) {
-	action := baseRemediationAction()
-	action.Spec.Action.Patch = &apiextensionsv1.JSON{Raw: []byte(`not-json`)}
-
-	executor := newTestExecutor(baseApplicationPersona())
-
-	err := executor.Apply(context.Background(), action)
-	if err == nil {
-		t.Fatal("expected error for invalid JSON patch")
-	}
-
-	if want := "not valid JSON"; !containsStr(err.Error(), want) {
 		t.Errorf("expected error containing %q, got: %v", want, err)
 	}
 }

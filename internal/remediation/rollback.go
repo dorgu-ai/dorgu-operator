@@ -24,6 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
+	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
 )
 
 // Rollback reverses a remediation by applying the prePatchState as a merge patch.
@@ -40,16 +41,25 @@ func NewRollback(c client.Client, logger logr.Logger) *Rollback {
 	}
 }
 
-// Execute reverses the remediation patch by applying prePatchState to restore original values.
+// Execute reverses the remediation by restoring the baseline the gate recorded
+// when it cleared the plan (status.gate.prePatchState): the live values the change
+// was measured against, never the spec's own prePatchState, which whoever wrote
+// the RemediationAction chose.
+//
+// A change is only ever applied under an apply ticket, so an action without one
+// has nothing to roll back and is refused. The ticket's expiry and workload
+// version are deliberately not checked here: a heal that degrades well after its
+// ticket expired must still be undone, and by then the Deployment has been
+// patched.
 func (r *Rollback) Execute(ctx context.Context, action *dorguv1.RemediationAction) error {
 	// Validate rollback is enabled.
 	if action.Spec.Rollback == nil || !action.Spec.Rollback.Enabled {
 		return fmt.Errorf("rollback is not enabled for action %s", action.Name)
 	}
 
-	// Validate prePatchState exists.
-	if action.Spec.Action.PrePatchState == nil || len(action.Spec.Action.PrePatchState.Raw) == 0 {
-		return fmt.Errorf("prePatchState is nil or empty for action %s, cannot rollback", action.Name)
+	baseline, problem := gate.RollbackBaseline(action)
+	if problem != nil {
+		return fmt.Errorf("cannot roll back action %s: %w", action.Name, problem)
 	}
 
 	// Fetch the target persona.
@@ -58,9 +68,9 @@ func (r *Rollback) Execute(ctx context.Context, action *dorguv1.RemediationActio
 		return fmt.Errorf("getting target persona for rollback: %w", err)
 	}
 
-	// Create an executor to reuse the patch logic — prePatchState is the reverse patch.
+	// Create an executor to reuse the patch logic: the baseline is the reverse patch.
 	exec := &Executor{client: r.client, logger: r.logger}
-	if err := exec.applyPatch(ctx, persona, action.Spec.Action.PrePatchState.Raw); err != nil {
+	if err := exec.applyPatch(ctx, persona, baseline.Raw); err != nil {
 		return fmt.Errorf("applying rollback patch: %w", err)
 	}
 

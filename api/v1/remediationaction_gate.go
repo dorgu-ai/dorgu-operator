@@ -141,3 +141,46 @@ type GateVerdict struct {
 	// +optional
 	Numbers map[string]string `json:"numbers,omitempty"`
 }
+
+// ApplyTicket is the gate's clearance to apply one change, written to
+// status.applyTicket when an approval passes the approval re-check.
+//
+// It is the only thing the operator's executor and the CLI apply. spec.steps[]
+// is the plan a human approved; the ticket is that plan after the gate re-measured
+// it against the live workload and clamped it, merged into the one patch that
+// lands. Whatever the spec says after the ticket is written changes nothing.
+type ApplyTicket struct {
+	// WorkloadUID is the UID of the live Deployment the ticket was measured
+	// against. A Deployment with another UID is another workload, and the ticket
+	// does not apply to it.
+	// +optional
+	WorkloadUID string `json:"workloadUID,omitempty"`
+
+	// Container is the container in that Deployment whose resources the ticket
+	// changes.
+	// +optional
+	Container string `json:"container,omitempty"`
+
+	// Patch is the JSON merge patch the gate cleared, in persona-spec shape
+	// ({"spec":{"resources":{...}}}): every persona-update step of the plan,
+	// clamped and merged in order.
+	// +kubebuilder:validation:Schemaless
+	// +kubebuilder:pruning:PreserveUnknownFields
+	Patch *apiextensionsv1.JSON `json:"patch,omitempty"`
+
+	// Verdicts is every guardrail the approval re-check ran and what each decided.
+	// +optional
+	// +listType=atomic
+	// +kubebuilder:validation:MaxItems=64
+	Verdicts []GateVerdict `json:"verdicts,omitempty"`
+
+	// ObservedResourceVersion is the resourceVersion of the Deployment when the
+	// ticket was written. A ticket whose workload has since been changed by
+	// someone else is stale and is refused.
+	// +optional
+	ObservedResourceVersion string `json:"observedResourceVersion,omitempty"`
+
+	// ExpiresAt is when the ticket stops being valid. Nothing is applied under an
+	// expired ticket.
+	ExpiresAt metav1.Time `json:"expiresAt"`
+}

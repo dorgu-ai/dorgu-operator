@@ -200,19 +200,29 @@ var _ = Describe("RemediationController rollback scope (CR5-02)", func() {
 		collector := &remediationMockCollector{signals: signals}
 		return &RemediationController{
 			Client:   k8sClient,
-			Executor: remediation.NewExecutor(k8sClient, testLogger),
+			Gate:     envtestGate(testLogger),
+			Executor: remediation.NewExecutor(k8sClient, envtestGate(testLogger), testLogger),
 			Verifier: remediation.NewVerifier(detection.NewEngine(testLogger, collector), k8sClient, testLogger),
 			Rollback: remediation.NewRollback(k8sClient, testLogger),
 			Logger:   testLogger.WithName("rollback-scope-test"),
 		}
 	}
 
-	driveToRolledBack := func(controller *RemediationController, action *dorguv1.RemediationAction) *dorguv1.RemediationAction {
-		action.Status = dorguv1.RemediationActionStatus{Phase: RemediationPhaseApproved}
-		Expect(k8sClient.Status().Update(ctx, action)).To(Succeed())
+	// driveToRolledBack approves the action (the gate re-checks it and the operator
+	// applies the ticket), then lets afterApply play the CLI: it changes the live
+	// workload the way a patch with the user's own credentials would, once the
+	// ticket exists. Verification then degrades and the change is rolled back.
+	driveToRolledBack := func(
+		controller *RemediationController, action *dorguv1.RemediationAction, afterApply func(),
+	) *dorguv1.RemediationAction {
+		approveProposed(ctx, action)
 
 		key := client.ObjectKeyFromObject(action)
-		for range 3 {
+		_, err := controller.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
+		afterApply()
+		time.Sleep(1100 * time.Millisecond)
+		for range 2 {
 			_, err := controller.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
 			time.Sleep(1100 * time.Millisecond)
@@ -236,10 +246,15 @@ var _ = Describe("RemediationController rollback scope (CR5-02)", func() {
 	It("records the Deployment the rollback could not reach", func() {
 		persona := createPersona("rs-diverged-persona")
 		incident := createIncident("rs-diverged-incident", persona.Name)
-		healedDeployment("rs-diverged-persona", "512Mi")
+		deploy := healedDeployment("rs-diverged-persona", "256Mi")
 		action := groundedAction("rs-diverged-action", persona.Name, incident.Name, "rs-diverged-persona")
 
-		out := driveToRolledBack(degradedController(persona.Name), action)
+		out := driveToRolledBack(degradedController(persona.Name), action, func() {
+			// The CLI patches the Deployment to 512Mi with the user's credentials.
+			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy)).To(Succeed())
+			deploy.Spec.Template.Spec.Containers[0].Resources.Limits[corev1.ResourceMemory] = resource.MustParse("512Mi")
+			Expect(k8sClient.Update(ctx, deploy)).To(Succeed())
+		})
 
 		// The half that always worked.
 		var rolledBackPersona dorguv1.ApplicationPersona
@@ -265,7 +280,7 @@ var _ = Describe("RemediationController rollback scope (CR5-02)", func() {
 		healedDeployment("rs-clean-persona", "256Mi")
 		action := groundedAction("rs-clean-action", persona.Name, incident.Name, "rs-clean-persona")
 
-		out := driveToRolledBack(degradedController(persona.Name), action)
+		out := driveToRolledBack(degradedController(persona.Name), action, func() {})
 
 		cond := conditionOf(out, ConditionWorkloadDiverged)
 		Expect(cond).NotTo(BeNil())
@@ -276,10 +291,12 @@ var _ = Describe("RemediationController rollback scope (CR5-02)", func() {
 	It("will not claim a clean rollback it could not verify", func() {
 		persona := createPersona("rs-unread-persona")
 		incident := createIncident("rs-unread-incident", persona.Name)
-		// No Deployment is created: the workload cannot be read.
+		// A Deployment answers to the persona (an approval needs one), but the
+		// workload the action's own record names is not there: it cannot be read.
+		healedDeployment("rs-unread-persona", "256Mi")
 		action := groundedAction("rs-unread-action", persona.Name, incident.Name, "rs-unread-missing")
 
-		out := driveToRolledBack(degradedController(persona.Name), action)
+		out := driveToRolledBack(degradedController(persona.Name), action, func() {})
 
 		cond := conditionOf(out, ConditionWorkloadDiverged)
 		Expect(cond).NotTo(BeNil())

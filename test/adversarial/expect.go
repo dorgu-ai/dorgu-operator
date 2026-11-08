@@ -54,13 +54,6 @@ var Catalogue = []string{
 // openScenarios is the single list of holes the harness does not close yet.
 // Remove an entry in the same change that makes its test pass.
 var openScenarios = map[string]openScenario{
-	"OP-01": {"CP1", "SafetyChecker runs only in the proposer; the apply path checks shape, not the 16x change"},
-	"OP-04": {"CP1", "approval applies spec values without re-grounding against the live workload"},
-	"OP-05": {"CP1", "concurrency is checked at proposal time only; two approved Pending RAs both apply"},
-	"OP-06": {"CP1", "nothing binds an approval to the spec that was approved"},
-	"OP-07": {"CP1", "the executor merges any persona path, including policies and null deletes"},
-	"OP-08": {"CP1", "healthCheckAfter and rollback.enabled are author-supplied and unbounded"},
-	"OP-09": {"CP1", "steps[].safety is a spec field the operator never recomputes"},
 	"ID-01": {"CP2", "no admission policy on remediationactions/status; any status writer approves"},
 	"ID-02": {"CP2", "no proposer-is-not-approver rule"},
 	"ID-03": {"CP2", "approvedBy is free text from the status writer"},

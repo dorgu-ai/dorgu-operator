@@ -323,23 +323,12 @@ func (p *Proposer) buildPlanAction(
 	return action
 }
 
-// setBackCompatAction points the legacy single Action at the first
-// auto-executable persona-update step (the plan of record for the current
-// executor). If no auto-executable persona-update step remains, the Action is
-// left advisory (notification) so the executor never applies an unsafe patch.
+// setBackCompatAction derives the deprecated single Action from the plan:
+// steps[] is the only plan, and the Action is its merged persona patch (or an
+// advisory notification when nothing auto-executable remains), kept for one
+// release for clients that still read it. The executor never applies it.
 func setBackCompatAction(action *dorguv1.RemediationAction) {
-	for i := range action.Spec.Steps {
-		step := &action.Spec.Steps[i]
-		if step.AutoExecutable && step.Type == dorguv1.StepTypePersonaUpdate {
-			action.Spec.Action = dorguv1.RemediationActionDetail{
-				Type:          dorguv1.StepTypePersonaUpdate,
-				Patch:         step.Patch.DeepCopy(),
-				PrePatchState: step.PrePatchState.DeepCopy(),
-			}
-			return
-		}
-	}
-	action.Spec.Action = dorguv1.RemediationActionDetail{Type: dorguv1.ActionTypeNotification}
+	action.Spec.Action = gate.DeriveAction(action.Spec.Steps)
 }
 
 // planExplanation produces the one-line description of WHAT the plan does.

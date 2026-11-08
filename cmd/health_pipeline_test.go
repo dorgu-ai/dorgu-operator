@@ -54,7 +54,7 @@ func buildForTest(t *testing.T, cfg operatorConfig, operatorNS string) healthPip
 		t.Fatal(err)
 	}
 	c := fake.NewClientBuilder().WithScheme(scheme).Build()
-	return buildHealthPipeline(c, cfg, operatorNS, logr.Discard())
+	return buildHealthPipeline(c, c, cfg, operatorNS, logr.Discard())
 }
 
 func aiProvider(t *testing.T, p healthPipeline) *diagnosis.AIProvider {

@@ -39,13 +39,16 @@ type RemediationActionSpec struct {
 	TrustLevel int32 `json:"trustLevel"`
 
 	// Action describes the remediation to apply.
-	// Retained for back-compat: when Steps is empty, Action is the plan of record.
+	//
+	// DEPRECATED: steps[] is the only plan. Action is derived from the steps for
+	// back-compat and is never what the operator applies: the executor applies
+	// status.applyTicket, which the gate computes from steps[] at approval. It is
+	// retained for one release and will be removed.
 	Action RemediationActionDetail `json:"action"`
 
-	// Steps is an ordered, multi-step remediation plan. When non-empty it is the
-	// plan of record (and supersedes the single Action for planning purposes).
-	// NOTE (this sprint): Steps is populated and validated but not yet executed;
-	// the controller/executor continue to apply the single Action.
+	// Steps is the ordered remediation plan and the only plan: the operator's
+	// approval re-check turns its persona-update steps into the apply ticket, and
+	// the ticket is exactly what is applied.
 	// +optional
 	// +listType=atomic
 	Steps []RemediationStep `json:"steps,omitempty"`
@@ -430,11 +433,15 @@ type RemediationRollbackSpec struct {
 // RemediationActionStatus defines the observed state of RemediationAction.
 type RemediationActionStatus struct {
 	// Phase tracks the remediation lifecycle.
+	// Ticketed means a human approved the plan and the gate re-checked it on live
+	// state and cleared it: status.applyTicket is what may be applied, and nothing
+	// else. Apply refuses without a valid, unexpired ticket.
+	//
 	// Acknowledged is the terminal phase for an approved plan with nothing to
 	// apply: its steps are advisory, so approval records the decision and the
 	// operator changes nothing. It is not a failure and does not trip the
 	// failure cooldown.
-	// +kubebuilder:validation:Enum=Pending;Approved;Applying;Verifying;Completed;Acknowledged;RolledBack;Failed;Rejected;Expired
+	// +kubebuilder:validation:Enum=Pending;Approved;Ticketed;Applying;Verifying;Completed;Acknowledged;RolledBack;Failed;Rejected;Expired
 	// +optional
 	Phase string `json:"phase,omitempty"`
 
@@ -477,6 +484,13 @@ type RemediationActionStatus struct {
 	// baseline the change was measured against. Written by the operator only.
 	// +optional
 	Gate *GateStatus `json:"gate,omitempty"`
+
+	// ApplyTicket is what the gate cleared at approval: the one change that may be
+	// applied, bound to the live workload it was measured against. The executor and
+	// the CLI apply exactly this and nothing else, and refuse when it is missing,
+	// expired, or its workload no longer matches. Written by the operator only.
+	// +optional
+	ApplyTicket *ApplyTicket `json:"applyTicket,omitempty"`
 }
 
 // StepStatus tracks the execution outcome of a single RemediationStep.

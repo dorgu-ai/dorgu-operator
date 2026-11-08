@@ -49,6 +49,13 @@ const (
 // between runs beyond its configuration.
 type Gate struct {
 	client client.Client
+
+	// reader is the uncached read the gate decides on when a stale answer would be
+	// permissive: the sibling RemediationActions behind the rate limit, the
+	// concurrency check and dedup, and the live workload at approval. It is the API
+	// server's own read (manager.GetAPIReader) in production and defaults to
+	// client, which in a test is already consistent (R11).
+	reader client.Reader
 	logger logr.Logger
 
 	// protected are the namespaces the deny-list always refuses, on top of
@@ -92,6 +99,19 @@ func WithOperatorNamespaceUnknown() Option {
 	return func(g *Gate) { g.operatorNamespaceUnknown = true }
 }
 
+// WithReader sets the uncached reader the gate uses for the reads a stale cache
+// would make permissive: sibling RemediationActions (rate limit, concurrency,
+// dedup) and the live workload at approval.
+//
+// The cache is the wrong source for those. The operator's cached client lags its
+// own writes, so a proposal created a moment ago is invisible to the next one's
+// rate limit and dedup, and two proposals racing for one persona both pass. A
+// quorum read from the API server sees the first. It also fails closed: a read
+// that errors refuses the run, where a cache that merely lags errors never.
+func WithReader(r client.Reader) Option {
+	return func(g *Gate) { g.reader = r }
+}
+
 // WithClock replaces the clock, for tests.
 func WithClock(now func() time.Time) Option {
 	return func(g *Gate) { g.now = now }
@@ -108,6 +128,9 @@ func New(c client.Client, logger logr.Logger, opts ...Option) *Gate {
 	}
 	for _, opt := range opts {
 		opt(g)
+	}
+	if g.reader == nil {
+		g.reader = c
 	}
 	g.stages = []Stage{
 		validateStage{g},
@@ -138,6 +161,13 @@ func (g *Gate) Stages() []string {
 func (g *Gate) Run(ctx context.Context, cand Candidate, phase Phase) (*Decision, error) {
 	if g == nil {
 		return nil, fmt.Errorf("no gate is configured, so nothing can be cleared")
+	}
+
+	if !phase.valid() {
+		return nil, fmt.Errorf("unknown gate phase %q: only %s and %s are run", phase, PhaseProposal, PhaseApprovalRecheck)
+	}
+	if phase == PhaseApprovalRecheck {
+		cand = approvalFacts(cand)
 	}
 
 	d := newDecision(&cand, phase, metav1.NewTime(g.now()))

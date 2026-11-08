@@ -213,7 +213,7 @@ func TestProposer_AIPath_FallbackOnPlannerError(t *testing.T) {
 	result, err := p.Propose(context.Background(), newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical), incident)
 	require.NoError(t, err)
 	require.True(t, result.Proposed)
-	assert.Empty(t, result.Action.Spec.Steps, "rule-based path produces a single Action, not Steps")
+	assertRuleBasedSingleStep(t, result.Action)
 	assert.Equal(t, "persona-update", result.Action.Spec.Action.Type)
 	assert.NotEqual(t, dorguv1.PlanSourceAIAnthropic, result.Action.Spec.PlanSource)
 }
@@ -233,7 +233,7 @@ func TestProposer_AIPath_FallbackOnEmptyPlan(t *testing.T) {
 	result, err := p.Propose(context.Background(), newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical), incident)
 	require.NoError(t, err)
 	require.True(t, result.Proposed)
-	assert.Empty(t, result.Action.Spec.Steps, "empty plan falls back to rules")
+	assertRuleBasedSingleStep(t, result.Action)
 }
 
 func TestProposer_NoPlanner_UsesRules(t *testing.T) {
@@ -251,7 +251,7 @@ func TestProposer_NoPlanner_UsesRules(t *testing.T) {
 	result, err := p.Propose(context.Background(), newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical), incident)
 	require.NoError(t, err)
 	require.True(t, result.Proposed)
-	assert.Empty(t, result.Action.Spec.Steps)
+	assertRuleBasedSingleStep(t, result.Action)
 	assert.Equal(t, "persona-update", result.Action.Spec.Action.Type)
 }
 
@@ -584,4 +584,18 @@ func TestProposer_AIPath_ClampNoticeSurvivesExplanationRecompute(t *testing.T) {
 	assert.Contains(t, spec.PlanSummary, "Clamped by the 2x blast-radius guardrail")
 	assert.Contains(t, spec.PlanSummary, "memory limit too low",
 		"PlanSummary stays the root cause")
+}
+
+// assertRuleBasedSingleStep: the rule engine writes its change as one
+// persona-update step (steps[] is the only plan), with the deprecated single
+// action derived from it.
+func assertRuleBasedSingleStep(t *testing.T, action *dorguv1.RemediationAction) {
+	t.Helper()
+	require.Len(t, action.Spec.Steps, 1, "the rule-based path writes its change as a step")
+	step := action.Spec.Steps[0]
+	assert.Equal(t, dorguv1.StepTypePersonaUpdate, step.Type)
+	assert.True(t, step.AutoExecutable)
+	require.NotNil(t, step.Patch)
+	assert.JSONEq(t, string(step.Patch.Raw), string(action.Spec.Action.Patch.Raw),
+		"spec.action is derived from steps[]")
 }

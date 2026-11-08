@@ -50,7 +50,7 @@ const (
 // Failed, RolledBack, Rejected, Expired) do NOT block a fresh proposal, e.g. a
 // recurrence after a prior fix failed. The empty phase covers a just-created
 // action whose status write has not landed yet.
-var activeRemediationPhases = []string{"", phasePending, phaseApproved, phaseApplying, phaseVerifying}
+var activeRemediationPhases = []string{"", phasePending, phaseApproved, phaseTicketed, phaseApplying, phaseVerifying}
 
 // dedupCooldownStage stops a proposal that is redundant (an active remediation
 // already answers this incident or this fix) or that a human already declined.

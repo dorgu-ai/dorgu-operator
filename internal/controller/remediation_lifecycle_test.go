@@ -46,11 +46,13 @@ import (
 // and the rollback outcome.
 
 const (
-	lcNamespace = "shop"
-	lcPersona   = "web"
-	lcIncident  = "im-web-oom"
-	lcBaseline  = "256Mi"
-	lcApplied   = "512Mi"
+	lcDeploymentUID = "uid-web"
+	lcDeploymentRV  = "7"
+	lcNamespace     = "shop"
+	lcPersona       = "web"
+	lcIncident      = "im-web-oom"
+	lcBaseline      = "256Mi"
+	lcApplied       = "512Mi"
 )
 
 func lcScheme(t *testing.T) *runtime.Scheme {
@@ -111,10 +113,49 @@ func lcRA(phase string, mutate ...func(*dorguv1.RemediationAction)) *dorguv1.Rem
 		},
 		Status: dorguv1.RemediationActionStatus{Phase: phase},
 	}
+	// steps[] is the only plan; the single action above is its derived form.
+	ra.Spec.Steps = []dorguv1.RemediationStep{{
+		Order: 1, ID: "step-1", Type: "persona-update", AutoExecutable: true,
+		Description: ra.Spec.Explanation,
+		Patch:       ra.Spec.Action.Patch.DeepCopy(), PrePatchState: ra.Spec.Action.PrePatchState.DeepCopy(),
+	}}
+	lcRecordProposal(ra)
 	for _, m := range mutate {
 		m(ra)
 	}
 	return ra
+}
+
+// lcRecordProposal gives ra what the operator's proposer writes when the gate
+// clears a plan (a Proposal decision against the live Deployment, and the Proposed
+// condition at the spec generation), and, for the phases after approval, what the
+// approval re-check writes: the apply ticket and the baseline it measured against.
+func lcRecordProposal(ra *dorguv1.RemediationAction) {
+	now := metav1.Now()
+	ra.Status.Gate = &dorguv1.GateStatus{
+		Phase: string(gate.PhaseProposal), Result: string(gate.ResultPass), EvaluatedAt: now,
+		Observed: &dorguv1.GateObserved{WorkloadUID: lcDeploymentUID, ObservedAt: &now},
+	}
+	ra.Status.Conditions = append(ra.Status.Conditions, metav1.Condition{
+		Type: dorguv1.ConditionProposed, Status: metav1.ConditionTrue, Reason: dorguv1.ReasonGateCleared,
+		ObservedGeneration: ra.Generation, LastTransitionTime: now,
+	})
+
+	switch ra.Status.Phase {
+	case RemediationPhaseTicketed, RemediationPhaseApplying, RemediationPhaseVerifying, RemediationPhaseCompleted, RemediationPhaseRolledBack:
+		ra.Status.Gate.Phase = string(gate.PhaseApprovalRecheck)
+		ra.Status.Gate.PrePatchState = &apiextensionsv1.JSON{Raw: []byte(`{"spec":{"resources":{"limits":{"memory":"256Mi"}}}}`)}
+		ra.Status.ApplyTicket = &dorguv1.ApplyTicket{
+			WorkloadUID: lcDeploymentUID, Container: lcPersona,
+			Patch:                   &apiextensionsv1.JSON{Raw: []byte(`{"spec":{"resources":{"limits":{"memory":"512Mi"}}}}`)},
+			ObservedResourceVersion: lcDeploymentRV,
+			ExpiresAt:               metav1.NewTime(time.Now().Add(gate.TicketTTL)),
+		}
+		applied := metav1.NewTime(time.Now().Add(-11 * time.Minute))
+		if ra.Status.Phase != RemediationPhaseTicketed {
+			ra.Status.AppliedAt = &applied
+		}
+	}
 }
 
 func lcOOMSignal() detection.Signal {
@@ -134,22 +175,33 @@ func lcOOMSignal() detection.Signal {
 
 // lcController builds the real controller over a fake client, with a detection
 // engine reporting the given signals.
-func lcController(t *testing.T, objs []client.Object, signals ...detection.Signal) (*RemediationController, client.Client) {
+func lcController(t *testing.T, objs []client.Object, signals ...detection.Signal) (*RemediationController, client.WithWatch) {
 	t.Helper()
 	return lcControllerWithCollector(t, objs, &stubCollector{name: "lc", signals: signals})
 }
 
-func lcControllerWithCollector(t *testing.T, objs []client.Object, collector detection.SignalCollector) (*RemediationController, client.Client) {
+func lcControllerWithCollector(t *testing.T, objs []client.Object, collector detection.SignalCollector) (*RemediationController, client.WithWatch) {
 	t.Helper()
+	hasDeployment := false
+	for _, o := range objs {
+		if _, ok := o.(*appsv1.Deployment); ok {
+			hasDeployment = true
+		}
+	}
+	if !hasDeployment {
+		objs = append(objs, lcDeployment(lcBaseline))
+	}
 	c := fake.NewClientBuilder().WithScheme(lcScheme(t)).
 		WithObjects(objs...).
 		WithStatusSubresource(&dorguv1.RemediationAction{}, &dorguv1.IncidentMemory{}, &dorguv1.ApplicationPersona{}).
 		Build()
 	log := logr.Discard()
 	engine := detection.NewEngine(log, collector)
+	g := gate.New(c, log)
 	return &RemediationController{
 		Client:   c,
-		Executor: remediation.NewExecutor(c, log),
+		Gate:     g,
+		Executor: remediation.NewExecutor(c, g, log),
 		Verifier: remediation.NewVerifier(engine, c, log),
 		Rollback: remediation.NewRollback(c, log),
 		Logger:   log,
@@ -311,7 +363,10 @@ func TestVerifyingUnknown_RecordedFinalRetryRollsBackOnTheNextPass(t *testing.T)
 func lcDeployment(liveMemory string) *appsv1.Deployment {
 	labels := map[string]string{"app": lcPersona}
 	return &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{Name: lcPersona, Namespace: lcNamespace, Labels: labels},
+		ObjectMeta: metav1.ObjectMeta{
+			Name: lcPersona, Namespace: lcNamespace, Labels: labels,
+			UID: lcDeploymentUID, ResourceVersion: lcDeploymentRV,
+		},
 		Spec: appsv1.DeploymentSpec{
 			Selector: &metav1.LabelSelector{MatchLabels: labels},
 			Template: corev1.PodTemplateSpec{
@@ -384,8 +439,8 @@ func TestRollback_RestoredWorkloadIsRecordedAsRollback(t *testing.T) {
 // A rollback that could not run must say so on the record: Failed, with the
 // persona still carrying the change, not a silent half state.
 func TestRollback_FailedRollbackSaysThePersonaStillCarriesTheChange(t *testing.T) {
-	// prePatchState missing: Execute refuses.
-	noPre := func(ra *dorguv1.RemediationAction) { ra.Spec.Action.PrePatchState = nil }
+	// The gate recorded no baseline to restore: Execute refuses.
+	noPre := func(ra *dorguv1.RemediationAction) { ra.Status.Gate.PrePatchState = nil }
 	rc, c := lcController(t,
 		[]client.Object{lcPersonaObj(lcApplied), lcIncidentObj(), lcRA("Verifying", noPre)},
 		lcOOMSignal())

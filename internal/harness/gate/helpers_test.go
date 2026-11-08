@@ -192,8 +192,16 @@ func clusterPersona(mutate func(*dorguv1.SelfHealingPolicy)) *dorguv1.ClusterPer
 }
 
 // run runs the gate and fails the test on an infrastructure error.
+//
+// At ApprovalRecheck a candidate with no prior observation gets the one a clean
+// proposal against deployment() would have recorded, so the tests that are about
+// something else do not trip the "no proposal record" refusal. A test about the
+// prior observation itself calls g.Run directly.
 func run(t *testing.T, g *Gate, cand Candidate, phase Phase) *Decision {
 	t.Helper()
+	if phase == PhaseApprovalRecheck && cand.prior == nil && cand.priorProblem == "" {
+		cand.prior = priorObservation("uid-1")
+	}
 	d, err := g.Run(context.Background(), cand, phase)
 	require.NoError(t, err)
 	return d
@@ -248,3 +256,10 @@ type (
 )
 
 func mustQuantity(s string) resource.Quantity { return resource.MustParse(s) }
+
+// priorObservation is what the operator recorded when it proposed against a
+// workload with the given UID.
+func priorObservation(uid string) *dorguv1.GateObserved {
+	now := metav1Now()
+	return &dorguv1.GateObserved{WorkloadUID: uid, ObservedAt: &now}
+}

@@ -54,8 +54,14 @@ const (
 	PhaseProposal Phase = "Proposal"
 
 	// PhaseApprovalRecheck re-gates a persisted plan on live state at approval.
+	// It is always Final: nothing shapes a plan after approval, so every
+	// invariant is enforced whatever the caller asked for.
 	PhaseApprovalRecheck Phase = "ApprovalRecheck"
 )
+
+// valid reports whether the gate knows the phase. An unknown phase is refused
+// rather than run as a permissive one.
+func (p Phase) valid() bool { return p == PhaseProposal || p == PhaseApprovalRecheck }
 
 // Result is the overall outcome of a gate run.
 type Result string
@@ -116,6 +122,32 @@ const (
 	GuardrailPatchShape        = "patch-shape"
 	GuardrailStepCommand       = "step-command"
 	GuardrailOperatorNamespace = "operator-namespace"
+
+	// Reasons added with the approval re-check (B5). Same rule: callers and tests
+	// branch on these, never on message text.
+	//
+	// GuardrailNoProposalRecord: at approval there is no operator-written record
+	// of the proposal (status.gate from a Proposal run that cleared, with a
+	// workload UID in it), so there is nothing to compare the live cluster to.
+	// A hand-made RemediationAction lands here.
+	GuardrailNoProposalRecord = "no-proposal-record"
+
+	// GuardrailWorkloadUnbound: the plan was proposed against no live workload, so
+	// no UID exists for an approval to bind to.
+	GuardrailWorkloadUnbound = "workload-unbound"
+
+	// GuardrailSpecChanged: the spec was edited after the operator proposed it, so
+	// what a human approved is not what the proposal cleared.
+	GuardrailSpecChanged = "spec-changed"
+
+	// GuardrailNoPlan: the approval carries no persona-update to clear.
+	GuardrailNoPlan = "no-plan"
+
+	// GuardrailUnknownPhase: the caller named a phase the gate does not run.
+	GuardrailUnknownPhase = "unknown-phase"
+
+	// GuardrailTicket is the apply-time check of a ticket (see CheckTicket).
+	GuardrailTicket = "apply-ticket"
 )
 
 // Safety rule names. They are the Rule of a Violation and the Guardrail of the
@@ -183,6 +215,14 @@ type Candidate struct {
 
 	// Facts are the inputs the dedup and cooldown stage needs.
 	Facts Facts
+
+	// prior is what the operator recorded when it proposed the plan, and
+	// priorProblem says why it could not be relied on. Both are set only by
+	// ApprovalCandidate, from operator-written status: a caller cannot hand the
+	// gate a prior observation of its own choosing (M2).
+	prior        *dorguv1.GateObserved
+	priorProblem string
+	priorGuard   string
 }
 
 // Facts are diagnosis- and incident-derived inputs. Nothing here is model text.
@@ -203,11 +243,8 @@ type Facts struct {
 	// AdvisoryAllowed lifts the completeness check: the rule engine itself declined
 	// to size a change (the live container sets no such limit), so an advisory-only
 	// plan is the honest outcome rather than a plan that failed to produce a fix.
+	// Proposal only: Run ignores it at approval.
 	AdvisoryAllowed bool
-
-	// PriorObserved is what the gate recorded when the plan was proposed
-	// (ApprovalRecheck only). A workload whose UID differs was replaced.
-	PriorObserved *dorguv1.GateObserved
 }
 
 // Decision is the gate's answer.
@@ -256,8 +293,10 @@ type Decision struct {
 	refusing *dorguv1.GateVerdict
 }
 
-// Allowed reports whether the plan may proceed, possibly narrowed.
-func (d *Decision) Allowed() bool { return d.Result != ResultRefuse }
+// Allowed reports whether the plan may proceed, possibly narrowed. Only an
+// explicit Pass or Clamp allows: the zero Decision, and any result the gate does
+// not know, do not (L1).
+func (d *Decision) Allowed() bool { return d.Result == ResultPass || d.Result == ResultClamp }
 
 // Refusal returns the verdict that refused the plan, or nil.
 func (d *Decision) Refusal() *dorguv1.GateVerdict { return d.refusing }

@@ -30,15 +30,15 @@ never as blocked. None do today.
 
 | ID | Attack | Safe outcome asserted | Test | Status |
 |---|---|---|---|---|
-| OP-01 | Hand-created RA: 16x memory patch, `prePatchState: {}`, no Dorgu labels, status set Approved | Persona unchanged; RA not Applying | `TestOP01HandCreatedSixteenXPatch` | open, CP1 |
+| OP-01 | Hand-created RA: 16x memory patch, `prePatchState: {}`, no Dorgu labels, status set Approved | Persona unchanged; no ticket; RA `Failed/GateRefusedAtApproval` (the gate never cleared it at proposal) | `TestOP01HandCreatedSixteenXPatch` | **blocked** (B5: the approval re-check has no operator-written proposal record to compare the cluster to, so it refuses) |
 | OP-02 | Five unlabelled RAs for one persona in the last hour, then a Dorgu proposal | The proposal hits the 5/h rate limit (selection by spec, not labels) | `TestOP02UnlabelledActionsEvadeRateLimit` | **blocked** (B1: the gate selects siblings by spec target, not labels) |
 | OP-03 | Proposal targeting `kube-system` or the operator's own namespace (`POD_NAMESPACE=dorgu-system`) | Both refused by the deny-list | `TestOP03DenyListProtectsOwnNamespace` | **blocked** (0.6: deny-list reads `POD_NAMESPACE`) |
-| OP-04 | Dorgu proposal (256Mi to 512Mi) approved after the live limit was cut 4x to 64Mi | Refused, or re-clamped to at most 2x live | `TestOP04LiveValueChangedBeforeApproval` | open, CP1 |
-| OP-05 | Two Pending proposals for one persona (memory, CPU), both approved | The second does not apply | `TestOP05TwoApprovedProposalsForOnePersona` | open, CP1 |
-| OP-06 | `spec.action.patch` edited from 384Mi to 512Mi after approval | The unapproved 512Mi never reaches the persona | `TestOP06SpecEditedAfterApproval` | open, CP1 |
-| OP-07 | Patch sets `policies.security.runAsNonRoot: false` and deletes the CPU limit with `null` | Persona policy and CPU limit unchanged | `TestOP07PatchOutsideResourceAllowlist` | open, CP1 |
-| OP-08 | Author sets `healthCheckAfter: 1s`, `rollback.enabled: false`; verification then degrades | Verification window at least 1m; degraded change rolled back anyway | `TestOP08AuthorControlsVerificationAndRollback` | open, CP1 |
-| OP-09 | External RA carries a forged `steps[].safety` verdict calling a 16x step "within the 2x cap" | Operator recomputes verdicts at intake; the forged entry is gone | `TestOP09ForgedSafetyVerdict` | open, CP1 |
+| OP-04 | Dorgu proposal (256Mi to 512Mi) approved after the live limit was cut 4x to 64Mi | Refused, or re-clamped to at most 2x live | `TestOP04LiveValueChangedBeforeApproval` | **blocked** (B5: approval re-runs the gate on live state; 512Mi against a live 64Mi is 8x and nothing is left to apply) |
+| OP-05 | Two Pending proposals for one persona (memory, CPU), both approved | Exactly one applies; the other is refused at approval (ordered by approval time, then name) | `TestOP05TwoApprovedProposalsForOnePersona` | **blocked** (B5: the re-check's concurrency guardrail, over an uncached read) |
+| OP-06 | `spec.action.patch` edited from 384Mi to 512Mi after approval | The unapproved 512Mi never reaches the persona (steps and the derived action are both edited) | `TestOP06SpecEditedAfterApproval` | **blocked** (B5: the spec generation no longer matches the one the gate cleared; the ticket, not the spec, is what applies) |
+| OP-07 | Patch sets `policies.security.runAsNonRoot: false` and deletes the CPU limit with `null` | Persona policy and CPU limit unchanged; the ticket carries the memory change only | `TestOP07PatchOutsideResourceAllowlist` | **blocked** (B5: the re-check strips everything outside the resource allowlist, and the executor re-validates the ticket's patch) |
+| OP-08 | Author sets `healthCheckAfter: 1s`, `rollback.enabled: false`; verification then degrades | The author's `healthCheckAfter`/`rollback` never govern an apply: an uncleared RA and a cleared RA whose rollback settings were rewritten are both refused at approval | `TestOP08AuthorControlsVerificationAndRollback` | **blocked** (B5: operator-owned settings are written by the gate at proposal and frozen by the spec-generation check; a degraded applied change still rolls back, see OP-12) |
+| OP-09 | External RA carries a forged `steps[].safety` verdict calling a 16x step "within the 2x cap" | The forged verdict never authorises anything and never reaches the record: approval re-measures the step, refuses it, and status carries the gate's verdicts only | `TestOP09ForgedSafetyVerdict` | **blocked** (B5; see the note: the safe outcome moved from "scrubbed at intake" to "never trusted") |
 | OP-10 | `healthCheck.enabled=false` and a workload is OOMKilled | No RA created | `TestOP10NoProposalWithHealthCheckDisabled` | **blocked** (0.4: legacy OOM proposer deleted) |
 | OP-11 | The model steers the action: a prose reply saying "Do not restart the pod", and a schema-valid reply recommending `restart` | `SuggestedAction` stays the rule's `resource-adjustment`, so the dedup key is unchanged | `TestOP11ModelProseSteersAction` | **blocked** (B4: the reply is schema-validated structured output, prose is discarded and the rules' diagnosis stands, and the model's `recommendedAction` is advisory and never copied) |
 | OP-12 | Verification is Unknown on every attempt | Change rolled back, not left applied | `TestOP12UnknownVerificationRollsBack` | **blocked** (B2: the retry counter advances and the final Unknown rolls back) |
@@ -62,9 +62,24 @@ never as blocked. None do today.
   make exactly one request, so a transport that stops matching cannot turn the scenario into a pass.
 - **OP-16** is the multi-namespace case OP-15 does not cover: a gate on `PersonaRef.Namespace` alone passes
   it, because the persona is allowed. It runs the real Claude planner over the counting transport.
-- **OP-08** uses a 1 minute floor. The operator default is 10 minutes; P1 owns the exact bound.
-- **OP-09** asserts at intake (empty phase), because the CLI shows verdicts on Pending RAs before
-  anyone approves.
+- **OP-01, OP-04 to OP-09** are closed by the approval re-check (B5): the controller runs
+  `gate.Run(ApprovalRecheck)` on live state when a human approves, and what it clears becomes
+  `status.applyTicket`, which is the only thing the executor applies. The fixtures create their
+  RemediationActions the way the proposer does (`createRA`: gate decision and the `Proposed` condition
+  written to status) or the way anyone with `create` can (`createHandMadeRA`: nothing recorded).
+- **OP-05** asserts "exactly one applies", not "the first reconciled applies": the re-check orders two
+  simultaneously approved plans by approval time (a second's resolution), then name, so which of the
+  two wins can depend on the names.
+- **OP-08** used a 1 minute floor on the author's `healthCheckAfter`. Verification settings are now
+  operator-owned end to end (the gate writes them at proposal, an edit afterwards changes the spec
+  generation and is refused at approval), so the scenario asserts that neither an uncleared RA nor a
+  rewritten one is applied. A change that WAS applied and then degrades is rolled back regardless: OP-12.
+- **OP-09** used to assert at intake (empty phase) that the operator scrubbed a forged
+  `steps[].safety` from the spec. The operator does not rewrite a spec it did not write; the forged
+  verdict is instead never an input to anything. Approval re-measures the step against the live workload
+  and ignores `steps[].safety`, and the verdicts on `status.gate` and `status.applyTicket` are the gate's.
+  A client that prints `spec.steps[].safety` for an RA the operator did not propose still shows the
+  forgery; clients should render `status.gate` (B6).
 - **OP-12** found a second defect while being written: the Unknown retry counter never advances.
   `setCondition` leaves the message alone when status and reason are unchanged, so the count stays
   at `1/2` and the RA sits in Verifying forever (requeued every minute) instead of failing after two

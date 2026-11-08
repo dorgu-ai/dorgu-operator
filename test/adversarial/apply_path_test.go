@@ -19,6 +19,7 @@ package adversarial
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -27,6 +28,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
+	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
 )
 
 // Scenarios on the approve -> apply -> verify path. Each one hands the real
@@ -34,13 +36,16 @@ import (
 // persona.
 
 // OP-01: a hand-written RA with a 16x memory patch, an empty prePatchState and
-// no Dorgu labels is approved. The persona must not change.
+// no Dorgu labels is approved. The persona must not change: the gate never
+// cleared it at proposal, so the approval re-check has nothing to compare the
+// cluster to and refuses.
 func TestOP01HandCreatedSixteenXPatch(t *testing.T) {
 	ns := newNamespace(t, "op-01")
 	createPersona(t, ns)
 	createIncident(t, ns)
+	createDeployment(t, ns)
 
-	ra := createRA(t, newRA(ns, "hand-made", withoutLabels(), func(ra *dorguv1.RemediationAction) {
+	ra := createHandMadeRA(t, newRA(ns, "hand-made", withoutLabels(), func(ra *dorguv1.RemediationAction) {
 		ra.Spec.Action.Patch = memoryPatch("4Gi")
 		ra.Spec.Action.PrePatchState = rawJSON(`{}`)
 	}), phaseApproved)
@@ -48,9 +53,10 @@ func TestOP01HandCreatedSixteenXPatch(t *testing.T) {
 	_, err := reconcile(t, newRemediationController(), ra)
 
 	mem := personaMemory(t, ns)
-	blocked := mem == baselineMemory && ra.Status.Phase != phaseApplying
-	Expect(t, "OP-01", blocked, fmt.Sprintf("persona memory %s -> %s, RA phase %q, reconcile err %v",
-		baselineMemory, mem, ra.Status.Phase, err))
+	blocked := mem == baselineMemory && ra.Status.Phase == phaseFailed && ra.Status.ApplyTicket == nil &&
+		refusedAtApproval(ra)
+	Expect(t, "OP-01", blocked, fmt.Sprintf("persona memory %s -> %s, RA phase %q, ticket %v, reconcile err %v",
+		baselineMemory, mem, ra.Status.Phase, ra.Status.ApplyTicket != nil, err))
 }
 
 // OP-04: Dorgu proposed 256Mi -> 512Mi against a live 256Mi; before approval
@@ -60,7 +66,7 @@ func TestOP04LiveValueChangedBeforeApproval(t *testing.T) {
 	ns := newNamespace(t, "op-04")
 	createPersona(t, ns)
 	createIncident(t, ns)
-	deploy := createDeployment(t, ns, baselineMemory)
+	deploy := createDeployment(t, ns)
 
 	observed := metav1.Now()
 	ra := createRA(t, newRA(ns, "grounded", func(ra *dorguv1.RemediationAction) {
@@ -93,11 +99,14 @@ func TestOP04LiveValueChangedBeforeApproval(t *testing.T) {
 }
 
 // OP-05: two Pending Dorgu proposals for one persona, on different fields,
-// are both approved. Only one may apply; the second must be refused.
+// are both approved. Exactly one may apply; the other is refused at approval
+// (the re-check serialises them by approval time, then name, so neither order of
+// reconciliation lets both through).
 func TestOP05TwoApprovedProposalsForOnePersona(t *testing.T) {
 	ns := newNamespace(t, "op-05")
 	createPersona(t, ns)
 	createIncident(t, ns)
+	createDeployment(t, ns)
 
 	first := createRA(t, newRA(ns, "memory"), "Pending")
 	second := createRA(t, newRA(ns, "cpu", func(ra *dorguv1.RemediationAction) {
@@ -109,30 +118,54 @@ func TestOP05TwoApprovedProposalsForOnePersona(t *testing.T) {
 	setPhase(t, second, phaseApproved)
 
 	rc := newRemediationController()
-	if _, err := reconcile(t, rc, first); err != nil {
-		t.Fatalf("reconciling the first approval: %v", err)
-	}
-	_, err := reconcile(t, rc, second)
+	_, firstErr := reconcile(t, rc, first)
+	_, secondErr := reconcile(t, rc, second)
 
-	cpu := personaCPU(t, ns)
-	blocked := second.Status.Phase != phaseApplying && cpu == baselineCPU
-	Expect(t, "OP-05", blocked, fmt.Sprintf("first RA %q, second RA %q, persona cpu %s -> %s, err %v",
-		first.Status.Phase, second.Status.Phase, baselineCPU, cpu, err))
+	applied := 0
+	for _, ra := range []*dorguv1.RemediationAction{first, second} {
+		if ra.Status.Phase == phaseApplying {
+			applied++
+		}
+	}
+	changed := 0
+	if personaMemory(t, ns) != baselineMemory {
+		changed++
+	}
+	if personaCPU(t, ns) != baselineCPU {
+		changed++
+	}
+	refused := first
+	if first.Status.Phase == phaseApplying {
+		refused = second
+	}
+	blocked := applied == 1 && changed == 1 && refusedAtApproval(refused)
+	Expect(t, "OP-05", blocked, fmt.Sprintf(
+		"memory RA %q, cpu RA %q, %d applied, %d persona field(s) changed (memory %s, cpu %s), errs %v %v",
+		first.Status.Phase, second.Status.Phase, applied, changed, personaMemory(t, ns), personaCPU(t, ns),
+		firstErr, secondErr))
 }
 
 // OP-06: the spec is edited after a human approved it. The edited plan was
-// never approved, so it must not apply.
+// never approved, so it must not apply: the edit bumps the spec generation, which
+// no longer matches the one the gate cleared, and the approval is refused.
 func TestOP06SpecEditedAfterApproval(t *testing.T) {
 	ns := newNamespace(t, "op-06")
 	createPersona(t, ns)
 	createIncident(t, ns)
+	createDeployment(t, ns)
 
 	ra := createRA(t, newRA(ns, "edited", func(ra *dorguv1.RemediationAction) {
 		ra.Spec.Action.Patch = memoryPatch("384Mi")
+		ra.Spec.Steps = []dorguv1.RemediationStep{{
+			Order: 1, ID: "step-1", Type: personaUpdate, AutoExecutable: true,
+			Description: "raise memory", Patch: memoryPatch("384Mi"),
+		}}
 	}), "Pending")
 	setPhase(t, ra, phaseApproved)
 
+	// Both the plan and its derived action are edited: neither may reach the persona.
 	ra.Spec.Action.Patch = memoryPatch("512Mi")
+	ra.Spec.Steps[0].Patch = memoryPatch("512Mi")
 	if err := k8sClient.Update(context.Background(), ra); err != nil {
 		t.Fatalf("editing the approved spec: %v", err)
 	}
@@ -140,23 +173,31 @@ func TestOP06SpecEditedAfterApproval(t *testing.T) {
 	_, err := reconcile(t, newRemediationController(), ra)
 
 	mem := personaMemory(t, ns)
-	blocked := mem != "512Mi"
+	blocked := mem == baselineMemory && refusedAtApproval(ra)
 	Expect(t, "OP-06", blocked, fmt.Sprintf("approved 384Mi, edited to 512Mi, persona now %s, RA phase %q, err %v",
 		mem, ra.Status.Phase, err))
 }
 
 // OP-07: the patch reaches outside spec.resources, flipping a security policy
-// and deleting the CPU limit with a JSON merge-patch null.
+// and deleting the CPU limit with a JSON merge-patch null, beside a legitimate
+// memory change. The approval re-check strips everything outside the resource
+// allowlist, so the ticket carries the memory change and nothing else.
 func TestOP07PatchOutsideResourceAllowlist(t *testing.T) {
 	ns := newNamespace(t, "op-07")
 	createPersona(t, ns)
 	createIncident(t, ns)
+	createDeployment(t, ns)
 
+	attack := `{"spec":{"policies":{"security":{"runAsNonRoot":false}},` +
+		`"resources":{"limits":{"cpu":null,"memory":"300Mi"}}}}`
 	ra := createRA(t, newRA(ns, "out-of-scope", func(ra *dorguv1.RemediationAction) {
-		ra.Spec.Action.Patch = rawJSON(
-			`{"spec":{"policies":{"security":{"runAsNonRoot":false}},"resources":{"limits":{"cpu":null}}}}`)
+		ra.Spec.Action.Patch = rawJSON(attack)
 		ra.Spec.Action.PrePatchState = rawJSON(
 			`{"spec":{"policies":{"security":{"runAsNonRoot":true}},"resources":{"limits":{"cpu":"250m"}}}}`)
+		ra.Spec.Steps = []dorguv1.RemediationStep{{
+			Order: 1, ID: "step-1", Type: personaUpdate, AutoExecutable: true,
+			Description: "out of scope", Patch: rawJSON(attack),
+		}}
 	}), phaseApproved)
 
 	_, err := reconcile(t, newRemediationController(), ra)
@@ -165,59 +206,68 @@ func TestOP07PatchOutsideResourceAllowlist(t *testing.T) {
 	nonRoot := p.Spec.Policies != nil && p.Spec.Policies.Security != nil &&
 		p.Spec.Policies.Security.RunAsNonRoot != nil && *p.Spec.Policies.Security.RunAsNonRoot
 	cpu := personaCPU(t, ns)
-	blocked := nonRoot && cpu == baselineCPU
-	Expect(t, "OP-07", blocked, fmt.Sprintf("runAsNonRoot still true: %v, cpu %s -> %q, RA phase %q, err %v",
-		nonRoot, baselineCPU, cpu, ra.Status.Phase, err))
+	ticketPaths := ""
+	if ra.Status.ApplyTicket != nil {
+		ticketPaths = fmt.Sprint(gate.PatchLeafPaths(ra.Status.ApplyTicket.Patch.Raw))
+	}
+	blocked := nonRoot && cpu == baselineCPU && ticketPaths == "[spec.resources.limits.memory]"
+	Expect(t, "OP-07", blocked, fmt.Sprintf(
+		"runAsNonRoot still true: %v, cpu %s -> %q, ticket paths %s, RA phase %q, err %v",
+		nonRoot, baselineCPU, cpu, ticketPaths, ra.Status.Phase, err))
 }
 
-// verificationFloor is the shortest verification window the harness may
-// accept from a proposal. The operator default is 10m; P1 owns the exact
-// bound, and this test only demands that a 1s author value is not honoured.
-const verificationFloor = time.Minute
-
 // OP-08: the author sets healthCheckAfter: 1s and rollback.enabled: false.
-// Both are operator-owned: the window is bounded, and a degraded result
-// still rolls back.
+// Verification and rollback are operator-owned: the gate writes them when it
+// clears the plan, and a spec edited afterwards (or an action the gate never
+// cleared) is refused at approval, so the author's values never govern an apply.
+// A degraded change that WAS applied rolls back regardless: OP-12 covers it.
 func TestOP08AuthorControlsVerificationAndRollback(t *testing.T) {
 	ns := newNamespace(t, "op-08")
 	createPersona(t, ns)
 	createIncident(t, ns)
+	createDeployment(t, ns)
 
-	ra := createRA(t, newRA(ns, "no-rollback", func(ra *dorguv1.RemediationAction) {
-		ra.Spec.Rollback = &dorguv1.RemediationRollbackSpec{
-			Enabled:          false,
-			HealthCheckAfter: &metav1.Duration{Duration: time.Second},
-		}
-	}), phaseApproved)
-
-	// The OOM signal is still present after the change: verification degrades.
-	rc := newRemediationController(oomSignal(ns))
-	res, err := reconcile(t, rc, ra)
-	if err != nil {
-		t.Fatalf("applying: %v", err)
+	authored := &dorguv1.RemediationRollbackSpec{
+		Enabled:          false,
+		HealthCheckAfter: &metav1.Duration{Duration: time.Second},
 	}
-	window := res.RequeueAfter
 
-	setPhase(t, ra, phaseVerifying)
-	_, verifyErr := reconcile(t, rc, ra)
+	// 1. An action nobody cleared, carrying the author's settings.
+	handMade := createHandMadeRA(t, newRA(ns, "no-rollback", func(ra *dorguv1.RemediationAction) {
+		ra.Spec.Rollback = authored.DeepCopy()
+	}), phaseApproved)
+	rc := newRemediationController(oomSignal(ns))
+	res, err := reconcile(t, rc, handMade)
+
+	// 2. A cleared proposal whose rollback settings are rewritten after the fact.
+	proposal := createRA(t, newRA(ns, "rewritten"), "Pending")
+	proposal.Spec.Rollback = authored.DeepCopy()
+	if updateErr := k8sClient.Update(context.Background(), proposal); updateErr != nil {
+		t.Fatalf("rewriting the rollback settings: %v", updateErr)
+	}
+	setPhase(t, proposal, phaseApproved)
+	res2, err2 := reconcile(t, rc, proposal)
 
 	mem := personaMemory(t, ns)
-	blocked := window >= verificationFloor && mem == baselineMemory
+	blocked := mem == baselineMemory && res.RequeueAfter == 0 && res2.RequeueAfter == 0 &&
+		refusedAtApproval(handMade) && refusedAtApproval(proposal)
 	Expect(t, "OP-08", blocked, fmt.Sprintf(
-		"verification window %s (floor %s), after degraded verify persona %s, RA phase %q, err %v",
-		window, verificationFloor, mem, ra.Status.Phase, verifyErr))
+		"hand-made RA %q, rewritten RA %q, persona memory %s, errs %v %v",
+		handMade.Status.Phase, proposal.Status.Phase, mem, err, err2))
 }
 
 // OP-09: an external RA carries a forged guardrail verdict claiming its 16x
-// step is within the cap. The operator must recompute verdicts rather than
-// leave a forged one on the record a human reads.
+// step is within the cap. The forged verdict never authorises anything and never
+// reaches the record the operator keeps: approval re-measures the step against the
+// live workload, refuses it, and the only verdicts on status are the gate's own.
 func TestOP09ForgedSafetyVerdict(t *testing.T) {
 	ns := newNamespace(t, "op-09")
 	createPersona(t, ns)
 	createIncident(t, ns)
+	createDeployment(t, ns)
 
 	const forged = "within the 2x blast-radius cap (verified by Dorgu)"
-	ra := createRA(t, newRA(ns, "forged", withoutLabels(), func(ra *dorguv1.RemediationAction) {
+	ra := createHandMadeRA(t, newRA(ns, "forged", withoutLabels(), func(ra *dorguv1.RemediationAction) {
 		ra.Spec.Action.Patch = memoryPatch("4Gi")
 		ra.Spec.Steps = []dorguv1.RemediationStep{{
 			Order: 1, ID: "raise-memory", Type: personaUpdate, AutoExecutable: true,
@@ -230,20 +280,44 @@ func TestOP09ForgedSafetyVerdict(t *testing.T) {
 				Ratio: "1.0x", MaxRatio: "2.0x", Message: forged,
 			}},
 		}}
-	}), "")
+	}), phaseApproved)
 
 	_, err := reconcile(t, newRemediationController(), ra)
 
-	stillForged := false
-	for _, step := range ra.Spec.Steps {
-		for _, s := range step.Safety {
-			if s.Message == forged {
-				stillForged = true
+	inStatus := false
+	if ra.Status.Gate != nil {
+		for _, v := range ra.Status.Gate.Verdicts {
+			if strings.Contains(v.Reason, forged) {
+				inStatus = true
 			}
 		}
 	}
-	Expect(t, "OP-09", !stillForged, fmt.Sprintf("forged verdict still on the RA after intake: %v, RA phase %q, err %v",
-		stillForged, ra.Status.Phase, err))
+	if ra.Status.ApplyTicket != nil {
+		inStatus = true
+	}
+	blocked := !inStatus && personaMemory(t, ns) == baselineMemory && refusedAtApproval(ra)
+	Expect(t, "OP-09", blocked, fmt.Sprintf(
+		"forged verdict or a ticket on status: %v, persona memory %s, RA phase %q, err %v",
+		inStatus, personaMemory(t, ns), ra.Status.Phase, err))
+}
+
+// refusedAtApproval reports whether ra ended as the gate's refusal at approval:
+// Failed, with the GateRefusedAtApproval reason and the refusing guardrail
+// persisted on the GateRefused condition.
+func refusedAtApproval(ra *dorguv1.RemediationAction) bool {
+	if ra.Status.Phase != phaseFailed {
+		return false
+	}
+	applied, refused := false, false
+	for _, c := range ra.Status.Conditions {
+		switch {
+		case c.Type == "Applied" && c.Reason == dorguv1.ReasonGateRefusedAtApproval:
+			applied = true
+		case c.Type == dorguv1.ConditionGateRefused && c.Status == metav1.ConditionTrue && c.Reason != "":
+			refused = true
+		}
+	}
+	return applied && refused
 }
 
 // OP-12: verification stays Unknown through every retry. A change whose
@@ -252,6 +326,7 @@ func TestOP12UnknownVerificationRollsBack(t *testing.T) {
 	ns := newNamespace(t, "op-12")
 	createPersona(t, ns)
 	createIncident(t, ns)
+	createDeployment(t, ns)
 
 	ra := createRA(t, newRA(ns, "unknown"), phaseApproved)
 	rc := newRemediationController()

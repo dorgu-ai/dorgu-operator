@@ -215,3 +215,41 @@ func (r *RemediationAction) ValidateAutoExecutable() error {
 	}
 	return errors.Join(errs...)
 }
+
+// Condition types and reasons for the approval re-check and the apply ticket.
+// They live here, beside ReasonPreconditionRejected, because the gate reads them
+// and the proposer and the controller write them.
+const (
+	// ConditionProposed records that the operator's gate cleared this plan when it
+	// was proposed. Its ObservedGeneration is the spec generation that was
+	// cleared, so a spec edited afterwards no longer matches it. Written by the
+	// operator only; a RemediationAction without it was not proposed by the gate.
+	ConditionProposed = "Proposed"
+
+	// ReasonGateCleared is the ConditionProposed reason.
+	ReasonGateCleared = "GateCleared"
+
+	// ConditionTicketed records that approval passed the re-check and an apply
+	// ticket was written.
+	ConditionTicketed = "Ticketed"
+
+	// ReasonTicketIssued is the ConditionTicketed reason.
+	ReasonTicketIssued = "TicketIssued"
+
+	// ConditionGateRefused persists a refusal by the gate at approval. Its reason
+	// is the guardrail that refused, as a CamelCase enum (BlastRadius,
+	// WorkloadGone, NoProposalRecord, ...), so a client keys on it and never
+	// parses the message.
+	ConditionGateRefused = "GateRefused"
+
+	// ReasonGateRefusedAtApproval is the Applied=False reason of a plan the gate
+	// refused when a human approved it. Nothing was applied, so it starts no
+	// cooldown.
+	ReasonGateRefusedAtApproval = "GateRefusedAtApproval"
+
+	// ReasonWorkloadDivergedFromTicket is the condition reason (on WorkloadDiverged) and the
+	// outcome reason of a remediation whose workload was changed by someone else
+	// after the ticket was written. A heal that verified healthy and carries this
+	// is recorded as outcome "partial", and the phase stays Completed.
+	ReasonWorkloadDivergedFromTicket = "WorkloadDiverged"
+)

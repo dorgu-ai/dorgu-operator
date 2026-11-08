@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -46,6 +47,7 @@ const kindApplicationPersona = "ApplicationPersona"
 const (
 	phasePending  = "Pending"
 	phaseApproved = "Approved"
+	phaseTicketed = "Ticketed"
 )
 
 // defaultNamespace is the namespace a remediation lands in when the diagnosis
@@ -95,6 +97,24 @@ type Proposer struct {
 	gate    *gate.Gate
 	logger  logr.Logger
 	planner planner.Planner
+
+	// inFlight serialises proposals per persona. The gate's rate limit, concurrency
+	// and dedup decisions read what already exists; two proposals for one persona
+	// racing between that read and their Create would each see nothing and both be
+	// written. Holding a persona's lock from the first gate run to the Create makes
+	// the second one's gate see the first's RemediationAction (R11). The operator
+	// runs a single leader, so an in-process lock is the whole of the exclusion
+	// that is needed; the gate's uncached reader makes what it then reads current.
+	inFlight sync.Map // persona key -> *sync.Mutex
+}
+
+// lockPersona serialises proposals for one persona and returns the unlock.
+func (p *Proposer) lockPersona(ref *dorguv1.PersonaReference) func() {
+	key := ref.Namespace + "/" + ref.Name
+	mu, _ := p.inFlight.LoadOrStore(key, &sync.Mutex{})
+	lock := mu.(*sync.Mutex)
+	lock.Lock()
+	return lock.Unlock
 }
 
 // ProposerOption configures an optional Proposer dependency.
@@ -190,6 +210,7 @@ func (p *Proposer) Propose(ctx context.Context, diag diagnosis.Diagnosis, incide
 	if diag.PersonaRef == nil {
 		return &ProposalResult{SkipReason: "diagnosis has no persona reference"}, nil
 	}
+	defer p.lockPersona(diag.PersonaRef)()
 
 	// Preflight, before planning. Observe mode, a protected namespace, a rate or
 	// concurrency limit, a duplicate and a recent rejection all end here, so none
@@ -311,16 +332,23 @@ func (p *Proposer) proposeResourceAdjustment(
 			PlanSource:  dorguv1.PlanSourceRuleBased,
 			Confidence:  fmt.Sprintf("%.2f", diag.Confidence),
 			WorkloadRef: workloadRef,
-			Action: dorguv1.RemediationActionDetail{
-				Type:          "persona-update",
-				Patch:         &apiextensionsv1.JSON{Raw: patchJSON},
-				PrePatchState: &apiextensionsv1.JSON{Raw: prePatchJSON},
-			},
+			// steps[] is the only plan; the single-action form is derived from it
+			// below, for one release of back-compat.
+			Steps: []dorguv1.RemediationStep{{
+				Order:          1,
+				ID:             "step-1",
+				Type:           dorguv1.StepTypePersonaUpdate,
+				Description:    change.explanation,
+				AutoExecutable: true,
+				Patch:          &apiextensionsv1.JSON{Raw: patchJSON},
+				PrePatchState:  &apiextensionsv1.JSON{Raw: prePatchJSON},
+			}},
 			Approval: &dorguv1.ApprovalSpec{
 				Required: true,
 			},
 		},
 	}
+	action.Spec.Action = gate.DeriveAction(action.Spec.Steps)
 
 	// Damp confidence when the change lands on the cap rather than where the
 	// diagnosis wanted it. Measured against the live workload, so it describes
@@ -359,6 +387,10 @@ func (p *Proposer) proposeResourceAdjustment(
 func installDecision(action *dorguv1.RemediationAction, dec *gate.Decision) {
 	action.Spec.Steps = dec.Steps
 	action.Spec.Action = dec.Action
+	if len(dec.Steps) > 0 {
+		// steps[] is the only plan; the single-action form follows from it.
+		action.Spec.Action = gate.DeriveAction(dec.Steps)
+	}
 	verify := dec.Verify
 	action.Spec.Rollback = &verify
 }
@@ -382,14 +414,26 @@ func (p *Proposer) persist(ctx context.Context, action *dorguv1.RemediationActio
 		return nil, fmt.Errorf("creating RemediationAction: %w", err)
 	}
 
-	status := dorguv1.RemediationActionStatus{Phase: phasePending, Gate: dec.Status()}
 	key := client.ObjectKeyFromObject(action)
 	err := retry.OnError(retry.DefaultBackoff, retriableStatusWrite, func() error {
 		var fresh dorguv1.RemediationAction
 		if err := p.client.Get(ctx, key, &fresh); err != nil {
 			return err
 		}
-		fresh.Status = status
+		// The Proposed condition pins the spec generation the gate cleared. An
+		// approval re-check refuses a spec edited after this (M2).
+		fresh.Status = dorguv1.RemediationActionStatus{
+			Phase: phasePending,
+			Gate:  dec.Status(),
+			Conditions: []metav1.Condition{{
+				Type:               dorguv1.ConditionProposed,
+				Status:             metav1.ConditionTrue,
+				Reason:             dorguv1.ReasonGateCleared,
+				Message:            "the operator's gate cleared this plan when it was proposed",
+				ObservedGeneration: fresh.Generation,
+				LastTransitionTime: metav1.Now(),
+			}},
+		}
 		if err := p.client.Status().Update(ctx, &fresh); err != nil {
 			return err
 		}
