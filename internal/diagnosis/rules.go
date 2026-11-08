@@ -63,6 +63,8 @@ func NewRuleBasedProvider(logger logr.Logger) *RuleBasedProvider {
 	p.rules = []Rule{
 		{Name: "oom-root-cause", Match: matchOOM, Diagnose: diagnoseOOM},
 		{Name: "crashloop-root-cause", Match: matchCrashLoop, Diagnose: diagnoseCrashLoop},
+		{Name: "liveness-restarts", Match: matchLivenessRestarts, Diagnose: diagnoseLivenessRestarts},
+		{Name: "readiness-not-ready", Match: matchReadinessNotReady, Diagnose: diagnoseReadinessNotReady},
 		{Name: "node-pressure", Match: matchNodePressure, Diagnose: diagnoseNodePressure},
 		{Name: "node-down", Match: matchNodeDown, Diagnose: diagnoseNodeDown},
 		{Name: "resource-saturation", Match: matchResourceSaturation, Diagnose: diagnoseResourceSaturation},
@@ -401,6 +403,61 @@ func unexplainedByOOM(crashLoops, all []detection.Signal) []detection.Signal {
 		}
 	}
 	return rest
+}
+
+// ============================================================================
+// Rule 2b: Probe failures (liveness restarts, readiness not Ready)
+// ============================================================================
+//
+// The detector only raises these for a container that is not already in
+// CrashLoopBackOff or OOMKilled, so by the time a signal reaches here it is the
+// whole story for its container. The rules cannot tell which probe is wrong
+// (a bad path, a too-tight timeout, an app that never came up), so the action is
+// advice: investigate. That also keeps both inside the gate unchanged: there is
+// no patch for the proposer to size and no target path to deduplicate.
+
+func matchLivenessRestarts(signals []detection.Signal) bool {
+	return hasSignalType(signals, detection.SignalLivenessRestarts)
+}
+
+func diagnoseLivenessRestarts(signals []detection.Signal) *Diagnosis {
+	live := signalsOfType(signals, detection.SignalLivenessRestarts)
+	if len(live) == 0 {
+		return nil
+	}
+	return &Diagnosis{
+		Summary: "Container is being restarted repeatedly without reaching CrashLoopBackOff, " +
+			"most likely killed by a failing liveness probe. Check the probe's path, port and timeout, and the container's last logs.",
+		Confidence:        buildConfidence(0.70, live),
+		Category:          string(detection.CategoryHealth),
+		Severity:          detection.SeverityWarning,
+		PersonaRef:        firstPersonaRef(live),
+		AffectedResources: collectAffectedResources(live),
+		Contributing:      buildContributing(live, "Container keeps restarting with an error or SIGKILL"),
+		SuggestedAction:   actionInvestigate,
+	}
+}
+
+func matchReadinessNotReady(signals []detection.Signal) bool {
+	return hasSignalType(signals, detection.SignalReadinessNotReady)
+}
+
+func diagnoseReadinessNotReady(signals []detection.Signal) *Diagnosis {
+	notReady := signalsOfType(signals, detection.SignalReadinessNotReady)
+	if len(notReady) == 0 {
+		return nil
+	}
+	return &Diagnosis{
+		Summary: "Container is running but has not been Ready beyond the threshold, so it is not receiving traffic. " +
+			"Its readiness probe is failing or the application never started serving. Check the probe and the application's logs.",
+		Confidence:        buildConfidence(0.60, notReady),
+		Category:          string(detection.CategoryHealth),
+		Severity:          detection.SeverityWarning,
+		PersonaRef:        firstPersonaRef(notReady),
+		AffectedResources: collectAffectedResources(notReady),
+		Contributing:      buildContributing(notReady, "Container has been not Ready past the threshold"),
+		SuggestedAction:   actionInvestigate,
+	}
 }
 
 // ============================================================================

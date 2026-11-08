@@ -96,6 +96,17 @@ const (
 	SignalPodPendingLong   SignalType = "PodPendingLong"
 	SignalProbeFailure     SignalType = "ProbeFailure"
 	SignalContainerRestart SignalType = "ContainerHighRestarts"
+
+	// SignalReadinessNotReady is a running container that has stayed not Ready past
+	// the readiness threshold: the readiness probe keeps failing, or the app never
+	// starts serving. It does not need a restart, which is why the restart-based
+	// signals above never saw it.
+	SignalReadinessNotReady SignalType = "ReadinessNotReady"
+
+	// SignalLivenessRestarts is a container the kubelet keeps restarting (liveness
+	// kills) before it ever reaches CrashLoopBackOff: restarts within a window,
+	// last terminated as Error or SIGKILL (137).
+	SignalLivenessRestarts SignalType = "LivenessRestarts"
 )
 
 // Resource signals.

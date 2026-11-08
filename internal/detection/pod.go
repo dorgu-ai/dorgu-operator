@@ -34,6 +34,27 @@ const (
 
 	defaultPendingTimeout         = 5 * time.Minute
 	defaultRestartThreshold int32 = 5
+
+	// DefaultReadinessThreshold is how long a running container may stay not Ready
+	// before it is a signal. Two minutes is past a normal start-up and a couple of
+	// failed probes, and short enough to beat a user noticing. An app that takes
+	// longer to become Ready should have a startupProbe (a container whose startup
+	// probe has not passed is never reported), or the flag raised.
+	DefaultReadinessThreshold = 2 * time.Minute
+
+	// DefaultLivenessRestarts and DefaultLivenessWindow: two kills in ten minutes.
+	// One restart is routine (a deploy, a node drain, a one-off bug); two inside ten
+	// minutes is a loop, and the kubelet's back-off means a third arrives minutes
+	// later, by which time CrashLoopBackOff would have taken over.
+	DefaultLivenessRestarts int32 = 2
+	DefaultLivenessWindow         = 10 * time.Minute
+
+	// DefaultTerminatedStaleAfter is how long a container must have been Running
+	// and Ready since a termination before that termination is history. It has to
+	// outlast at least one health-check cycle (the operator raises it to twice the
+	// interval when that is longer), or an app with no readiness probe, Ready the
+	// instant it restarts, would have its OOM kill erased before anyone looked.
+	DefaultTerminatedStaleAfter = 2 * time.Minute
 )
 
 // PodCollector detects pod-level failures across the cluster.
@@ -43,6 +64,14 @@ type PodCollector struct {
 	pendingTimeout   time.Duration
 	restartThreshold int32
 	namespaces       NamespaceFilter
+
+	readinessThreshold time.Duration
+	livenessRestarts   int32
+	livenessWindow     time.Duration
+	staleAfter         time.Duration
+	events             client.Reader
+	now                func() time.Time
+	restarts           *restartTracker
 }
 
 // NamespaceFilter says which namespaces detection leaves alone. The operator
@@ -81,11 +110,65 @@ func NewPodCollector(c client.Reader, logger logr.Logger, opts ...PodCollectorOp
 		pendingTimeout:   defaultPendingTimeout,
 		restartThreshold: defaultRestartThreshold,
 		namespaces:       kubeSystemOnly{},
+
+		readinessThreshold: DefaultReadinessThreshold,
+		livenessRestarts:   DefaultLivenessRestarts,
+		livenessWindow:     DefaultLivenessWindow,
+		staleAfter:         DefaultTerminatedStaleAfter,
+		now:                time.Now,
 	}
 	for _, opt := range opts {
 		opt(p)
 	}
+	p.restarts = newRestartTracker(p.livenessWindow)
 	return p
+}
+
+// WithReadinessThreshold sets how long a running container may stay not Ready
+// before it is reported. A non-positive value keeps the default.
+func WithReadinessThreshold(d time.Duration) PodCollectorOption {
+	return func(p *PodCollector) {
+		if d > 0 {
+			p.readinessThreshold = d
+		}
+	}
+}
+
+// WithLivenessRestarts sets how many restarts within the window make a liveness
+// signal. A non-positive count or window keeps the default for that value.
+func WithLivenessRestarts(count int32, window time.Duration) PodCollectorOption {
+	return func(p *PodCollector) {
+		if count > 0 {
+			p.livenessRestarts = count
+		}
+		if window > 0 {
+			p.livenessWindow = window
+		}
+	}
+}
+
+// WithTerminatedStaleAfter sets how long a container must have run Ready after a
+// termination before that termination is history. A non-positive value keeps the
+// default.
+func WithTerminatedStaleAfter(d time.Duration) PodCollectorOption {
+	return func(p *PodCollector) {
+		if d > 0 {
+			p.staleAfter = d
+		}
+	}
+}
+
+// WithEventReader sets the reader used to look up kubelet probe events as
+// supporting evidence. Pass an uncached reader: events are read for the few pods
+// that already carry a signal, which does not justify an informer on every Event
+// in the cluster. With none, signals carry no event evidence and say so.
+func WithEventReader(r client.Reader) PodCollectorOption {
+	return func(p *PodCollector) { p.events = r }
+}
+
+// withClock replaces the clock, for tests.
+func withClock(now func() time.Time) PodCollectorOption {
+	return func(p *PodCollector) { p.now = now }
 }
 
 func (p *PodCollector) Name() string { return podCollectorName }
@@ -96,8 +179,9 @@ func (p *PodCollector) Collect(ctx context.Context) ([]Signal, error) {
 		return nil, fmt.Errorf("failed to list pods: %w", err)
 	}
 
-	now := time.Now()
+	now := p.now()
 	var signals []Signal
+	seen := make(map[string]struct{})
 
 	// Each namespace is asked about once per cycle.
 	skip := make(map[string]bool)
@@ -114,14 +198,22 @@ func (p *PodCollector) Collect(ctx context.Context) ([]Signal, error) {
 			continue
 		}
 
-		signals = append(signals, p.checkPod(pod, now)...)
+		signals = append(signals, p.checkPod(ctx, pod, now)...)
+		for _, cs := range pod.Status.ContainerStatuses {
+			seen[restartKey(pod, cs)] = struct{}{}
+		}
 	}
+
+	// Forget containers that are gone, so the restart history stays as small as the
+	// cluster. Reached only when every namespace was answered: a failed cycle must
+	// not throw history away.
+	p.restarts.retain(seen)
 
 	return signals, nil
 }
 
 // checkPod examines a single pod for all failure modes.
-func (p *PodCollector) checkPod(pod corev1.Pod, now time.Time) []Signal {
+func (p *PodCollector) checkPod(ctx context.Context, pod corev1.Pod, now time.Time) []Signal {
 	var signals []Signal
 
 	// Check eviction
@@ -136,7 +228,9 @@ func (p *PodCollector) checkPod(pod corev1.Pod, now time.Time) []Signal {
 
 	// Check container statuses
 	for _, cs := range pod.Status.ContainerStatuses {
-		signals = append(signals, p.checkContainer(pod, cs, now)...)
+		found := p.checkContainer(pod, cs, now)
+		signals = append(signals, found...)
+		signals = append(signals, p.probeSignals(ctx, pod, cs, now, found)...)
 	}
 	for _, cs := range pod.Status.InitContainerStatuses {
 		signals = append(signals, p.checkContainer(pod, cs, now)...)
@@ -257,14 +351,16 @@ func (p *PodCollector) checkWaiting(pod corev1.Pod, cs corev1.ContainerStatus, n
 	return Signal{}, false
 }
 
-// checkOOMKilled detects OOMKilled containers via current or last termination state.
+// checkOOMKilled detects OOMKilled containers via current or last termination
+// state. A last termination that is history (see staleTermination) is not one.
 func (p *PodCollector) checkOOMKilled(pod corev1.Pod, cs corev1.ContainerStatus, now time.Time) (Signal, bool) {
 	var terminated *corev1.ContainerStateTerminated
 
 	if cs.State.Terminated != nil && cs.State.Terminated.Reason == string(SignalOOMKilled) {
 		terminated = cs.State.Terminated
-	} else if cs.LastTerminationState.Terminated != nil && cs.LastTerminationState.Terminated.Reason == string(SignalOOMKilled) {
-		terminated = cs.LastTerminationState.Terminated
+	} else if last := cs.LastTerminationState.Terminated; last != nil && last.Reason == string(SignalOOMKilled) &&
+		!p.staleTermination(cs, last, now) {
+		terminated = last
 	}
 
 	if terminated == nil {
