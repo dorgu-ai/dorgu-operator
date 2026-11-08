@@ -55,6 +55,11 @@ type Gate struct {
 	// kube-system and any ClusterPersona excludeNamespaces.
 	protected []string
 
+	// operatorNamespaceUnknown is set when the operator could not determine its
+	// own namespace. The deny-list cannot then protect it, so the gate fails
+	// closed (R12).
+	operatorNamespaceUnknown bool
+
 	now    func() time.Time
 	stages []Stage
 }
@@ -73,6 +78,14 @@ func WithProtectedNamespaces(namespaces ...string) Option {
 			}
 		}
 	}
+}
+
+// WithOperatorNamespaceUnknown tells the gate the operator could not determine
+// its own namespace, so the deny-list cannot protect it. The gate then refuses
+// every proposal, rule-based or AI, rather than risk planning a change in the
+// namespace Dorgu itself runs in.
+func WithOperatorNamespaceUnknown() Option {
+	return func(g *Gate) { g.operatorNamespaceUnknown = true }
 }
 
 // WithClock replaces the clock, for tests.

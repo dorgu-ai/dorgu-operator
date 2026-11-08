@@ -44,7 +44,7 @@ func (s groundStage) Run(ctx context.Context, cand *Candidate, d *Decision) erro
 	now := metav1.NewTime(s.g.now())
 	key := personaKey(cand)
 
-	ref, obs, err := s.observeWorkload(ctx, key.Namespace, key.Name, d.Phase, now)
+	ref, obs, ambiguous, err := s.observeWorkload(ctx, key.Namespace, key.Name, now)
 	if err != nil {
 		return err
 	}
@@ -69,14 +69,23 @@ func (s groundStage) Run(ctx context.Context, cand *Candidate, d *Decision) erro
 	}
 
 	if d.Phase == PhaseApprovalRecheck {
+		if ambiguous {
+			d.refuse(StageGround, GuardrailWorkloadAmbiguous,
+				"more than one Deployment now answers to this persona, so the plan cannot be tied to one workload", nil)
+			return nil
+		}
 		if !s.checkStillTheSameWorkload(cand, d) {
 			return nil
 		}
-		if persona == nil && hasAutoApplicable(d) {
-			d.refuse(StageGround, GuardrailPersona,
-				fmt.Sprintf("ApplicationPersona %s/%s no longer exists, so the change has nowhere to land", key.Namespace, key.Name), nil)
-			return nil
-		}
+	}
+
+	// A change to a persona that is not there has nowhere to land, at proposal as
+	// much as at approval: a plan written against a missing persona is a plan
+	// nobody could have measured. (R4)
+	if persona == nil && hasPersonaUpdate(d) {
+		d.refuse(StageGround, GuardrailPersona,
+			fmt.Sprintf("ApplicationPersona %s/%s does not exist, so the change has nowhere to land", key.Namespace, key.Name), nil)
+		return nil
 	}
 
 	d.PrePatchState = prePatchFromLive(d, persona)
@@ -93,33 +102,34 @@ func (s groundStage) Run(ctx context.Context, cand *Candidate, d *Decision) erro
 
 // observeWorkload reads the live Deployment for the persona.
 //
-// At Proposal it never fails the run: a workload that cannot be read is reported
-// as unresolved (ManagedBy unknown, which every consumer treats as owned), so the
-// worst case is that Dorgu explains instead of writing. At ApprovalRecheck a read
-// error is returned, because guessing at approval is how a stale plan applies.
+// A read error is returned at both phases: the gate cannot decide against a
+// workload it could not read, and a Deployment list that fails is not the same as
+// a persona with no Deployment (R3). Two Deployments answering to one persona is
+// reported as ambiguous rather than guessed at: at proposal that degrades to an
+// unresolved workload (every consumer treats it as owned and sizes from the
+// persona), at approval Run refuses it (R2).
 func (s groundStage) observeWorkload(
-	ctx context.Context, namespace, name string, phase Phase, now metav1.Time,
-) (*dorguv1.WorkloadRef, *workload.Observation, error) {
+	ctx context.Context, namespace, name string, now metav1.Time,
+) (ref *dorguv1.WorkloadRef, obs *workload.Observation, ambiguous bool, err error) {
 	if namespace == "" || name == "" {
-		return workload.UnresolvedRef(now), nil, nil
+		return workload.UnresolvedRef(now), nil, false, nil
 	}
-
-	obs, err := workload.Observe(ctx, s.g.client, namespace, name)
+	obs, err = workload.Observe(ctx, s.g.client, namespace, name)
 	if err != nil {
-		var ambiguous *workload.AmbiguousError
-		if phase == PhaseApprovalRecheck && !errors.As(err, &ambiguous) {
-			return nil, nil, fmt.Errorf("reading the live workload for %s/%s: %w", namespace, name, err)
+		var amb *workload.AmbiguousError
+		if errors.As(err, &amb) {
+			s.g.logger.V(0).Info("several Deployments answer to this persona; the workload is treated as unresolved and owned",
+				"persona", name, "namespace", namespace, "error", err.Error())
+			return workload.UnresolvedRef(now), nil, true, nil
 		}
-		s.g.logger.V(0).Info("could not read the live workload; grounding falls back to the persona and the workload is treated as owned",
-			"persona", name, "namespace", namespace, "error", err.Error())
-		return workload.UnresolvedRef(now), nil, nil
+		return nil, nil, false, fmt.Errorf("reading the live workload for %s/%s: %w", namespace, name, err)
 	}
 	if obs == nil {
 		s.g.logger.V(1).Info("no Deployment resolved for persona; grounding falls back to the persona",
 			"persona", name, "namespace", namespace, "tried", workload.ChainDescription())
-		return workload.UnresolvedRef(now), nil, nil
+		return workload.UnresolvedRef(now), nil, false, nil
 	}
-	return obs.Ref(now), obs, nil
+	return obs.Ref(now), obs, false, nil
 }
 
 // readPersona reads the target persona, nil when it does not exist. It returns an
@@ -138,25 +148,48 @@ func (s groundStage) readPersona(ctx context.Context, cand *Candidate, key clien
 	return &persona, nil
 }
 
-// checkStillTheSameWorkload refuses an approval whose workload was replaced since
-// the proposal: a Deployment with a different UID is a different workload, and
-// the facts the plan was reasoned against no longer describe it.
+// checkStillTheSameWorkload refuses an approval whose workload was deleted or
+// replaced since the proposal: a Deployment that is gone, or one with a different
+// UID, is not the workload the facts the plan was reasoned against describe.
+//
+// A plan proposed against no live workload (no prior UID) has nothing to be
+// replaced; it is re-measured against whatever is there now.
 func (groundStage) checkStillTheSameWorkload(cand *Candidate, d *Decision) bool {
 	prior := cand.Facts.PriorObserved
-	if prior == nil || prior.WorkloadUID == "" || d.Observed.WorkloadUID == "" {
+	if prior == nil || prior.WorkloadUID == "" {
 		return true
 	}
-	if prior.WorkloadUID != d.Observed.WorkloadUID {
+	live := d.Observed.WorkloadUID
+	switch {
+	case live == "":
+		d.refuse(StageGround, GuardrailWorkloadGone,
+			"the live Deployment this was proposed against no longer exists, so the plan no longer describes anything",
+			map[string]string{"proposedUID": prior.WorkloadUID})
+		return false
+	case prior.WorkloadUID != live:
 		d.refuse(StageGround, GuardrailLiveWorkload,
 			"the live Deployment was replaced since this was proposed (its UID changed), so the plan no longer describes it",
-			map[string]string{"proposedUID": prior.WorkloadUID, "liveUID": d.Observed.WorkloadUID})
+			map[string]string{"proposedUID": prior.WorkloadUID, "liveUID": live})
 		return false
 	}
 	return true
 }
 
+// hasPersonaUpdate reports whether the plan, as the gate holds it, would write to
+// the persona: any persona-update step, or a persona-update action. The executor
+// applies Action.Patch, so the action counts whether or not steps are present.
+func hasPersonaUpdate(d *Decision) bool {
+	for i := range d.Steps {
+		if d.Steps[i].Type == dorguv1.StepTypePersonaUpdate {
+			return true
+		}
+	}
+	return d.Action.Type == dorguv1.ActionTypePersonaUpdate
+}
+
 // hasAutoApplicable reports whether the plan, as the gate now holds it, still has
-// something the operator would apply.
+// something the operator would apply: an auto-executable persona-update step, or
+// the Action the executor actually writes (R1).
 func hasAutoApplicable(d *Decision) bool {
 	for i := range d.Steps {
 		step := &d.Steps[i]
@@ -164,9 +197,13 @@ func hasAutoApplicable(d *Decision) bool {
 			return true
 		}
 	}
-	if len(d.Steps) > 0 {
-		return false
-	}
+	return actionAppliable(d)
+}
+
+// actionAppliable reports whether Action carries a persona-update patch. The
+// executor applies Action.Patch and nothing else, so this is the change that
+// reaches the cluster, whatever the steps say.
+func actionAppliable(d *Decision) bool {
 	return d.Action.Type == dorguv1.ActionTypePersonaUpdate && d.Action.Patch != nil && len(d.Action.Patch.Raw) > 0
 }
 
@@ -215,7 +252,7 @@ func prePatchFromLive(d *Decision, _ *dorguv1.ApplicationPersona) *apiextensions
 			collect(d.Steps[i].Patch)
 		}
 	}
-	if len(d.Steps) == 0 && d.Action.Type == dorguv1.ActionTypePersonaUpdate {
+	if d.Action.Type == dorguv1.ActionTypePersonaUpdate {
 		collect(d.Action.Patch)
 	}
 	if len(merged) == 0 {

@@ -37,7 +37,6 @@ import (
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
-	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
 	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation"
 )
@@ -88,16 +87,6 @@ func lcIncidentObj() *dorguv1.IncidentMemory {
 				LastSeen:  metav1.NewTime(time.Now()),
 			},
 		},
-	}
-}
-
-func lcDiagnosis() *diagnosis.Diagnosis {
-	return &diagnosis.Diagnosis{
-		Category: "resource",
-		PersonaRef: &dorguv1.PersonaReference{
-			Kind: "ApplicationPersona", Name: lcPersona, Namespace: lcNamespace,
-		},
-		Contributing: []diagnosis.ContributingSignal{{Signal: lcOOMSignal()}},
 	}
 }
 

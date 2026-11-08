@@ -216,12 +216,13 @@ func verdictKind(d *Decision, guardrail string) string {
 	return "absent"
 }
 
-func stepPatchValue(t *testing.T, step dorguv1.RemediationStep, path string) string {
+// stepPatchValue is the memory limit a step patches, or "".
+func stepPatchValue(t *testing.T, step dorguv1.RemediationStep) string {
 	t.Helper()
 	if step.Patch == nil {
 		return ""
 	}
-	return PatchLeafValues(step.Patch.Raw)[path]
+	return PatchLeafValues(step.Patch.Raw)[memLimit]
 }
 
 func metav1Time(t time.Time) time.Time { return t }

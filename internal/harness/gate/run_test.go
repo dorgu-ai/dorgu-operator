@@ -56,7 +56,7 @@ func TestRun_CleanPlanPassesEveryStage(t *testing.T) {
 	assert.Empty(t, guardrail)
 	assert.Nil(t, d.Refusal())
 	require.Len(t, d.Steps, 1)
-	assert.Equal(t, "384Mi", stepPatchValue(t, d.Steps[0], memLimit))
+	assert.Equal(t, "384Mi", stepPatchValue(t, d.Steps[0]))
 
 	stages := map[string]bool{}
 	for _, v := range d.Verdicts {
@@ -75,9 +75,9 @@ func TestRun_DoesNotModifyTheCandidate(t *testing.T) {
 
 	d := run(t, g, cand, PhaseProposal)
 
-	assert.Equal(t, "4Gi", stepPatchValue(t, cand.Steps[0], memLimit), "the caller's plan is untouched")
+	assert.Equal(t, "4Gi", stepPatchValue(t, cand.Steps[0]), "the caller's plan is untouched")
 	assert.Len(t, cand.Steps[0].Safety, 1, "the caller's verdicts are untouched")
-	assert.NotEqual(t, "4Gi", stepPatchValue(t, d.Steps[0], memLimit), "the decision carries the clamped plan")
+	assert.NotEqual(t, "4Gi", stepPatchValue(t, d.Steps[0]), "the decision carries the clamped plan")
 }
 
 func TestRun_StopsAtTheFirstRefusingStage(t *testing.T) {

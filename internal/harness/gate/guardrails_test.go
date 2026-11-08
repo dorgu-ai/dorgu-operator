@@ -363,13 +363,18 @@ func TestGuardrails_LegacyActionBreachIsRefusedWhole(t *testing.T) {
 	assert.Contains(t, d.SkipReason(), "safety check failed: [[blast-radius]")
 }
 
-func TestGuardrails_NoBaselineMeansNothingToMeasure(t *testing.T) {
+func TestGuardrails_NoBaselineIsClampedNotPassed(t *testing.T) {
 	// No live workload, and the persona records no memory limit.
 	p := persona("")
 	p.Spec.Resources.Limits.Memory = ""
 	g := newTestGate(t, fakeClient(t, p))
 	d := run(t, g, planCandidate(personaUpdateStep(memPatch("4Gi"))), PhaseProposal)
-	assert.Equal(t, "pass", verdictKind(d, GuardrailBlastRadius))
+	// A value nothing was measured against is not within any cap (R3).
+	assert.Equal(t, "clamp", verdictKind(d, GuardrailNoBaseline))
+	assert.Equal(t, "absent", verdictKind(d, GuardrailBlastRadius))
+	for _, step := range d.Steps {
+		assert.Empty(t, stepPatchValue(t, step))
+	}
 }
 
 func TestGuardrails_AbsentFieldIsDroppedNotIntroduced(t *testing.T) {

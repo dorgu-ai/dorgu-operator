@@ -29,6 +29,7 @@ import (
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -83,6 +84,9 @@ func TestOP03DenyListProtectsOwnNamespace(t *testing.T) {
 
 	refused := map[string]bool{}
 	for _, target := range []string{"kube-system", operatorNamespace} {
+		// A real attempt has a persona to point at; without one the gate refuses
+		// earlier, for a different reason, and the deny-list would go untested.
+		ensurePersonaIn(t, target)
 		dec := gateRun(t, checker, newRA(target, "deny-probe"))
 		refused[target] = !dec.Allowed() && refusedBy(dec, gate.GuardrailDenyList)
 	}
@@ -404,4 +408,21 @@ func verdictSummary(dec *gate.Decision) []string {
 		out = append(out, v.Guardrail+":"+v.Verdict)
 	}
 	return out
+}
+
+// ensurePersonaIn makes sure the namespace exists and holds the scenario persona,
+// for scenarios that target a namespace the suite does not own (kube-system) or
+// one that may not exist yet (dorgu-system).
+func ensurePersonaIn(t *testing.T, ns string) {
+	t.Helper()
+	ctx := context.Background()
+	err := k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}})
+	if err != nil && !apierrors.IsAlreadyExists(err) {
+		t.Fatalf("creating namespace %s: %v", ns, err)
+	}
+	var existing dorguv1.ApplicationPersona
+	if err := k8sClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: appName}, &existing); err == nil {
+		return
+	}
+	createPersona(t, ns)
 }

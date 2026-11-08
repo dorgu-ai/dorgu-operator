@@ -65,13 +65,20 @@ func TestGround_UnresolvedWorkloadFallsBackToThePersonaBaseline(t *testing.T) {
 
 func TestGround_NoNamespaceMeansNoRead(t *testing.T) {
 	g := newTestGate(t, fakeClient(t, persona("256Mi"), deployment("128Mi")))
-	cand := planCandidate(personaUpdateStep(memPatch("192Mi")))
-	cand.Target.Namespace, cand.Namespace = "", ""
+	// An intent (no plan yet) reaches the deny-list, which refuses a namespace it
+	// cannot determine.
+	intent := Candidate{Target: target(), Namespace: ""}
+	intent.Target.Namespace = ""
 
-	d := run(t, g, cand, PhaseProposal)
+	d := run(t, g, intent, PhaseProposal)
 
 	assert.False(t, Resolved(d.WorkloadRef))
 	assert.Equal(t, "refuse", verdictKind(d, GuardrailDenyList), "an undeterminable namespace fails closed")
+
+	// A plan with no namespace has no persona to land on, and is refused earlier.
+	plan := planCandidate(personaUpdateStep(memPatch("192Mi")))
+	plan.Target.Namespace, plan.Namespace = "", ""
+	assert.Equal(t, ResultRefuse, run(t, g, plan, PhaseProposal).Result)
 }
 
 func TestGround_AmbiguousWorkloadIsUnresolvedNotGuessed(t *testing.T) {
@@ -84,16 +91,16 @@ func TestGround_AmbiguousWorkloadIsUnresolvedNotGuessed(t *testing.T) {
 	assert.NotNil(t, d)
 }
 
-func TestGround_ReadFailureAtProposalDegradesButAtApprovalFailsClosed(t *testing.T) {
+func TestGround_ReadFailureFailsClosedAtBothPhases(t *testing.T) {
 	c := failingListClient(t, isKind[*appsv1.DeploymentList], persona("256Mi"))
 	g := newTestGate(t, c)
 	cand := planCandidate(personaUpdateStep(memPatch("300Mi")))
 
-	d := run(t, g, cand, PhaseProposal)
-	assert.False(t, Resolved(d.WorkloadRef), "at proposal an unreadable workload is treated as unresolved and owned")
-
-	_, err := g.Run(t.Context(), cand, PhaseApprovalRecheck)
-	require.Error(t, err, "at approval, guessing is how a stale plan applies")
+	for _, phase := range []Phase{PhaseProposal, PhaseApprovalRecheck} {
+		d, err := g.Run(t.Context(), cand, phase)
+		require.Error(t, err, "%s: an unreadable workload means the gate cannot decide", phase)
+		assert.Nil(t, d)
+	}
 }
 
 func TestGround_PersonaReadFailureIsReturned(t *testing.T) {
@@ -136,9 +143,11 @@ func TestGround_ApprovalRefusesAMissingPersonaOnlyWhenSomethingWouldApply(t *tes
 	assert.NotEqual(t, "refuse", verdictKind(run(t, g, advisory, PhaseApprovalRecheck), GuardrailPersona))
 }
 
-func TestGround_ProposalToleratesAMissingPersona(t *testing.T) {
+func TestGround_AdvisoryPlanToleratesAMissingPersona(t *testing.T) {
 	g := newTestGate(t, fakeClient(t, deployment("256Mi")))
-	d := run(t, g, planCandidate(personaUpdateStep(memPatch("300Mi"))), PhaseProposal)
+	d := run(t, g, planCandidate(dorguv1.RemediationStep{
+		Order: 1, ID: "step-1", Type: dorguv1.StepTypeManual, Description: "look",
+	}), PhaseProposal)
 	assert.Nil(t, d.Persona)
 	assert.True(t, d.Allowed(), d.SkipReason())
 }
@@ -163,10 +172,10 @@ func TestHasAutoApplicable(t *testing.T) {
 		{"a step with no patch", &Decision{Steps: oneStep(func() dorguv1.RemediationStep { s := apply; s.Patch = nil; return s }())}, false},
 		{"legacy persona action", &Decision{Action: dorguv1.RemediationActionDetail{Type: dorguv1.ActionTypePersonaUpdate, Patch: memPatch("1Gi")}}, true},
 		{"legacy notification", &Decision{Action: dorguv1.RemediationActionDetail{Type: dorguv1.ActionTypeNotification}}, false},
-		{"steps win over the legacy action", &Decision{
+		{"the action the executor writes counts beside steps (R1)", &Decision{
 			Steps:  oneStep(func() dorguv1.RemediationStep { s := apply; s.AutoExecutable = false; return s }()),
 			Action: dorguv1.RemediationActionDetail{Type: dorguv1.ActionTypePersonaUpdate, Patch: memPatch("1Gi")},
-		}, false},
+		}, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) { assert.Equal(t, tt.want, hasAutoApplicable(tt.d)) })

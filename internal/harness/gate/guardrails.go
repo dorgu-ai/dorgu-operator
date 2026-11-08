@@ -22,6 +22,7 @@ import (
 	"slices"
 	"time"
 
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
@@ -289,35 +290,55 @@ func (s guardrailsStage) dropAbsentFields(d *Decision) {
 			map[string]string{"step": fmt.Sprint(step.Order), "fields": fmt.Sprint(len(dropped))})
 	}
 
-	if len(d.Steps) == 0 && d.Action.Type == dorguv1.ActionTypePersonaUpdate && d.Action.Patch != nil {
+	// The executor applies Action.Patch whatever the steps say, so it is measured
+	// too (R1). With no steps it is the whole plan and an unmeasurable change is
+	// refused; beside steps it is narrowed like a step.
+	if actionAppliable(d) {
 		patch, dropped := DropAbsentResourceKeys(d.Action.Patch, d.WorkloadRef)
 		if len(dropped) == 0 {
 			return
 		}
-		if patch == nil {
+		if patch == nil && len(d.Steps) == 0 {
 			d.refuse(StageGuardrails, GuardrailAbsentField,
 				"the change would introduce a resource field the live container has never had", nil)
 			return
 		}
-		d.Action.Patch = patch
 		d.Action.PrePatchState = PrunePatchPaths(d.Action.PrePatchState, dropped)
+		narrowAction(d, patch)
 		d.clamp(StageGuardrails, GuardrailAbsentField,
 			fmt.Sprintf("left out %d field(s) the live container does not set", len(dropped)), nil)
 	}
 }
 
-// blastRadius measures every persona-update change against the live baseline.
-// On a plan with steps an offending field is removed and recorded; on the legacy
-// single action, which has nothing to fall back to, the whole change is refused.
+// narrowAction installs the surviving patch on the legacy Action. With nothing
+// left the Action becomes advisory, so the executor has nothing to apply.
+func narrowAction(d *Decision, patch *apiextensionsv1.JSON) {
+	if patch == nil {
+		d.Action = dorguv1.RemediationActionDetail{Type: dorguv1.ActionTypeNotification}
+		return
+	}
+	d.Action.Patch = patch
+}
+
+// blastRadius measures every persona-update change against the live baseline, and
+// the Action the executor applies as well as the steps (R1). On a plan with steps
+// an offending field is removed and recorded; on a legacy single action with no
+// steps, which has nothing to fall back to, the whole change is refused.
+//
+// A field with no baseline cannot pass (R3): a value nothing was measured against
+// is not within any cap.
 func (s guardrailsStage) blastRadius(d *Decision) {
 	measured := false
-
 	for i := range d.Steps {
 		step := &d.Steps[i]
 		if !step.AutoExecutable || step.Type != dorguv1.StepTypePersonaUpdate || step.Patch == nil {
 			continue
 		}
 		measured = true
+		s.dropUnmeasured(d, step)
+		if step.Patch == nil {
+			continue
+		}
 		violations := blastRadiusViolations(step.Patch.Raw, baselineValues(step.Patch.Raw, d))
 		if len(violations) == 0 {
 			continue
@@ -328,18 +349,111 @@ func (s guardrailsStage) blastRadius(d *Decision) {
 				fmt.Sprintf("step %d: %s", step.Order, v.Message), blastNumbers(v))
 		}
 	}
-
-	if len(d.Steps) == 0 && d.Action.Type == dorguv1.ActionTypePersonaUpdate &&
-		d.Action.Patch != nil && len(d.Action.Patch.Raw) > 0 {
+	if actionAppliable(d) {
 		measured = true
-		for _, v := range blastRadiusViolations(d.Action.Patch.Raw, baselineValues(d.Action.Patch.Raw, d)) {
-			d.refuse(StageGuardrails, GuardrailBlastRadius, v.Message, blastNumbers(v))
-		}
+		s.measureAction(d)
 	}
-
-	if measured && !hasVerdict(d, GuardrailBlastRadius, "") {
+	if measured && !hasVerdict(d, GuardrailBlastRadius, "") && !hasVerdict(d, GuardrailNoBaseline, "") {
 		d.pass(StageGuardrails, GuardrailBlastRadius, "every change is within the blast-radius cap of the live value", nil)
 	}
+}
+
+// measureAction applies the blast-radius and no-baseline rules to Action.Patch.
+func (s guardrailsStage) measureAction(d *Decision) {
+	raw := d.Action.Patch.Raw
+	standalone := len(d.Steps) == 0
+
+	if unmeasured := unmeasuredFields(raw, baselineValues(raw, d)); len(unmeasured) > 0 {
+		if standalone {
+			d.refuse(StageGuardrails, GuardrailNoBaseline,
+				fmt.Sprintf("no live or persona value exists for %s, so the change cannot be measured against anything",
+					HumanFieldList(unmeasured)),
+				map[string]string{"fields": fmt.Sprint(len(unmeasured))})
+			return
+		}
+		narrowAction(d, PrunePatchPaths(d.Action.Patch, unmeasured))
+		d.Action.PrePatchState = PrunePatchPaths(d.Action.PrePatchState, unmeasured)
+		d.clamp(StageGuardrails, GuardrailNoBaseline,
+			fmt.Sprintf("left out %d field(s) with nothing to measure them against", len(unmeasured)),
+			map[string]string{"fields": fmt.Sprint(len(unmeasured))})
+		if !actionAppliable(d) {
+			return
+		}
+		raw = d.Action.Patch.Raw
+	}
+
+	violations := blastRadiusViolations(raw, baselineValues(raw, d))
+	if standalone {
+		for _, v := range violations {
+			d.refuse(StageGuardrails, GuardrailBlastRadius, v.Message, blastNumbers(v))
+		}
+		return
+	}
+	if len(violations) == 0 {
+		return
+	}
+	fields := make([]string, 0, len(violations))
+	for _, v := range violations {
+		if v.BlastRadius != nil {
+			fields = append(fields, v.BlastRadius.Field)
+		}
+		d.clamp(StageGuardrails, GuardrailBlastRadius, v.Message, blastNumbers(v))
+	}
+	d.Action.PrePatchState = PrunePatchPaths(d.Action.PrePatchState, fields)
+	narrowAction(d, PrunePatchPaths(d.Action.Patch, fields))
+}
+
+// dropUnmeasured removes, and records, the fields of a step that have no baseline
+// to be measured against.
+func (s guardrailsStage) dropUnmeasured(d *Decision, step *dorguv1.RemediationStep) {
+	unmeasured := unmeasuredFields(step.Patch.Raw, baselineValues(step.Patch.Raw, d))
+	if len(unmeasured) == 0 {
+		return
+	}
+	values := PatchLeafValues(step.Patch.Raw)
+	for _, field := range unmeasured {
+		step.Safety = append(step.Safety, dorguv1.StepSafety{
+			Rule:      dorguv1.SafetyRuleBlastRadius,
+			Verdict:   dorguv1.SafetyVerdictRejected,
+			Field:     field,
+			Requested: values[field],
+			Message:   "Left out: Dorgu has no live or recorded value for " + field + " to measure this change against.",
+		})
+	}
+	step.Patch = PrunePatchPaths(step.Patch, unmeasured)
+	step.PrePatchState = PrunePatchPaths(step.PrePatchState, unmeasured)
+	if step.Patch == nil {
+		step.AutoExecutable = false
+	}
+	d.clamp(StageGuardrails, GuardrailNoBaseline,
+		fmt.Sprintf("step %d: left out %d field(s) with nothing to measure them against", step.Order, len(unmeasured)),
+		map[string]string{"step": fmt.Sprint(step.Order), "fields": fmt.Sprint(len(unmeasured))})
+}
+
+// unmeasuredFields returns the resource fields of a patch that have no usable
+// baseline: none recorded, unparseable, or zero. Sorted for stable output.
+func unmeasuredFields(patch []byte, baseline map[string]string) []string {
+	patchValues, err := ParseResourcePatch(patch)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for field := range patchValues {
+		if !IsResourcePath(field) {
+			continue
+		}
+		base, ok := baseline[field]
+		if !ok {
+			out = append(out, field)
+			continue
+		}
+		qty, err := resource.ParseQuantity(base)
+		if err != nil || qty.Sign() <= 0 {
+			out = append(out, field)
+		}
+	}
+	slices.Sort(out)
+	return out
 }
 
 // hasVerdict reports whether the decision already carries a verdict from the

@@ -106,6 +106,16 @@ const (
 	GuardrailActiveAction    = "active-remediation"
 	GuardrailRejection       = "rejection-cooldown"
 	GuardrailSealed          = "sealed"
+
+	// Reasons added by the #54 review (R1 to R12). Each is the machine-readable
+	// reason a run was refused; callers and tests branch on these, never on the
+	// message text.
+	GuardrailWorkloadGone      = "workload-gone"
+	GuardrailWorkloadAmbiguous = "workload-ambiguous"
+	GuardrailNoBaseline        = "no-baseline"
+	GuardrailPatchShape        = "patch-shape"
+	GuardrailStepCommand       = "step-command"
+	GuardrailOperatorNamespace = "operator-namespace"
 )
 
 // Safety rule names. They are the Rule of a Violation and the Guardrail of the
