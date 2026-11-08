@@ -155,16 +155,25 @@ func TestRuleBasedProvider_CrashLoopWithOOM(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Should have both OOM and CrashLoop diagnoses (different categories/actions).
-	var crashDiag *Diagnosis
-	for i := range diagnoses {
-		if strings.Contains(diagnoses[i].Summary, "CrashLoopBackOff") {
-			crashDiag = &diagnoses[i]
-			break
-		}
+	// One OOM is one finding (F-9): the crash loop is the OOM seen a second time,
+	// so a single diagnosis carries both signals. It is the OOM's, because the OOM
+	// is the root cause and what the incident is filed under.
+	if len(diagnoses) != 1 {
+		t.Fatalf("an OOM that crash-loops must yield one diagnosis, got %d", len(diagnoses))
 	}
-	if crashDiag == nil {
-		t.Fatal("expected a CrashLoopBackOff diagnosis")
+	crashDiag := &diagnoses[0]
+	if crashDiag.Category != string(detection.CategoryResource) {
+		t.Errorf("Category = %q, want %q", crashDiag.Category, detection.CategoryResource)
+	}
+	if got := crashDiag.Contributing[0].Signal.Type; got != detection.SignalOOMKilled {
+		t.Errorf("primary signal = %q, want %q: it names the incident", got, detection.SignalOOMKilled)
+	}
+	var sawCrashLoop bool
+	for _, c := range crashDiag.Contributing {
+		sawCrashLoop = sawCrashLoop || c.Signal.Type == detection.SignalCrashLoopBackOff
+	}
+	if !sawCrashLoop {
+		t.Error("the crash-loop signal must still be listed as contributing")
 	}
 	if !strings.Contains(crashDiag.Summary, "OOM") {
 		t.Errorf("CrashLoop+OOM diagnosis should mention OOM, got: %s", crashDiag.Summary)
@@ -755,6 +764,41 @@ func TestRuleBasedProvider_DiagnosedAtSet(t *testing.T) {
 	for _, d := range diagnoses {
 		if d.DiagnosedAt.Before(before) || d.DiagnosedAt.After(after) {
 			t.Errorf("DiagnosedAt %v is not between %v and %v", d.DiagnosedAt, before, after)
+		}
+	}
+}
+
+// F-9: the OOM rule only absorbs the crash loops its own OOM explains. A second
+// pod crash-looping for an unrelated reason is a separate finding.
+func TestRuleBasedProvider_OOMDoesNotAbsorbAnUnrelatedCrashLoop(t *testing.T) {
+	p := newTestProvider()
+	now := time.Now()
+	pod := func(name string) dorguv1.ResourceReference {
+		return dorguv1.ResourceReference{Kind: "Pod", Name: name, Namespace: "default"}
+	}
+	signals := []detection.Signal{
+		{Type: detection.SignalOOMKilled, Severity: detection.SeverityCritical, Resource: pod("a"), DetectedAt: now},
+		{Type: detection.SignalCrashLoopBackOff, Severity: detection.SeverityCritical, Resource: pod("a"), DetectedAt: now},
+		{Type: detection.SignalCrashLoopBackOff, Severity: detection.SeverityCritical, Resource: pod("b"), DetectedAt: now},
+	}
+
+	diagnoses, err := p.Diagnose(context.Background(), signals)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(diagnoses) != 2 {
+		t.Fatalf("want the OOM finding for pod a and a crash-loop finding for pod b, got %d", len(diagnoses))
+	}
+	for _, d := range diagnoses {
+		switch d.Category {
+		case string(detection.CategoryResource):
+			if len(d.AffectedResources) != 1 || d.AffectedResources[0].Name != "a" {
+				t.Errorf("the OOM finding must be about pod a only, got %v", d.AffectedResources)
+			}
+		case string(detection.CategoryHealth):
+			if len(d.AffectedResources) != 1 || d.AffectedResources[0].Name != "b" {
+				t.Errorf("the crash-loop finding must be about pod b only, got %v", d.AffectedResources)
+			}
 		}
 	}
 }

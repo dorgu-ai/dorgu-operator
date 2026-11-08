@@ -31,7 +31,6 @@ import (
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/metrics"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation"
-	"github.com/dorgu-ai/dorgu-operator/internal/websocket"
 )
 
 // IncidentMemory resolution outcomes written by this controller. They are the
@@ -103,11 +102,10 @@ const (
 // +kubebuilder:rbac:groups=dorgu.io,resources=incidentmemories/status,verbs=get;update;patch
 type RemediationController struct {
 	client.Client
-	Executor  *remediation.Executor
-	Verifier  *remediation.Verifier
-	Rollback  *remediation.Rollback
-	Logger    logr.Logger
-	WebSocket *websocket.Server
+	Executor *remediation.Executor
+	Verifier *remediation.Verifier
+	Rollback *remediation.Rollback
+	Logger   logr.Logger
 
 	// PendingTTL is how long a proposal may wait for approval, counted from its
 	// creation, before it becomes Expired. Zero disables the TTL (an explicit
@@ -278,7 +276,6 @@ func (r *RemediationController) transitionToExpired(
 		return fmt.Errorf("updating status to Expired: %w", err)
 	}
 
-	r.broadcastRemediation(action, "expired")
 	return nil
 }
 
@@ -328,8 +325,6 @@ func (r *RemediationController) handleApproved(ctx context.Context, logger logr.
 	if err := r.Status().Update(ctx, action); err != nil {
 		return ctrl.Result{}, fmt.Errorf("updating status to Applying: %w", err)
 	}
-
-	r.broadcastRemediation(action, "approved")
 
 	logger.Info("patch applied, waiting for verification window")
 
@@ -399,8 +394,6 @@ func (r *RemediationController) handleVerificationHealthy(ctx context.Context, l
 		return ctrl.Result{}, fmt.Errorf("updating status to Completed: %w", err)
 	}
 
-	r.broadcastRemediation(action, "completed")
-
 	// Update incident with resolution info.
 	if err := r.updateIncidentResolution(ctx, action, IncidentOutcomeResolved); err != nil {
 		logger.Error(err, "failed to update incident resolution")
@@ -464,8 +457,6 @@ func (r *RemediationController) rollBack(
 	if err := r.Status().Update(ctx, action); err != nil {
 		return ctrl.Result{}, fmt.Errorf("updating status to RolledBack: %w", err)
 	}
-
-	r.broadcastRemediation(action, "rolledback")
 
 	// A rollback that left the workload changed is partial, not a rollback.
 	resolution := IncidentOutcomeRollback
@@ -583,8 +574,6 @@ func (r *RemediationController) transitionToAcknowledged(ctx context.Context, ac
 		return fmt.Errorf("updating status to Acknowledged: %w", err)
 	}
 
-	r.broadcastRemediation(action, "acknowledged")
-
 	if err := r.updateIncidentResolution(ctx, action, IncidentOutcomeAcknowledged); err != nil {
 		r.Logger.Error(err, "failed to record incident acknowledgement")
 	}
@@ -613,8 +602,6 @@ func (r *RemediationController) transitionToFailedWithReason(
 	if err := r.Status().Update(ctx, action); err != nil {
 		return fmt.Errorf("updating status to Failed: %w", err)
 	}
-
-	r.broadcastRemediation(action, "failed")
 
 	// Update incident with failure info.
 	if err := r.updateIncidentResolution(ctx, action, IncidentOutcomeFailed); err != nil {
@@ -719,22 +706,4 @@ func (r *RemediationController) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&dorguv1.RemediationAction{}).
 		Complete(r)
-}
-
-// broadcastRemediation emits a WebSocket event describing a RemediationAction
-// phase transition. Safe to call with a nil WebSocket server.
-func (r *RemediationController) broadcastRemediation(action *dorguv1.RemediationAction, eventType string) {
-	if r.WebSocket == nil {
-		return
-	}
-	r.WebSocket.BroadcastRemediation(websocket.RemediationEvent{
-		EventType:   eventType,
-		Name:        action.Name,
-		Namespace:   action.Namespace,
-		ActionType:  action.Spec.Action.Type,
-		Phase:       action.Status.Phase,
-		Confidence:  action.Spec.Confidence,
-		PersonaName: action.Spec.PersonaRef.Name,
-		PersonaKind: action.Spec.PersonaRef.Kind,
-	})
 }

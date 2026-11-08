@@ -54,15 +54,6 @@ prometheus:
   enabled: false
   url: ""  # e.g., http://prometheus-server.monitoring:9090
 
-# WebSocket server for CLI real-time communication
-websocket:
-  enabled: false
-  port: 9090
-  # Service configuration for WebSocket
-  service:
-    type: ClusterIP
-    port: 9090
-
 # Health check reconciler: detection, diagnosis, incident records, and remediation
 # proposals. On by default, because self-healing is the product and an operator
 # that detects nothing is indistinguishable from a broken install.
@@ -96,12 +87,18 @@ safety:
 metricsServer:
   enabled: true
 
-# DorguEvent records: dorgu's own log of what it saw, queryable with
-# `kubectl get dorguevent -A`. They live in etcd, so they are bounded twice over.
-# A record is removed once it is older than `retention`, and the oldest are
-# removed early if the count exceeds `maxRecords`. The cap is the bound that
-# holds on a large cluster, where records arrive faster than any time window
-# retires them: a five-app cluster produced roughly 2,700 a day.
+# Event pipeline: watches Kubernetes Events, classifies and correlates them, and
+# writes DorguEvent records (`kubectl get dorguevent -A`). Nothing in Dorgu reads
+# those records yet, so it is OFF by default and no watcher or cleaner is started.
+# Incident events (`kubectl describe` on an incident) are separate and always on.
+eventPipeline:
+  enabled: false
+
+# DorguEvent records, used only when eventPipeline.enabled=true. They live in
+# etcd, so they are bounded twice over. A record is removed once it is older than
+# `retention`, and the oldest are removed early if the count exceeds `maxRecords`.
+# The cap is the bound that holds on a large cluster, where records arrive faster
+# than any time window retires them: a five-app cluster produced roughly 2,700 a day.
 # Set maxRecords: 0 to drop the cap and keep retention as the only bound.
 dorguEvents:
   retention: 24h

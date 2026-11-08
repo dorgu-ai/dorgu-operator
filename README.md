@@ -72,7 +72,6 @@ helm install dorgu-operator oci://ghcr.io/dorgu-ai/dorgu-operator-charts/dorgu-o
   --namespace dorgu-system \
   --create-namespace \
   --set healthCheck.enabled=true \
-  --set websocket.enabled=true \
   --set llm.provider=claude \
   --set llm.existingSecret=dorgu-llm \
   --set aiRemediation.enabled=true
@@ -166,8 +165,7 @@ Source-of-truth split: the CLI and GitOps own `spec` (desired intent); the opera
 helm install dorgu-operator oci://ghcr.io/dorgu-ai/dorgu-operator-charts/dorgu-operator \
   --namespace dorgu-system \
   --create-namespace \
-  --set healthCheck.enabled=true \
-  --set websocket.enabled=true
+  --set healthCheck.enabled=true
 ```
 
 Pin an exact chart version for reproducibility:
@@ -192,8 +190,7 @@ helm install dorgu-operator oci://ghcr.io/dorgu-ai/dorgu-operator-charts/dorgu-o
   --set healthCheck.enabled=true \
   --set metricsServer.enabled=true \
   --set prometheus.enabled=true \
-  --set prometheus.url=http://prometheus-server.monitoring:9090 \
-  --set websocket.enabled=true
+  --set prometheus.url=http://prometheus-server.monitoring:9090
 ```
 
 **Public installs:** the image and Helm chart are published to GHCR on release. Set package visibility to **Public** in GitHub package settings so `helm install oci://...` works without login.
@@ -225,8 +222,7 @@ kubectl get clusterpersona           # dorgu-cluster, auto-created
 | `llm.apiKey` | **Dev only:** raw key; requires `createSecret=true` to be stored in a Secret | `""` |
 | `llm.createSecret` | When true + `apiKey` set, the chart creates a Secret for the key | `false` |
 | `aiRemediation.enabled` | AI-generated ordered remediation plans (needs `llm.provider=claude`) | `false` |
-| `websocket.enabled` | WebSocket server for CLI real-time commands | `false` |
-| `websocket.port` | WebSocket server port | `9090` |
+| `eventPipeline.enabled` | Watch Kubernetes Events and write DorguEvent records (nothing reads them yet, so off by default); `dorguEvents.retention` and `dorguEvents.maxRecords` bound them (maps to `--enable-event-pipeline`) | `false` |
 | `argocd.enabled` | ArgoCD Application watching for sync status | `true` |
 | `prometheus.enabled` | Prometheus integration for resource baseline learning | `false` |
 | `prometheus.url` | Prometheus server URL | `""` |
@@ -265,9 +261,8 @@ dorgu remediation approve ra-default-api-oom-b71c -n default
 dorgu persona apply ./my-app --namespace production
 dorgu persona status my-app -n production
 
-# Real-time (needs websocket.enabled=true)
-dorgu watch incidents
-dorgu watch remediations
+# Follow changes with kubectl (the CLI's watch commands were removed in v0.13.0)
+kubectl get incidentmemories,remediationactions -A -w
 ```
 
 Full command reference in the [CLI README](https://github.com/dorgu-ai/dorgu#commands).
@@ -282,7 +277,6 @@ flowchart LR
     health[dorgu health]
     incidents[dorgu incidents]
     remediation[dorgu remediation]
-    watch[dorgu watch]
     persona[dorgu persona]
     clusterCmd[dorgu cluster]
   end
@@ -298,11 +292,10 @@ flowchart LR
       planner[AI Planner - Anthropic, optional]
       safety[Safety Checker]
       remCtrl[Remediation Controller]
-      eventPipe[Event Pipeline]
+      eventPipe[Event Pipeline - optional, off by default]
       incidentCtrl[Incident Controller]
       argocdWatcher[ArgoCD Watcher]
       promClient[Prometheus Client]
-      wsServer[WebSocket Server]
     end
     subgraph crds [CRDs]
       appPersona[ApplicationPersona]
@@ -322,7 +315,6 @@ flowchart LR
   incidents --> dorguEvent
   remediation --> remAction
   remediation -->|user creds, heal on approve| workload
-  watch <-->|WebSocket| wsServer
   persona --> appCtrl
   clusterCmd --> clusterCtrl
   healthRec --> detEngine

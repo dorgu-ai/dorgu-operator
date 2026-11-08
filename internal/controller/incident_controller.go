@@ -49,7 +49,14 @@ type IncidentController struct {
 // +kubebuilder:rbac:groups=dorgu.io,resources=applicationpersonas/status,verbs=get;update;patch
 
 // Reconcile ensures IncidentMemory labels, conditions, and persona sync are correct.
+// An optimistic-lock conflict or an object deleted mid-reconcile requeues or
+// ends quietly instead of being returned as a reconcile error.
 func (r *IncidentController) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	res, err := r.reconcile(ctx, req)
+	return quietRaces(r.Logger.WithValues("incidentmemory", req.NamespacedName), res, err)
+}
+
+func (r *IncidentController) reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := r.Logger.WithValues("incidentmemory", req.NamespacedName)
 
 	// 1. Fetch IncidentMemory.
@@ -95,7 +102,15 @@ func (r *IncidentController) Reconcile(ctx context.Context, req ctrl.Request) (c
 	// looking would only produce a NotFound on every reconcile.
 	if im.Spec.PersonaRef.Kind == "ApplicationPersona" && im.Spec.Attribution != AttributionUnattributed {
 		if err := r.syncPersonaStatus(ctx, &im); err != nil {
-			logger.Error(err, "failed to sync persona status")
+			switch {
+			case isBenignGone(err):
+				logger.V(1).Info("persona gone, nothing to sync", "reason", err.Error())
+			case isBenignConflict(err):
+				// The persona's status is also written by its own reconciler; try again.
+				return ctrl.Result{RequeueAfter: raceRequeueDelay}, nil
+			default:
+				logger.Error(err, "failed to sync persona status")
+			}
 		}
 	}
 

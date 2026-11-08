@@ -22,6 +22,7 @@ import (
 	"github.com/go-logr/logr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/dorgu-ai/dorgu-operator/internal/detection"
 	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
 	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
 	"github.com/dorgu-ai/dorgu-operator/internal/llm"
@@ -144,4 +145,11 @@ func resolveLLMAPIKey(cfg operatorConfig) string {
 		return os.Getenv("GEMINI_API_KEY")
 	}
 	return ""
+}
+
+// newPodCollector builds the pod collector with the gate's deny-list, so
+// detection and the gate skip the same namespaces: kube-system, the operator's
+// own, the installer's, and every ClusterPersona excludeNamespaces entry.
+func newPodCollector(c client.Reader, g *gate.Gate, log logr.Logger) *detection.PodCollector {
+	return detection.NewPodCollector(c, log, detection.WithNamespaceFilter(g))
 }

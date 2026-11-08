@@ -27,7 +27,11 @@ import (
 )
 
 // storeSignalEvents stores contributing signals as DorguEvents via the event store.
+// With no store configured (the event pipeline is off) it records nothing.
 func (r *HealthCheckReconciler) storeSignalEvents(ctx context.Context, diag *diagnosis.Diagnosis, im *dorguv1.IncidentMemory) {
+	if r.EventStore == nil {
+		return
+	}
 	for _, cs := range diag.Contributing {
 		internalEvent := &events.InternalEvent{
 			ID:       fmt.Sprintf("%s-%s-%d", im.Name, cs.Signal.Type, cs.Signal.DetectedAt.UnixNano()),
@@ -45,7 +49,7 @@ func (r *HealthCheckReconciler) storeSignalEvents(ctx context.Context, diag *dia
 		}
 
 		if err := r.EventStore.Store(ctx, internalEvent); err != nil {
-			r.Logger.Error(err, "failed to store signal event",
+			logFailure(r.Logger, err, "failed to store signal event",
 				"signal", cs.Signal.Type,
 				"resource", cs.Signal.Resource.Name,
 			)
@@ -55,6 +59,9 @@ func (r *HealthCheckReconciler) storeSignalEvents(ctx context.Context, diag *dia
 
 // emitK8sEvents emits K8s Events for diagnosis contributing signals.
 func (r *HealthCheckReconciler) emitK8sEvents(ctx context.Context, diag *diagnosis.Diagnosis) {
+	if r.EventEmitter == nil {
+		return
+	}
 	for _, cs := range diag.Contributing {
 		internalEvent := &events.InternalEvent{
 			Severity: events.Severity(cs.Signal.Severity),
@@ -71,7 +78,7 @@ func (r *HealthCheckReconciler) emitK8sEvents(ctx context.Context, diag *diagnos
 		}
 
 		if err := r.EventEmitter.Emit(ctx, internalEvent); err != nil {
-			r.Logger.Error(err, "failed to emit K8s event",
+			logFailure(r.Logger, err, "failed to emit K8s event",
 				"signal", cs.Signal.Type,
 				"resource", cs.Signal.Resource.Name,
 			)
