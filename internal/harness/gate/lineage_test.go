@@ -17,11 +17,13 @@ limitations under the License.
 package gate
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
@@ -60,15 +62,45 @@ func TestRecurrenceName(t *testing.T) {
 	assert.Equal(t, baseIncident, RecurrenceName(baseIncident, 0))
 	assert.Equal(t, baseIncident+"-r1", RecurrenceName(baseIncident, 1))
 	assert.Equal(t, baseIncident+"-r4", RecurrenceName(baseIncident+"-r2", 4), "a generation is applied to the base, never stacked")
-
 	assert.Equal(t, "short-r2", RecurrenceName("short", 2), "a base with no room to shorten is only suffixed")
+}
 
-	long := "im-" + strings.Repeat("a", 230) + "-" + strings.Repeat("b", 12) // 246 chars, valid base
-	name := RecurrenceName(long, 12)
-	assert.LessOrEqual(t, len(name), 253)
-	assert.True(t, strings.HasSuffix(name, strings.Repeat("b", 12)+"-r12"), "the hash and the suffix survive truncation: %s", name)
-	assert.Equal(t, 12, IncidentGeneration(name))
-	assert.Equal(t, IncidentLineage(RecurrenceName(long, 3)), IncidentLineage(name), "all generations of a long name still share a lineage")
+// longBase builds a valid incident name of exactly n characters.
+func longBase(n int) string {
+	return "im-" + strings.Repeat("a", n-3-13) + "-" + strings.Repeat("b", 12)
+}
+
+// Truncation really happens for these: the longest base the generator can emit is
+// 252 characters, and "-r12" does not fit beside it. Every generation of one
+// fault must keep one lineage whatever the length, or every cooldown keyed on it
+// would let the recurrence through.
+func TestRecurrenceName_LongBasesKeepTheirLineage(t *testing.T) {
+	for _, n := range []int{240, 241, 245, 250, 252, 253} {
+		base := longBase(n)
+		require.Len(t, base, n)
+		for _, gen := range []int{1, 2, 12, 1000, 1234567890} {
+			name := RecurrenceName(base, gen)
+			assert.LessOrEqual(t, len(name), maxIncidentNameLength, "base %d gen %d", n, gen)
+			assert.True(t, strings.HasSuffix(name, strings.Repeat("b", 12)+fmt.Sprintf("-r%d", gen)),
+				"the hash and the suffix survive: %s", name)
+			assert.Equal(t, gen, IncidentGeneration(name))
+			assert.True(t, SameIncidentLineage(base, name), "base %d gen %d left the lineage of generation 0", n, gen)
+			assert.True(t, SameIncidentLineage(RecurrenceName(base, 1), name), "base %d gen %d", n, gen)
+		}
+	}
+}
+
+// The invariant the lineage rests on, asserted for every length the generator can
+// reach and a few it cannot.
+func TestLineage_IsStableUnderRecurrenceNaming(t *testing.T) {
+	for n := 20; n <= 253; n++ {
+		base := longBase(n)
+		for _, gen := range []int{1, 9, 10, 99, 100} {
+			if !SameIncidentLineage(base, RecurrenceName(base, gen)) {
+				t.Fatalf("length %d generation %d: lineage changed", n, gen)
+			}
+		}
+	}
 }
 
 // The cooldowns are decided by the gate and keyed on the incident. A recurrence
@@ -130,3 +162,18 @@ func TestRejectionCooldownCoversTheWholeLineage(t *testing.T) {
 	assert.Empty(t, s.rejectionReason(cand, []dorguv1.RemediationAction{elsewhere}),
 		"a rejection on a different fault does not suppress this one")
 }
+
+// F-2: the rate limit runs in the guardrails stage, BEFORE dedup, so it has to
+// recognise the lineage's own outstanding proposal too. Counting it as "another
+// remediation" turned a deferral into a Guardrails/rate-limit refusal.
+func TestOwnActiveProposalCoversTheWholeLineage(t *testing.T) {
+	cand := lineageCandidate(baseIncident + "-r1")
+	assert.True(t, ownActiveProposal(cand, ptr(raFor("ra", baseIncident, "Pending"))),
+		"the earlier incident's outstanding proposal is this fault's own")
+	assert.True(t, ownActiveProposal(cand, ptr(raFor("ra", baseIncident+"-r1", "Applying"))))
+	assert.False(t, ownActiveProposal(cand, ptr(raFor("ra", baseIncident, "Completed"))),
+		"a FINISHED proposal still counts toward the limit: that is what stops propose, fail, propose")
+	assert.False(t, ownActiveProposal(cand, ptr(raFor("ra", "im-shop-web-crashloopbackoff-0123456789ab", "Pending"))))
+}
+
+func ptr[T any](v T) *T { return &v }

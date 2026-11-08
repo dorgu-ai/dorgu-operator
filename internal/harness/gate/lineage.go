@@ -38,17 +38,37 @@ const (
 	maxIncidentNameLength = 253
 
 	// hashSegmentLength is the "-" and 12 hex digits that end every incident name,
-	// which truncation must never cut into.
+	// which shortening must never cut into.
 	hashSegmentLength = 13
+
+	// maxLineageLength is the longest lineage key. A recurrence name is the lineage
+	// plus "-r<N>", and 13 characters is room for a ten-digit N, so a recurrence
+	// name always fits. A first-occurrence name longer than this (the generator can
+	// emit 252 characters) is shortened, in the middle and never in the hash, to
+	// form its lineage, so that the first occurrence and every recurrence of it
+	// still share one.
+	maxLineageLength = maxIncidentNameLength - 13
 )
 
 var generationSuffix = regexp.MustCompile(`-r([0-9]+)$`)
 
-// IncidentLineage returns the name shared by every record of one fault: the
-// incident name without its recurrence suffix. A base name always ends in a hash
-// of hex digits, so a trailing "-r<N>" can only be a recurrence suffix.
-func IncidentLineage(name string) string {
+// withoutGeneration removes a trailing recurrence suffix. A base name always ends
+// in a hash of hex digits, so a trailing "-r<N>" can only be a recurrence suffix.
+func withoutGeneration(name string) string {
 	return generationSuffix.ReplaceAllString(name, "")
+}
+
+// IncidentLineage returns the key shared by every record of one fault: the
+// incident name without its recurrence suffix, shortened to maxLineageLength when
+// it is longer. For every name shorter than that it is just the first-occurrence
+// name.
+func IncidentLineage(name string) string {
+	base := withoutGeneration(name)
+	if len(base) <= maxLineageLength || len(base) <= hashSegmentLength {
+		return base
+	}
+	keep := maxLineageLength - hashSegmentLength
+	return base[:keep] + base[len(base)-hashSegmentLength:]
 }
 
 // SameIncidentLineage reports whether two incident names record the same fault.
@@ -71,17 +91,11 @@ func IncidentGeneration(name string) int {
 }
 
 // RecurrenceName names generation N (N >= 1) of the fault whose first-occurrence
-// name is base, shortening the readable prefix, never the hash, to stay within
-// the Kubernetes name limit. Generation 0 is base itself.
+// name is base: the lineage plus "-r<N>", always within the Kubernetes name
+// limit. Generation 0 is the first-occurrence name itself.
 func RecurrenceName(base string, generation int) string {
-	base = IncidentLineage(base)
 	if generation <= 0 {
-		return base
+		return withoutGeneration(base)
 	}
-	suffix := fmt.Sprintf("-r%d", generation)
-	if len(base)+len(suffix) <= maxIncidentNameLength || len(base) <= hashSegmentLength {
-		return base + suffix
-	}
-	keep := maxIncidentNameLength - len(suffix) - hashSegmentLength
-	return base[:keep] + base[len(base)-hashSegmentLength:] + suffix
+	return IncidentLineage(base) + fmt.Sprintf("-r%d", generation)
 }

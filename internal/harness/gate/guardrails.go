@@ -200,9 +200,13 @@ func (s guardrailsStage) rateLimit(ctx context.Context, cand *Candidate, d *Deci
 }
 
 // ownActiveProposal reports whether sib is an active (pending or in-flight)
-// RemediationAction answering the candidate's own incident.
+// RemediationAction answering the candidate's own fault. "Own" is the incident's
+// lineage, as in dedup and the rejection cooldown: this stage runs before dedup,
+// so a recurrence whose earlier incident still has a proposal outstanding would
+// otherwise count it as another remediation and be refused here, instead of
+// deferred there.
 func ownActiveProposal(cand *Candidate, sib *dorguv1.RemediationAction) bool {
-	return cand.Facts.Incident != nil && sib.Spec.IncidentRef.Name == cand.Facts.Incident.Name &&
+	return cand.Facts.Incident != nil && SameIncidentLineage(sib.Spec.IncidentRef.Name, cand.Facts.Incident.Name) &&
 		slices.Contains(activeRemediationPhases, sib.Status.Phase)
 }
 
