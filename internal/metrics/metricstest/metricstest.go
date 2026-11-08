@@ -62,3 +62,25 @@ func matches[L labelPair](got []L, want map[string]string) bool {
 	}
 	return true
 }
+
+// HistogramCount returns how many samples the histogram series name with exactly
+// the given labels has observed, or 0 when the series does not exist yet.
+func HistogramCount(t testing.TB, name string, labels map[string]string) uint64 {
+	t.Helper()
+
+	families, err := ctrlmetrics.Registry.Gather()
+	if err != nil {
+		t.Fatalf("gathering metrics: %v", err)
+	}
+	for _, family := range families {
+		if family.GetName() != name {
+			continue
+		}
+		for _, m := range family.GetMetric() {
+			if matches(m.GetLabel(), labels) {
+				return m.GetHistogram().GetSampleCount()
+			}
+		}
+	}
+	return 0
+}

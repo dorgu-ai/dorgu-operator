@@ -37,6 +37,7 @@ import (
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
 	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
 	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
+	"github.com/dorgu-ai/dorgu-operator/internal/metrics"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation/planner"
 )
 
@@ -195,11 +196,21 @@ func candidateFor(action *dorguv1.RemediationAction, diag diagnosis.Diagnosis, i
 	}
 }
 
+// proposerSkip is a skip that is the proposer's own, not a gate refusal.
+func proposerSkip(sentence, reason string, pre *gate.Decision) *ProposalResult {
+	return &ProposalResult{SkipReason: sentence, Stage: StagePropose, Reason: reason, Decision: pre}
+}
+
 // skipped converts a refusal into the result callers act on.
 func skipped(dec *gate.Decision) *ProposalResult {
-	_, guardrail := dec.RefusedBy()
+	stage, guardrail := dec.RefusedBy()
+	if dec.Deferred() {
+		stage = StageDeferred
+	}
 	return &ProposalResult{
 		SkipReason: dec.SkipReason(),
+		Stage:      stage,
+		Reason:     guardrail,
 		Suppressed: guardrail == gate.GuardrailRejection,
 		Decision:   dec,
 	}
@@ -209,7 +220,7 @@ func skipped(dec *gate.Decision) *ProposalResult {
 // is the gate's: Propose builds candidates and writes the gate's answer.
 func (p *Proposer) Propose(ctx context.Context, diag diagnosis.Diagnosis, incident *dorguv1.IncidentMemory) (*ProposalResult, error) {
 	if diag.PersonaRef == nil {
-		return &ProposalResult{SkipReason: "diagnosis has no persona reference"}, nil
+		return proposerSkip("diagnosis has no persona reference", SkipNoPersonaRef, nil), nil
 	}
 	defer p.lockPersona(diag.PersonaRef)()
 
@@ -254,9 +265,9 @@ func (p *Proposer) Propose(ctx context.Context, diag diagnosis.Diagnosis, incide
 	case "resource-adjustment":
 		return p.proposeResourceAdjustment(ctx, diag, incident, pre)
 	case "restart":
-		return &ProposalResult{SkipReason: "restart remediation not automated in Phase 2b", Decision: pre}, nil
+		return proposerSkip("restart remediation not automated in Phase 2b", SkipRestartNotAutomated, pre), nil
 	default:
-		return &ProposalResult{SkipReason: fmt.Sprintf("unsupported action type: %s", diag.SuggestedAction), Decision: pre}, nil
+		return proposerSkip(fmt.Sprintf("unsupported action type: %s", diag.SuggestedAction), SkipUnsupportedAction, pre), nil
 	}
 }
 
@@ -281,7 +292,7 @@ func (p *Proposer) proposeResourceAdjustment(
 	}
 
 	if personaLimits(persona) == nil && !hasObservedLimits(workloadRef) {
-		return &ProposalResult{SkipReason: "persona has no resource limits configured", Decision: pre}, nil
+		return proposerSkip("persona has no resource limits configured", SkipNoResourceLimits, pre), nil
 	}
 
 	// Determine which resource to adjust and by how much, sized against the live
@@ -291,10 +302,10 @@ func (p *Proposer) proposeResourceAdjustment(
 		return nil, fmt.Errorf("calculating resource change: %w", err)
 	}
 	if change.skipReason != "" {
-		return &ProposalResult{SkipReason: change.skipReason, Decision: pre}, nil
+		return proposerSkip(change.skipReason, change.skipCode, pre), nil
 	}
 	if change.patch == nil {
-		return &ProposalResult{SkipReason: "no applicable resource adjustment", Decision: pre}, nil
+		return proposerSkip("no applicable resource adjustment", SkipNoApplicableChange, pre), nil
 	}
 
 	patchJSON, err := json.Marshal(change.patch)
@@ -375,6 +386,7 @@ func (p *Proposer) proposeResourceAdjustment(
 	// AI path's did. The scrub is keyed on the recorded verdict rather than on
 	// who authored the sentence, which is why it applies to both.
 	if scrubbed := scrubFabricatedGuardrailClaims(action); scrubbed > 0 {
+		metrics.RecordModelClaimsStripped(metrics.ClaimFabricatedClamp, scrubbed)
 		p.logger.Info("removed guardrail claims no recorded verdict supports",
 			"action", action.Name, "surfaces", scrubbed)
 	}
@@ -482,6 +494,8 @@ type resourceAdjustment struct {
 	prePatch    map[string]any
 	explanation string
 	skipReason  string
+	// skipCode is skipReason as an enum (a Skip* constant).
+	skipCode string
 }
 
 // calculateResourceChange determines what resource change to apply based on signals.
@@ -537,9 +551,11 @@ func (p *Proposer) calculateLimitIncrease(
 	case groundedInLive:
 		// Sized against what is running.
 	case gate.Resolved(ref):
-		return resourceAdjustment{skipReason: fmt.Sprintf(
-			"container %q on Deployment %s does not set a %s limit, so raising one would introduce a field the workload has never had",
-			ref.Container, ref.Name, key)}, nil
+		return resourceAdjustment{
+			skipCode: SkipNoLiveLimit,
+			skipReason: fmt.Sprintf(
+				"container %q on Deployment %s does not set a %s limit, so raising one would introduce a field the workload has never had",
+				ref.Container, ref.Name, key)}, nil
 	case personaValue != "":
 		baseline = personaValue
 	default:

@@ -162,6 +162,29 @@ const (
 	// recommended for the diagnosis. The rules own the class; a model may word the
 	// plan but may not change what kind of change it is.
 	GuardrailActionClass = "action-class"
+
+	// Reasons added with the persisted refusals (B6). Each splits a refusal that
+	// used to share another reason, so a dashboard can tell them apart.
+	//
+	// GuardrailTicketExpired: the ticket's expiry has passed. Before B6 an expired
+	// ticket and a missing one were both GuardrailTicket.
+	GuardrailTicketExpired = "ticket-expired"
+
+	// GuardrailPolicyUnreadable: the self-healing mode could not be read, so the
+	// gate refuses until it can (fail closed). Not the same as the operator having
+	// chosen observe mode.
+	GuardrailPolicyUnreadable = "policy-unreadable"
+
+	// GuardrailUnknownMode: a self-healing mode the harness does not recognise.
+	GuardrailUnknownMode = "unknown-mode"
+
+	// GuardrailNotTicketed: the executor was asked to apply an action that is not in
+	// the Ticketed phase.
+	GuardrailNotTicketed = "not-ticketed"
+
+	// GuardrailClusterUnreadable: the live cluster could not be read to check the
+	// ticket, so it is not honoured (fail closed).
+	GuardrailClusterUnreadable = "cluster-unreadable"
 )
 
 // Safety rule names. They are the Rule of a Violation and the Guardrail of the

@@ -274,16 +274,16 @@ func TestVerifyingUnknown_RetryCounterAdvancesThenRollsBack(t *testing.T) {
 	if got.Status.Phase != RemediationPhaseVerifying {
 		t.Fatalf("pass 1: phase = %q, want Verifying", got.Status.Phase)
 	}
-	if msg := lcCondition(got, ConditionVerified).Message; !strings.Contains(msg, "retry 1/2") {
-		t.Fatalf("pass 1: message = %q, want retry 1/2", msg)
+	if cond := lcCondition(got, ConditionVerified); cond.Reason != "VerificationUnknownRetry1" || !strings.Contains(cond.Message, "retry 1/2") {
+		t.Fatalf("pass 1: Verified = %+v, want reason VerificationUnknownRetry1 (the counter is the enum)", cond)
 	}
 
 	_, got = lcReconcile(t, rc, ra)
 	if got.Status.Phase != RemediationPhaseVerifying {
 		t.Fatalf("pass 2: phase = %q, want Verifying", got.Status.Phase)
 	}
-	if msg := lcCondition(got, ConditionVerified).Message; !strings.Contains(msg, "retry 2/2") {
-		t.Fatalf("pass 2: message = %q, want retry 2/2 (the counter must advance)", msg)
+	if cond := lcCondition(got, ConditionVerified); cond.Reason != "VerificationUnknownRetry2" || !strings.Contains(cond.Message, "retry 2/2") {
+		t.Fatalf("pass 2: Verified = %+v, want reason VerificationUnknownRetry2 (the counter must advance)", cond)
 	}
 
 	_, got = lcReconcile(t, rc, ra)
@@ -354,7 +354,7 @@ func TestVerifyingUnknown_RecordedFinalRetryRollsBackOnTheNextPass(t *testing.T)
 	// already recorded must roll back instead of re-recording it.
 	ra := lcRA("Verifying")
 	ra.Status.Conditions = []metav1.Condition{{
-		Type: ConditionVerified, Status: metav1.ConditionFalse, Reason: "VerificationUnknown",
+		Type: ConditionVerified, Status: metav1.ConditionFalse, Reason: "VerificationUnknownRetry2",
 		Message: fmt.Sprintf("Verification returned Unknown, retry %d/%d", 2, maxUnknownRetries),
 	}}
 	rc, c := lcController(t, []client.Object{lcPersonaObj(lcApplied), ra.DeepCopy()})
@@ -364,6 +364,24 @@ func TestVerifyingUnknown_RecordedFinalRetryRollsBackOnTheNextPass(t *testing.T)
 	}
 	if mem := lcPersonaMemory(t, c); mem != lcBaseline {
 		t.Errorf("persona memory = %s, want %s", mem, lcBaseline)
+	}
+}
+
+// B6: nothing parses message text. A Verified message that SAYS retry 2/2 under
+// the old reason is prose, and counts for nothing.
+func TestVerifyingUnknown_TheMessageIsNeverReadBackAsACounter(t *testing.T) {
+	ra := lcRA("Verifying")
+	ra.Status.Conditions = []metav1.Condition{{
+		Type: ConditionVerified, Status: metav1.ConditionFalse, Reason: "VerificationUnknown",
+		Message: "Verification returned Unknown, retry 2/2",
+	}}
+	rc, _ := lcController(t, []client.Object{lcPersonaObj(lcApplied), ra.DeepCopy()})
+	_, got := lcReconcile(t, rc, ra)
+	if got.Status.Phase != RemediationPhaseVerifying {
+		t.Fatalf("phase = %q, want Verifying: the counter is the reason enum, not the sentence", got.Status.Phase)
+	}
+	if cond := lcCondition(got, ConditionVerified); cond.Reason != "VerificationUnknownRetry1" {
+		t.Errorf("Verified reason = %q, want a fresh count of 1", cond.Reason)
 	}
 }
 

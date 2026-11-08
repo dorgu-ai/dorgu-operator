@@ -304,6 +304,10 @@ func TestExecutor_Apply_AnUnreadableWorkloadIsARefusalNotAPass(t *testing.T) {
 	if !errors.As(err, &precondition) {
 		t.Fatalf("expected a PreconditionError, got %v", err)
 	}
+	if precondition.Guardrail != gate.GuardrailClusterUnreadable {
+		t.Errorf("guardrail = %q, want %q: an unreadable cluster refuses with an enum, not bare text",
+			precondition.Guardrail, gate.GuardrailClusterUnreadable)
+	}
 }
 
 // A persona that is gone is the gate's refusal at apply (the re-run finds no

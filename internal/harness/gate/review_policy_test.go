@@ -66,7 +66,7 @@ func TestR6_ModeListErrorFailsClosed(t *testing.T) {
 
 	stage, guardrail := refusedBy(t, d)
 	assert.Equal(t, StageModePolicy, stage)
-	assert.Equal(t, GuardrailSelfHealingMode, guardrail)
+	assert.Equal(t, GuardrailPolicyUnreadable, guardrail)
 }
 
 func TestR6_UnrecognizedModeFailsClosed(t *testing.T) {
@@ -75,7 +75,7 @@ func TestR6_UnrecognizedModeFailsClosed(t *testing.T) {
 
 	_, guardrail := refusedBy(t, run(t, g, planCandidate(personaUpdateStep(memPatch("384Mi"))), PhaseProposal))
 
-	assert.Equal(t, GuardrailSelfHealingMode, guardrail)
+	assert.Equal(t, GuardrailUnknownMode, guardrail)
 }
 
 func TestR6_LowestRateLimitWins(t *testing.T) {

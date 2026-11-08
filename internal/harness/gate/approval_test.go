@@ -462,8 +462,8 @@ func TestTicket_RefusalsAreEnumerated(t *testing.T) {
 		"no ticket": {func(ra *dorguv1.RemediationAction) { ra.Status.ApplyTicket = nil }, GuardrailTicket},
 		"expired": {func(ra *dorguv1.RemediationAction) {
 			ra.Status.ApplyTicket.ExpiresAt = metav1.NewTime(fixedNow.Add(-time.Second))
-		}, GuardrailTicket},
-		"no expiry":   {func(ra *dorguv1.RemediationAction) { ra.Status.ApplyTicket.ExpiresAt = metav1.Time{} }, GuardrailTicket},
+		}, GuardrailTicketExpired},
+		"no expiry":   {func(ra *dorguv1.RemediationAction) { ra.Status.ApplyTicket.ExpiresAt = metav1.Time{} }, GuardrailTicketExpired},
 		"unbound":     {func(ra *dorguv1.RemediationAction) { ra.Status.ApplyTicket.WorkloadUID = "" }, GuardrailNoProposalRecord},
 		"other UID":   {func(ra *dorguv1.RemediationAction) { ra.Status.ApplyTicket.WorkloadUID = "uid-other" }, GuardrailLiveWorkload},
 		"empty patch": {func(ra *dorguv1.RemediationAction) { ra.Status.ApplyTicket.Patch = nil }, GuardrailPatchShape},

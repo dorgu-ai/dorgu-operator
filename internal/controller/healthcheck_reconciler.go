@@ -23,12 +23,14 @@ import (
 
 	"github.com/go-logr/logr"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
 	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
 	"github.com/dorgu-ai/dorgu-operator/internal/events"
+	"github.com/dorgu-ai/dorgu-operator/internal/metrics"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation"
 )
 
@@ -105,12 +107,16 @@ const (
 // HealthCheckReconciler runs detection and diagnosis on a fixed interval,
 // creating and updating IncidentMemory CRDs. It implements manager.Runnable.
 type HealthCheckReconciler struct {
-	Client            client.Client
-	Detection         *detection.Engine
-	Diagnosis         *diagnosis.Engine
-	EventStore        events.EventStore
-	EventEmitter      events.Emitter
-	Proposer          remediation.RemediationProposer
+	Client       client.Client
+	Detection    *detection.Engine
+	Diagnosis    *diagnosis.Engine
+	EventStore   events.EventStore
+	EventEmitter events.Emitter
+	Proposer     remediation.RemediationProposer
+
+	// Recorder emits the Kubernetes Events for proposal-time refusals. Nil records
+	// none.
+	Recorder          record.EventRecorder
 	Logger            logr.Logger
 	ReconcileInterval time.Duration
 }
@@ -144,6 +150,18 @@ func (r *HealthCheckReconciler) Start(ctx context.Context) error {
 
 // reconcile runs one detection→diagnosis→incident cycle.
 func (r *HealthCheckReconciler) reconcile(ctx context.Context) {
+	timeCycle(func() { r.runCycle(ctx) })
+}
+
+// timeCycle runs one health-check cycle and observes its duration.
+func timeCycle(cycle func()) {
+	started := time.Now()
+	defer func() { metrics.RecordHealthCycle(time.Since(started)) }()
+	cycle()
+}
+
+// runCycle is one cycle of the loop: collect, diagnose, record, propose.
+func (r *HealthCheckReconciler) runCycle(ctx context.Context) {
 	r.Logger.V(1).Info("starting reconciliation cycle")
 
 	// 1. Collect all signals from detection engine. A partial failure still

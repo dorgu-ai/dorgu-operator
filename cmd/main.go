@@ -305,6 +305,7 @@ func main() {
 			EventStore:        eventPipe.Store,
 			EventEmitter:      eventPipe.Emitter,
 			Proposer:          pipeline.Proposer,
+			Recorder:          recorder,
 			Logger:            setupLog.WithName("health-check"),
 			ReconcileInterval: cfg.healthCheckInterval,
 		}
@@ -333,6 +334,7 @@ func main() {
 			Executor: executor,
 			Verifier: verifier,
 			Rollback: rollbackHandler,
+			Recorder: recorder,
 			Logger:   setupLog.WithName("remediation-controller"),
 
 			PendingTTL: cfg.remediationPendingTTL,

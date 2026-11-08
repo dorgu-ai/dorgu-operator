@@ -46,6 +46,13 @@ func (e *PreconditionError) Error() string {
 	return fmt.Sprintf("precondition failed: %s", e.Reason)
 }
 
+// notTicketedError is an Apply of an action that is not in the Ticketed phase.
+type notTicketedError struct{ phase string }
+
+func (e *notTicketedError) Error() string {
+	return fmt.Sprintf("action must be in Ticketed phase, got %q", e.phase)
+}
+
 // Executor applies the apply ticket of an approved RemediationAction to its
 // ApplicationPersona.
 //
@@ -81,7 +88,11 @@ func (e *Executor) Apply(ctx context.Context, action *dorguv1.RemediationAction)
 		if errors.As(err, &problem) {
 			return &PreconditionError{Reason: problem.Reason, Guardrail: problem.Guardrail}
 		}
-		return &PreconditionError{Reason: err.Error()}
+		var notTicketed *notTicketedError
+		if errors.As(err, &notTicketed) {
+			return &PreconditionError{Reason: err.Error(), Guardrail: gate.GuardrailNotTicketed}
+		}
+		return &PreconditionError{Reason: err.Error(), Guardrail: gate.GuardrailClusterUnreadable}
 	}
 
 	// Fetch target Persona.
@@ -113,7 +124,7 @@ func (e *Executor) Apply(ctx context.Context, action *dorguv1.RemediationAction)
 // that at approval, and this only confirms the clearance it wrote still stands.
 func (e *Executor) validatePreconditions(ctx context.Context, action *dorguv1.RemediationAction) error {
 	if action.Status.Phase != phaseTicketed {
-		return fmt.Errorf("action must be in Ticketed phase, got %q", action.Status.Phase)
+		return &notTicketedError{phase: action.Status.Phase}
 	}
 
 	problem, err := e.gate.CheckTicket(ctx, action)

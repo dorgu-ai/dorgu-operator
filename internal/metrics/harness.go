@@ -43,6 +43,9 @@ const (
 	ProposalSkipped = "skipped"
 	// ProposalSuppressed means a recent human rejection held the proposal back.
 	ProposalSuppressed = "suppressed"
+	// ProposalDeferred means a proposal for the same incident or fix is already
+	// outstanding, so the proposer made no second one. It is not a refusal.
+	ProposalDeferred = "deferred"
 	// ProposalError means proposing failed.
 	ProposalError = "error"
 )
@@ -59,7 +62,7 @@ var (
 	proposalsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "dorgu_proposals_total",
 		Help: "Remediation proposal attempts, by producer (source), suggested action and result " +
-			"(proposed, skipped, suppressed, error).",
+			"(proposed, skipped, suppressed, deferred, error).",
 	}, []string{"source", "action_type", "result"})
 
 	transitionsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{

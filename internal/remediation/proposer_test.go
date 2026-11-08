@@ -291,6 +291,8 @@ func TestProposer_RateLimitBlocks(t *testing.T) {
 	assert.False(t, result.Proposed)
 	assert.Contains(t, result.SkipReason, "safety check failed")
 	assert.Contains(t, result.SkipReason, "rate-limit")
+	assert.Equal(t, gate.StageGuardrails, result.Stage)
+	assert.Equal(t, gate.GuardrailRateLimit, result.Reason)
 }
 
 func TestProposer_DenyListBlocks(t *testing.T) {
@@ -311,6 +313,8 @@ func TestProposer_DenyListBlocks(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, result.Proposed)
 	assert.Contains(t, result.SkipReason, "deny-list")
+	assert.Equal(t, gate.StageGuardrails, result.Stage)
+	assert.Equal(t, gate.GuardrailDenyList, result.Reason)
 }
 
 func TestProposer_CrashLoopWithOOM_ProposesMemoryIncrease(t *testing.T) {
@@ -397,6 +401,8 @@ func TestProposer_CrashLoopWithoutOOM_Skips(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, result.Proposed)
 	assert.Equal(t, "no applicable resource adjustment", result.SkipReason)
+	assert.Equal(t, StagePropose, result.Stage)
+	assert.Equal(t, SkipNoApplicableChange, result.Reason)
 }
 
 func TestProposer_UnknownActionType_Skips(t *testing.T) {
@@ -422,6 +428,8 @@ func TestProposer_UnknownActionType_Skips(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, result.Proposed)
 	assert.Contains(t, result.SkipReason, "unsupported action type")
+	assert.Equal(t, StagePropose, result.Stage)
+	assert.Equal(t, SkipUnsupportedAction, result.Reason)
 }
 
 func TestProposer_RestartAction_Skips(t *testing.T) {
@@ -447,6 +455,8 @@ func TestProposer_RestartAction_Skips(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, result.Proposed)
 	assert.Contains(t, result.SkipReason, "restart")
+	assert.Equal(t, StagePropose, result.Stage)
+	assert.Equal(t, SkipRestartNotAutomated, result.Reason)
 }
 
 func TestProposer_NilPersonaRef_Skips(t *testing.T) {
@@ -467,6 +477,8 @@ func TestProposer_NilPersonaRef_Skips(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, result.Proposed)
 	assert.Contains(t, result.SkipReason, "no persona reference")
+	assert.Equal(t, StagePropose, result.Stage)
+	assert.Equal(t, SkipNoPersonaRef, result.Reason)
 }
 
 func TestProposer_PrePatchStateCaptured(t *testing.T) {

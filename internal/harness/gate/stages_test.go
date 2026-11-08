@@ -120,7 +120,11 @@ func TestModePolicy(t *testing.T) {
 			d := run(t, newTestGate(t, fakeClient(t, objs...)), planCandidate(personaUpdateStep(memPatch("300Mi"))), PhaseProposal)
 
 			assert.Equal(t, tt.allowed, d.Allowed(), d.SkipReason())
-			assert.Equal(t, tt.want, verdict(d, GuardrailSelfHealingMode).Numbers["mode"])
+			guardrail := GuardrailSelfHealingMode
+			if tt.want == "yolo" {
+				guardrail = GuardrailUnknownMode // its own reason since B6, not the observe one
+			}
+			assert.Equal(t, tt.want, verdict(d, guardrail).Numbers["mode"])
 			if !tt.allowed && tt.want == dorguv1.SelfHealingModeObserve {
 				assert.Equal(t, SkipReasonObserveMode, d.SkipReason())
 			}

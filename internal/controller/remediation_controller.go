@@ -24,7 +24,9 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -148,6 +150,10 @@ type RemediationController struct {
 	Rollback *remediation.Rollback
 	Logger   logr.Logger
 
+	// Recorder emits the Kubernetes Events for refusals and ticket issuance. Nil
+	// records none.
+	Recorder record.EventRecorder
+
 	// PendingTTL is how long a proposal may wait for approval, counted from its
 	// creation, before it becomes Expired. Zero disables the TTL (an explicit
 	// spec.approval.deadline still applies).
@@ -242,6 +248,7 @@ func (r *RemediationController) recordRejection(ctx context.Context, logger logr
 		return fmt.Errorf("recording the rejection timestamp on %s: %w", action.Name, err)
 	}
 
+	observeDecisionTime(action, time.Now())
 	logger.Info("rejection recorded; suppressing re-proposal", "cooldown", RejectionCooldown)
 	return nil
 }
@@ -323,6 +330,11 @@ func (r *RemediationController) transitionToExpired(
 		return fmt.Errorf("updating status to Expired: %w", err)
 	}
 
+	eventType := corev1.EventTypeNormal
+	if approvedLate {
+		eventType = corev1.EventTypeWarning
+	}
+	emit(r.Recorder, action, eventType, EventReasonExpired, message)
 	return nil
 }
 
@@ -382,6 +394,10 @@ func (r *RemediationController) handleApproved(ctx context.Context, logger logr.
 	if err := r.Status().Update(ctx, action); err != nil {
 		return ctrl.Result{}, fmt.Errorf("updating status to Ticketed: %w", err)
 	}
+	r.reportTicketIssued(action, ticket)
+	if action.Status.ApprovedAt != nil {
+		observeDecisionTime(action, action.Status.ApprovedAt.Time)
+	}
 
 	logger.Info("approval cleared the gate on live state; ticket issued", "expiresAt", ticket.ExpiresAt)
 
@@ -395,12 +411,13 @@ func (r *RemediationController) handleApproved(ctx context.Context, logger logr.
 func (r *RemediationController) refuseAtApproval(
 	ctx context.Context, logger logr.Logger, action *dorguv1.RemediationAction, decision *gate.Decision,
 ) error {
+	if decision.Allowed() {
+		// The gate allowed the plan but its clamps left nothing to issue a ticket for.
+		// That is a refusal like any other: recorded on the decision and counted.
+		decision.RefuseNoPlan()
+	}
 	stage, guardrail := decision.RefusedBy()
 	reason := decision.SkipReason()
-	if guardrail == "" {
-		guardrail = gate.GuardrailNoPlan
-		reason = "the gate cleared the plan but nothing is left to apply after it was clamped"
-	}
 	logger.Info("the gate refused this approval on live state; nothing was applied",
 		"stage", stage, "guardrail", guardrail, "result", decision.Result)
 
@@ -408,8 +425,15 @@ func (r *RemediationController) refuseAtApproval(
 	setCondition(&action.Status.Conditions, dorguv1.ConditionGateRefused, metav1.ConditionTrue,
 		gate.ReasonEnum(guardrail), reason)
 
-	return r.transitionToFailedWithReason(ctx, action, dorguv1.ReasonGateRefusedAtApproval,
-		fmt.Sprintf("refused at approval (%s): %s; nothing was applied", guardrail, reason))
+	message := fmt.Sprintf("refused at approval (%s): %s; nothing was applied", guardrail, reason)
+	if err := r.transitionToFailedWithReason(ctx, action, dorguv1.ReasonGateRefusedAtApproval, message); err != nil {
+		return err
+	}
+	r.reportApprovalRefusal(action, stage, message)
+	if action.Status.ApprovedAt != nil {
+		observeDecisionTime(action, action.Status.ApprovedAt.Time)
+	}
+	return nil
 }
 
 // handleTicketed applies the apply ticket: exactly its patch, and only when the
@@ -423,15 +447,16 @@ func (r *RemediationController) handleTicketed(ctx context.Context, logger logr.
 			// Nothing was written to the cluster, so this must not count as a
 			// failed remediation for the cooldown.
 			logger.Error(err, "remediation refused before apply", "guardrail", precondition.Guardrail)
-			if precondition.Guardrail != "" {
-				// The re-run of the gate at apply refused: persist which guardrail,
-				// as an enum, beside the refusal at approval's.
-				setCondition(&action.Status.Conditions, dorguv1.ConditionGateRefused, metav1.ConditionTrue,
-					gate.ReasonEnum(precondition.Guardrail), precondition.Reason)
+			// The check at apply refused: persist which guardrail, as an enum, beside
+			// the refusal at approval's. The executor always names one.
+			setCondition(&action.Status.Conditions, dorguv1.ConditionGateRefused, metav1.ConditionTrue,
+				gate.ReasonEnum(precondition.Guardrail), precondition.Reason)
+			message := fmt.Sprintf("%v; nothing was applied", err)
+			if err := r.transitionToFailedWithReason(ctx, action, dorguv1.ReasonPreconditionRejected, message); err != nil {
+				return ctrl.Result{}, err
 			}
-			return ctrl.Result{}, r.transitionToFailedWithReason(ctx, action,
-				dorguv1.ReasonPreconditionRejected,
-				fmt.Sprintf("%v; nothing was applied", err))
+			r.reportApplyRefusal(action, precondition.Guardrail, message)
+			return ctrl.Result{}, nil
 		}
 		logger.Error(err, "failed to apply remediation")
 		return ctrl.Result{}, r.transitionToFailed(ctx, action, fmt.Sprintf("apply failed: %v", err))
@@ -445,6 +470,9 @@ func (r *RemediationController) handleTicketed(ctx context.Context, logger logr.
 
 	if err := r.Status().Update(ctx, action); err != nil {
 		return ctrl.Result{}, fmt.Errorf("updating status to Applying: %w", err)
+	}
+	if action.Status.ApprovedAt != nil {
+		metrics.RecordStageDuration(metrics.StageDecisionToApplied, now.Sub(action.Status.ApprovedAt.Time))
 	}
 
 	logger.Info("patch applied, waiting for verification window")
@@ -491,19 +519,27 @@ func (r *RemediationController) handleVerifying(ctx context.Context, logger logr
 
 	action.Status.VerificationResult = string(result)
 
+	var res ctrl.Result
 	switch result {
 	case remediation.VerificationHealthy:
-		return r.handleVerificationHealthy(ctx, logger, action)
+		err = r.handleVerificationHealthy(ctx, logger, action)
 
 	case remediation.VerificationDegraded:
-		return r.handleVerificationDegraded(ctx, logger, action)
+		res, err = r.handleVerificationDegraded(ctx, logger, action)
 
 	case remediation.VerificationUnknown:
-		return r.handleVerificationUnknown(ctx, logger, action)
+		res, err = r.handleVerificationUnknown(ctx, logger, action)
 
 	default:
 		return ctrl.Result{}, r.transitionToFailed(ctx, action, fmt.Sprintf("unexpected verification result: %s", result))
 	}
+	// Counted once the handler's status write has succeeded. A conflict requeues
+	// the reconcile and the verification runs again; counting before the write
+	// would count it twice.
+	if err == nil {
+		recordVerification(action, result)
+	}
+	return res, err
 }
 
 // handleVerificationHealthy completes the remediation and updates the incident.
@@ -514,7 +550,7 @@ func (r *RemediationController) handleVerifying(ctx context.Context, logger logr
 // is recorded as partial with the WorkloadDiverged reason. The phase stays
 // Completed, since verification did pass; the condition and the incident outcome
 // are what a KPI reads to tell a clean heal from an unattributable one.
-func (r *RemediationController) handleVerificationHealthy(ctx context.Context, logger logr.Logger, action *dorguv1.RemediationAction) (ctrl.Result, error) {
+func (r *RemediationController) handleVerificationHealthy(ctx context.Context, logger logr.Logger, action *dorguv1.RemediationAction) error {
 	outcome := r.recordTicketDivergence(ctx, logger, action)
 	if outcome == IncidentOutcomeResolved {
 		outcome = r.creditOrSelfResolve(ctx, logger, action)
@@ -524,8 +560,9 @@ func (r *RemediationController) handleVerificationHealthy(ctx context.Context, l
 	setCondition(&action.Status.Conditions, ConditionVerified, metav1.ConditionTrue, "HealthRestored", "Verification confirmed health restored")
 
 	if err := r.Status().Update(ctx, action); err != nil {
-		return ctrl.Result{}, fmt.Errorf("updating status to Completed: %w", err)
+		return fmt.Errorf("updating status to Completed: %w", err)
 	}
+	recordHealCredit(action, outcome)
 
 	// Update incident with resolution info.
 	if err := r.updateIncidentResolution(ctx, action, outcome); err != nil {
@@ -533,7 +570,7 @@ func (r *RemediationController) handleVerificationHealthy(ctx context.Context, l
 	}
 
 	logger.Info("remediation completed", "incidentOutcome", outcome)
-	return ctrl.Result{}, nil
+	return nil
 }
 
 // recordTicketDivergence compares the live workload to the ticket and returns the
@@ -687,6 +724,8 @@ func (r *RemediationController) rollBack(
 	if err := r.Status().Update(ctx, action); err != nil {
 		return ctrl.Result{}, fmt.Errorf("updating status to RolledBack: %w", err)
 	}
+	// Counted once the write succeeded: a conflict requeues and the rollback runs again.
+	metrics.RecordRollback(rollbackDivergedLabel(outcome))
 
 	// A rollback that left the workload changed is partial, not a rollback.
 	resolution := IncidentOutcomeRollback
@@ -809,7 +848,7 @@ func (r *RemediationController) handleVerificationUnknown(ctx context.Context, l
 
 	// Advance the counter. upsertCondition rewrites the message on every call;
 	// setCondition would keep "retry 1/2" for as long as status and reason stay put.
-	upsertCondition(&action.Status.Conditions, ConditionVerified, metav1.ConditionFalse, "VerificationUnknown",
+	upsertCondition(&action.Status.Conditions, ConditionVerified, metav1.ConditionFalse, unknownRetryReason(retryCount+1),
 		fmt.Sprintf("Verification returned Unknown, retry %d/%d", retryCount+1, maxUnknownRetries))
 
 	if err := r.Status().Update(ctx, action); err != nil {
@@ -918,6 +957,7 @@ func (r *RemediationController) updateIncidentResolution(ctx context.Context, ac
 	if err := r.Update(ctx, &incident); err != nil {
 		return fmt.Errorf("updating IncidentMemory spec: %w", err)
 	}
+	metrics.RecordIncidentResolved(outcome)
 
 	// If resolved, update incident status phase. Re-fetch inside the retry
 	// loop so we pick up the new ResourceVersion after our own spec update
@@ -928,6 +968,7 @@ func (r *RemediationController) updateIncidentResolution(ctx context.Context, ac
 				return err
 			}
 			incident.Status.Phase = PhaseResolved
+			resolveProposalRefusal(&incident.Status.Conditions)
 			return r.Status().Update(ctx, &incident)
 		})
 		if statusErr != nil {
@@ -946,15 +987,24 @@ func (r *RemediationController) getVerificationDelay(action *dorguv1.Remediation
 	return defaultVerificationWait
 }
 
-// getRetryCount extracts the current retry count from the Verified condition message.
+// unknownRetryReasons are the Verified reasons that count Unknown verification
+// retries: index n is the reason once n retries have been recorded. The count is
+// the reason enum, read back by equality, so no message is ever parsed (KPI I5).
+var unknownRetryReasons = [...]string{"", "VerificationUnknownRetry1", "VerificationUnknownRetry2"}
+
+// unknownRetryReason is the Verified reason after n recorded retries.
+func unknownRetryReason(n int) string { return unknownRetryReasons[n] }
+
+// getRetryCount returns how many Unknown verification retries the Verified
+// condition records.
 func (r *RemediationController) getRetryCount(action *dorguv1.RemediationAction) int {
-	for _, c := range action.Status.Conditions {
-		if c.Type == ConditionVerified && c.Reason == "VerificationUnknown" {
-			var attempt, maxAttempts int
-			if _, err := fmt.Sscanf(c.Message, "Verification returned Unknown, retry %d/%d",
-				&attempt, &maxAttempts); err == nil {
-				return attempt
-			}
+	cond := findCondition(action.Status.Conditions, ConditionVerified)
+	if cond == nil {
+		return 0
+	}
+	for n := len(unknownRetryReasons) - 1; n > 0; n-- {
+		if cond.Reason == unknownRetryReasons[n] {
+			return n
 		}
 	}
 	return 0
@@ -965,4 +1015,21 @@ func (r *RemediationController) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&dorguv1.RemediationAction{}).
 		Complete(r)
+}
+
+// recordVerification counts a verification result, and, when it is conclusive,
+// how long the heal took from applied to verified.
+func recordVerification(action *dorguv1.RemediationAction, result remediation.VerificationResult) {
+	switch result {
+	case remediation.VerificationHealthy:
+		metrics.RecordVerification(metrics.VerificationHealthy)
+	case remediation.VerificationDegraded:
+		metrics.RecordVerification(metrics.VerificationDegraded)
+	default:
+		metrics.RecordVerification(metrics.VerificationUnknown)
+		return
+	}
+	if action.Status.AppliedAt != nil {
+		metrics.RecordStageDuration(metrics.StageAppliedToVerified, time.Since(action.Status.AppliedAt.Time))
+	}
 }
