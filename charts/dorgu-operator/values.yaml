@@ -67,6 +67,18 @@ prometheus:
 healthCheck:
   enabled: true
   interval: 60s
+  # Probe failures as health signals. A running container that stays not Ready past
+  # readinessThreshold, or restarts livenessRestarts.count times within
+  # livenessRestarts.window (last exit an Error or SIGKILL), raises a health
+  # incident without waiting for CrashLoopBackOff. An app that legitimately takes
+  # longer than the threshold to become Ready should have a startupProbe (a
+  # container whose startup probe has not passed is never reported) or a longer
+  # threshold. Map to --readiness-threshold, --liveness-restart-count and
+  # --liveness-restart-window.
+  readinessThreshold: 2m
+  livenessRestarts:
+    count: 2
+    window: 10m
 
 # Remediation proposals. A proposal nobody approves within pendingTTL (counted
 # from its creation) becomes Expired: terminal, nothing applied, no cooldown, and

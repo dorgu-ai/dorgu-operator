@@ -25,6 +25,7 @@ import (
 
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
+	"github.com/dorgu-ai/dorgu-operator/internal/detection"
 	"github.com/dorgu-ai/dorgu-operator/internal/events"
 	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
 	"github.com/dorgu-ai/dorgu-operator/internal/llm"
@@ -61,6 +62,11 @@ type operatorConfig struct {
 	// Health check reconciler
 	enableHealthCheck   bool
 	healthCheckInterval time.Duration
+
+	// Probe-failure detection (B9). Zero leaves the detector's default in place.
+	readinessThreshold    time.Duration
+	livenessRestartCount  int
+	livenessRestartWindow time.Duration
 
 	// Metrics-server integration
 	enableMetricsServer bool
@@ -143,6 +149,15 @@ func parseFlagSet(fs *flag.FlagSet, args []string) (operatorConfig, error) {
 			"and never opens an incident or proposes a fix.")
 	fs.DurationVar(&cfg.healthCheckInterval, "health-check-interval", 60*time.Second,
 		"Health check reconciler interval.")
+	fs.DurationVar(&cfg.readinessThreshold, "readiness-threshold", detection.DefaultReadinessThreshold,
+		"How long a running container may stay not Ready before it is reported as a health signal. An app that "+
+			"legitimately takes longer to become Ready should have a startupProbe (a container whose startup probe "+
+			"has not passed is never reported) or this raised.")
+	fs.IntVar(&cfg.livenessRestartCount, "liveness-restart-count", int(detection.DefaultLivenessRestarts),
+		"Container restarts within --liveness-restart-window (last exit an Error or SIGKILL) that count as a "+
+			"liveness-probe failure signal, without waiting for CrashLoopBackOff.")
+	fs.DurationVar(&cfg.livenessRestartWindow, "liveness-restart-window", detection.DefaultLivenessWindow,
+		"The window in which --liveness-restart-count restarts make a signal.")
 	fs.BoolVar(&cfg.enableMetricsServer, "enable-metrics-server", true,
 		"Enable metrics-server integration for detection.")
 
@@ -206,6 +221,11 @@ func (c operatorConfig) validate() error {
 	if c.remediationPendingTTL < 0 {
 		return fmt.Errorf("--remediation-pending-ttl must not be negative (use 0 to disable), got %s",
 			c.remediationPendingTTL)
+	}
+	if c.readinessThreshold < 0 || c.livenessRestartCount < 0 || c.livenessRestartWindow < 0 {
+		return fmt.Errorf("--readiness-threshold, --liveness-restart-count and --liveness-restart-window must not be "+
+			"negative (omit them for the defaults), got %s, %d, %s",
+			c.readinessThreshold, c.livenessRestartCount, c.livenessRestartWindow)
 	}
 	if c.llmCacheTTL < 0 {
 		return fmt.Errorf("--llm-cache-ttl must not be negative (use 0 to disable), got %s", c.llmCacheTTL)

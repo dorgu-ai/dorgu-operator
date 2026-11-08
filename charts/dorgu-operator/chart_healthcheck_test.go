@@ -50,3 +50,25 @@ func TestHealthCheckIntervalOverride(t *testing.T) {
 	mustContain(t, out, "--enable-health-check=true", "detection stays on")
 	mustContain(t, out, "--health-check-interval=30s", "custom interval")
 }
+
+// B9: the probe-failure thresholds are rendered explicitly, so the pod spec states
+// them, and an override reaches the operator.
+func TestProbeDetectionThresholdsAreRendered(t *testing.T) {
+	out := helmTemplate(t)
+	mustContain(t, out, "--readiness-threshold=2m", "default readiness threshold")
+	mustContain(t, out, "--liveness-restart-count=2", "default liveness restart count")
+	mustContain(t, out, "--liveness-restart-window=10m", "default liveness window")
+
+	custom := helmTemplate(t, "healthCheck.readinessThreshold=5m",
+		"healthCheck.livenessRestarts.count=4", "healthCheck.livenessRestarts.window=30m")
+	mustContain(t, custom, "--readiness-threshold=5m", "override")
+	mustContain(t, custom, "--liveness-restart-count=4", "override")
+	mustContain(t, custom, "--liveness-restart-window=30m", "override")
+	mustNotContain(t, custom, "--readiness-threshold=2m", "the override replaces the default")
+}
+
+func TestProbeDetectionThresholdsAbsentWhenDetectionIsOff(t *testing.T) {
+	out := helmTemplate(t, "healthCheck.enabled=false")
+	mustNotContain(t, out, "--readiness-threshold", "no thresholds when detection is off")
+	mustNotContain(t, out, "--liveness-restart", "no thresholds when detection is off")
+}

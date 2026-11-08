@@ -17,7 +17,9 @@ limitations under the License.
 package main
 
 import (
+	"math"
 	"os"
+	"time"
 
 	"github.com/go-logr/logr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -159,6 +161,42 @@ func resolveLLMAPIKey(cfg operatorConfig) string {
 // newPodCollector builds the pod collector with the gate's deny-list, so
 // detection and the gate skip the same namespaces: kube-system, the operator's
 // own, the installer's, and every ClusterPersona excludeNamespaces entry.
-func newPodCollector(c client.Reader, g *gate.Gate, log logr.Logger) *detection.PodCollector {
-	return detection.NewPodCollector(c, log, detection.WithNamespaceFilter(g))
+func newPodCollector(
+	c client.Reader, g *gate.Gate, log logr.Logger, opts ...detection.PodCollectorOption,
+) *detection.PodCollector {
+	all := append([]detection.PodCollectorOption{detection.WithNamespaceFilter(g)}, opts...)
+	return detection.NewPodCollector(c, log, all...)
+}
+
+// terminatedStaleAfter is the grace before a container's last termination counts
+// as history: the detector's default, or twice the health-check interval when
+// that is longer, so a kill is always seen by at least one cycle first.
+func terminatedStaleAfter(cfg operatorConfig) time.Duration {
+	return max(detection.DefaultTerminatedStaleAfter, 2*cfg.healthCheckInterval)
+}
+
+// podCollectorOptions turns the probe-detection flags into collector options.
+//
+// events must be an uncached reader: kubelet probe events are read only for the
+// few pods that already carry a signal, which does not justify an informer on
+// every Event in the cluster.
+func podCollectorOptions(cfg operatorConfig, events client.Reader) []detection.PodCollectorOption {
+	return []detection.PodCollectorOption{
+		detection.WithReadinessThreshold(cfg.readinessThreshold),
+		detection.WithLivenessRestarts(clampInt32(cfg.livenessRestartCount), cfg.livenessRestartWindow),
+		detection.WithTerminatedStaleAfter(terminatedStaleAfter(cfg)),
+		detection.WithEventReader(events),
+	}
+}
+
+// clampInt32 narrows a flag value to int32, saturating instead of wrapping.
+func clampInt32(n int) int32 {
+	switch {
+	case n > math.MaxInt32:
+		return math.MaxInt32
+	case n < math.MinInt32:
+		return math.MinInt32
+	default:
+		return int32(n)
+	}
 }

@@ -248,7 +248,8 @@ func main() {
 		// 2. Create detection collectors. The pod collector skips the namespaces the
 		// gate would refuse (F-13), so platform namespaces raise no incidents.
 		nodeCollector := detection.NewNodeCollector(mgr.GetClient(), setupLog)
-		podCollector := newPodCollector(mgr.GetClient(), pipeline.Gate, setupLog)
+		podCollector := newPodCollector(mgr.GetClient(), pipeline.Gate, setupLog,
+			podCollectorOptions(cfg, mgr.GetAPIReader())...)
 		resourceCollector := detection.NewResourceCollector(mgr.GetClient(), setupLog)
 		controlPlaneCollector := detection.NewControlPlaneCollector(
 			mgr.GetClient(), clientset.CoreV1().RESTClient(), setupLog,

@@ -61,6 +61,9 @@ spec:
             - --enable-health-check={{ .Values.healthCheck.enabled }}
             {{- if .Values.healthCheck.enabled }}
             - --health-check-interval={{ .Values.healthCheck.interval }}
+            - --readiness-threshold={{ .Values.healthCheck.readinessThreshold }}
+            - --liveness-restart-count={{ .Values.healthCheck.livenessRestarts.count }}
+            - --liveness-restart-window={{ .Values.healthCheck.livenessRestarts.window }}
             {{- end }}
             {{- if not .Values.metricsServer.enabled }}
             - --enable-metrics-server=false
