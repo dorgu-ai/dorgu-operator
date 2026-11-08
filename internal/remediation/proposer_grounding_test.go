@@ -204,6 +204,8 @@ func TestProposer_NeverIntroducesAbsentResourceKey(t *testing.T) {
 	assert.False(t, result.Proposed,
 		"raising a CPU limit the workload does not have would introduce throttling")
 	assert.Contains(t, result.SkipReason, "does not set")
+	assert.Equal(t, StagePropose, result.Stage)
+	assert.Equal(t, SkipNoLiveLimit, result.Reason)
 }
 
 // TestProposer_FallsBackToPersonaWhenWorkloadUnreadable keeps the operator

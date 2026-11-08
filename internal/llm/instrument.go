@@ -18,6 +18,7 @@ package llm
 
 import (
 	"context"
+	"time"
 
 	"github.com/dorgu-ai/dorgu-operator/internal/metrics"
 )
@@ -48,8 +49,10 @@ func (i *instrumented) Unwrap() Client { return i.inner }
 
 // Complete forwards the request and records the outcome.
 func (i *instrumented) Complete(ctx context.Context, req Request) (*Response, error) {
+	started := time.Now()
 	resp, err := i.inner.Complete(ctx, req)
 	provider := i.inner.Provider()
+	metrics.RecordLLMRequestDuration(provider, req.Purpose, time.Since(started))
 	if err != nil {
 		metrics.RecordLLMRequest(provider, req.Purpose, metrics.LLMOutcomeError)
 		return nil, err

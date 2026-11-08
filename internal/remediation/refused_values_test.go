@@ -32,6 +32,8 @@ import (
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
 	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
+	"github.com/dorgu-ai/dorgu-operator/internal/metrics"
+	"github.com/dorgu-ai/dorgu-operator/internal/metrics/metricstest"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation/planner"
 )
 
@@ -417,4 +419,22 @@ func planWith(steps ...dorguv1.RemediationStep) *dorguv1.RemediationAction {
 			Explanation: "AI remediation plan",
 		},
 	}
+}
+
+// B6 1.12: the model claims the operator strips are counted, so "how often does
+// the model say something the guardrails had to remove" is a number.
+func TestProposer_B6_StrippedRefusedValuesAreCounted(t *testing.T) {
+	counter := func() float64 {
+		return metricstest.Counter(t, "dorgu_model_claims_stripped_total", map[string]string{"kind": metrics.ClaimRefusedValue})
+	}
+	before := counter()
+
+	p, incident := driftWorld(t)
+	p.planner = &stubPlanner{plan: cleanRoomDriftPlan()}
+	result, err := p.Propose(context.Background(),
+		newOOMDiagnosis(defaultNamespace, groundedPersona, detection.SeverityCritical), incident)
+	require.NoError(t, err)
+	require.True(t, result.Proposed)
+
+	assert.Greater(t, counter(), before, "refused values were removed from the plan, and nothing counted it")
 }

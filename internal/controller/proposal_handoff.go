@@ -18,9 +18,11 @@ package controller
 
 import (
 	"context"
+	"time"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
+	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
 	"github.com/dorgu-ai/dorgu-operator/internal/metrics"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation"
 )
@@ -48,8 +50,17 @@ func (r *HealthCheckReconciler) proposeRemediation(
 		r.Logger.Error(proposeErr, "failed to propose remediation", "incident", incident.Name)
 	case result.Proposed:
 		r.Logger.Info("remediation proposed", "action", result.Action.Name, "incident", incident.Name)
+		metrics.RecordStageDuration(metrics.StageDetectToProposal, time.Since(incident.Spec.Detection.FirstSeen.Time))
+		r.clearProposalRefusal(ctx, incident)
 	case result.SkipReason != "":
-		r.Logger.V(1).Info("remediation skipped", "reason", result.SkipReason, "incident", incident.Name)
+		r.Logger.V(1).Info("remediation skipped", "reason", result.SkipReason, "incident", incident.Name,
+			"stage", result.Stage, "enum", result.Reason)
+		// A refusal by the gate creates no RemediationAction, so the incident is where
+		// it is recorded. The proposer's own skips (nothing to adjust, a restart is
+		// advice) are not refusals and are not.
+		if gate.IsStage(result.Stage) {
+			r.recordProposalRefusal(ctx, incident, result)
+		}
 	}
 }
 

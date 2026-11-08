@@ -253,3 +253,24 @@ func TestCache_EvictionPrefersExpiredEntries(t *testing.T) {
 		t.Error("the new entry is missing")
 	}
 }
+
+// B6 1.12: the request duration histogram, which KPIS.md lists beside the request
+// and token counters, is observed for failed requests too: a slow error is still
+// time the incident spent waiting.
+func TestInstrument_ObservesTheRequestDurationOfSuccessAndError(t *testing.T) {
+	labels := map[string]string{"provider": "instr", "purpose": PurposeDiagnosis}
+	before := metricstest.HistogramCount(t, "dorgu_llm_request_duration_seconds", labels)
+
+	ok := Instrument(recordingClient{resp: &Response{}})
+	if _, err := ok.Complete(context.Background(), Request{Purpose: PurposeDiagnosis}); err != nil {
+		t.Fatal(err)
+	}
+	failing := Instrument(recordingClient{err: errors.New("provider down")})
+	if _, err := failing.Complete(context.Background(), Request{Purpose: PurposeDiagnosis}); err == nil {
+		t.Fatal("expected the provider error")
+	}
+
+	if got := metricstest.HistogramCount(t, "dorgu_llm_request_duration_seconds", labels) - before; got != 2 {
+		t.Errorf("duration samples +%d, want +2 (one success, one error)", got)
+	}
+}

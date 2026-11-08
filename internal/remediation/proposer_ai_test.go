@@ -195,6 +195,8 @@ func TestProposer_AIPath_DenyListSkips(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, result.Proposed)
 	assert.Contains(t, result.SkipReason, "deny-list")
+	assert.Equal(t, gate.StageGuardrails, result.Stage)
+	assert.Equal(t, gate.GuardrailDenyList, result.Reason)
 }
 
 func TestProposer_AIPath_FallbackOnPlannerError(t *testing.T) {

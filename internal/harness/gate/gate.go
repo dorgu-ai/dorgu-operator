@@ -159,6 +159,18 @@ func (g *Gate) Stages() []string {
 // means the gate could not decide (a read failed); callers must treat that as
 // "do not proceed", never as a pass.
 func (g *Gate) Run(ctx context.Context, cand Candidate, phase Phase) (*Decision, error) {
+	d, err := g.evaluate(ctx, cand, phase, string(phase))
+	if err != nil {
+		return nil, err
+	}
+	recordDecision(string(phase), d)
+	return d, nil
+}
+
+// evaluate is Run without the decision counter. metricPhase labels the stage
+// durations it observes; CheckTicket uses it to re-derive a ticket under the
+// Apply phase without counting an extra approval re-check.
+func (g *Gate) evaluate(ctx context.Context, cand Candidate, phase Phase, metricPhase string) (*Decision, error) {
 	if g == nil {
 		return nil, fmt.Errorf("no gate is configured, so nothing can be cleared")
 	}
@@ -172,7 +184,11 @@ func (g *Gate) Run(ctx context.Context, cand Candidate, phase Phase) (*Decision,
 
 	d := newDecision(&cand, phase, metav1.NewTime(g.now()))
 	for _, stage := range g.stages {
-		if err := stage.Run(ctx, &cand, d); err != nil {
+		started := time.Now()
+		err := stage.Run(ctx, &cand, d)
+		observeStage(metricPhase, stage.Name(), started)
+		if err != nil {
+			recordGateError(metricPhase, stage.Name())
 			return nil, fmt.Errorf("gate stage %s: %w", stage.Name(), err)
 		}
 		if d.Result == ResultRefuse {

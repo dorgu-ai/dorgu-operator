@@ -24,6 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
+	"github.com/dorgu-ai/dorgu-operator/internal/metrics"
 )
 
 // resolveCleared closes the incidents whose applications can be shown to have
@@ -212,5 +213,8 @@ func (r *HealthCheckReconciler) markResolved(
 		return fmt.Errorf("recording the resolved phase: %w", statusErr)
 	}
 
+	// No RemediationAction was involved: the incident recovered on its own evidence.
+	// It is counted apart from a heal.
+	metrics.RecordIncidentResolved(metrics.OutcomeCleared)
 	return nil
 }

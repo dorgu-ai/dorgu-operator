@@ -194,6 +194,9 @@ func (r *HealthCheckReconciler) createIncident(
 	switch createErr := r.Client.Create(ctx, im); {
 	case createErr == nil:
 		metrics.RecordIncident(diag.Category, subject.attribution())
+		if first, ok := earliestSignal(diag); ok {
+			metrics.RecordTimeToDetect(now.Sub(first))
+		}
 	case apierrors.IsAlreadyExists(createErr):
 		// The incident is already there and our cached List did not see it yet.
 		// Fold this diagnosis into the object that really exists rather than

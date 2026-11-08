@@ -143,6 +143,8 @@ func TestProposer_GateRefusalIsReportedAsASkip(t *testing.T) {
 
 	assert.False(t, result.Proposed)
 	assert.Equal(t, gate.SkipReasonObserveMode, result.SkipReason)
+	assert.Equal(t, gate.StageModePolicy, result.Stage)
+	assert.Equal(t, gate.GuardrailSelfHealingMode, result.Reason)
 	assert.False(t, result.Suppressed, "observe mode is not a rejection")
 	require.NotNil(t, result.Decision)
 	stage, _ := result.Decision.RefusedBy()

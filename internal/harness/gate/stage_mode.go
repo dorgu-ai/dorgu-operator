@@ -41,7 +41,7 @@ func (s modePolicyStage) Run(ctx context.Context, cand *Candidate, d *Decision) 
 	if err != nil {
 		// Fail closed: a policy that cannot be read is not the default policy.
 		s.g.logUnreadable("selfHealingMode", err, "cannot read the ClusterPersona selfHealing mode; refusing until it is readable")
-		d.refuse(StageModePolicy, GuardrailSelfHealingMode,
+		d.refuse(StageModePolicy, GuardrailPolicyUnreadable,
 			"the self-healing mode could not be read, so nothing can be cleared", nil)
 		return nil
 	}
@@ -64,7 +64,7 @@ func (s modePolicyStage) Run(ctx context.Context, cand *Candidate, d *Decision) 
 		// bypassed it. It is not a mode the harness knows how to honour.
 		s.g.logger.Info("unrecognized selfHealing.mode; refusing", "mode", mode,
 			"persona", cand.Target.Name, "incident", cand.IncidentRef.Name)
-		d.refuse(StageModePolicy, GuardrailSelfHealingMode,
+		d.refuse(StageModePolicy, GuardrailUnknownMode,
 			"the self-healing mode is not one the harness recognizes, so nothing can be cleared", numbers)
 	}
 	return nil

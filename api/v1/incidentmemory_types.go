@@ -250,3 +250,21 @@ type IncidentMemoryList struct {
 func init() {
 	SchemeBuilder.Register(&IncidentMemory{}, &IncidentMemoryList{})
 }
+
+// IncidentMemory condition types written by the operator.
+const (
+	// ConditionProposalRefused records that the gate refused to turn this incident's
+	// diagnosis into a RemediationAction. A refusal at proposal creates no
+	// RemediationAction, so without this the refusal would leave no trace on the
+	// cluster. True while the latest proposal attempt was refused; False once a
+	// later attempt produced a proposal.
+	//
+	// The reason is an enum, "<Stage>_<Reason>": the gate stage that refused and the
+	// guardrail, both CamelCase (ModePolicy_SelfHealingMode, Ground_WorkloadGone).
+	// The message is a sentence for a person and is never parsed.
+	ConditionProposalRefused = "ProposalRefused"
+
+	// ReasonProposalMade is the ConditionProposalRefused reason (status False) once a
+	// RemediationAction was proposed.
+	ReasonProposalMade = "ProposalMade"
+)

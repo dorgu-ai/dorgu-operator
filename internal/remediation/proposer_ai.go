@@ -28,6 +28,7 @@ import (
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
 	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
+	"github.com/dorgu-ai/dorgu-operator/internal/metrics"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation/planner"
 	"github.com/dorgu-ai/dorgu-operator/internal/workload"
 )
@@ -149,6 +150,7 @@ func (p *Proposer) proposeWithPlanner(
 	// here rather than beside each producer because the same defect has already
 	// been found in two producers.
 	if scrubbed := scrubRefusedValues(action); scrubbed > 0 {
+		metrics.RecordModelClaimsStripped(metrics.ClaimRefusedValue, scrubbed)
 		p.logger.Info("removed guardrail-refused values from the plan before persisting it",
 			"action", action.Name, "surfaces", scrubbed)
 	}
@@ -158,6 +160,7 @@ func (p *Proposer) proposeWithPlanner(
 	// comment on caps and cannot make it so, and for Dorgu's own at-the-cap
 	// disclosure, which called sitting at a ceiling being clamped by one.
 	if scrubbed := scrubFabricatedGuardrailClaims(action); scrubbed > 0 {
+		metrics.RecordModelClaimsStripped(metrics.ClaimFabricatedClamp, scrubbed)
 		p.logger.Info("removed guardrail claims no recorded verdict supports",
 			"action", action.Name, "surfaces", scrubbed)
 	}
@@ -193,7 +196,7 @@ func (p *Proposer) seal(
 	final, err := p.gate.Run(ctx, cand, gate.PhaseProposal)
 	if err != nil {
 		p.logger.Error(err, "the gate could not re-verify the final plan; not proposing it", "action", action.Name)
-		return nil, &ProposalResult{SkipReason: "the gate could not re-verify the final plan"}
+		return nil, proposerSkip("the gate could not re-verify the final plan", SkipGateUnavailable, nil)
 	}
 	switch {
 	case !final.Allowed():
@@ -201,10 +204,8 @@ func (p *Proposer) seal(
 	case final.Result != gate.ResultPass:
 		p.logger.Info("the final plan was changed after the gate ruled on it; not proposing it",
 			"action", action.Name, "result", final.Result)
-		return nil, &ProposalResult{
-			SkipReason: "the final plan differed from what the gate cleared, so it was not proposed",
-			Decision:   final,
-		}
+		return nil, proposerSkip("the final plan differed from what the gate cleared, so it was not proposed",
+			SkipPlanChanged, final)
 	}
 	return final, nil
 }

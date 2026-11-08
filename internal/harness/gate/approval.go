@@ -250,6 +250,12 @@ func (p *TicketProblem) Error() string { return p.Reason }
 // cluster could not be read, which the caller must treat as a refusal. It reads
 // the cluster uncached.
 func (g *Gate) CheckTicket(ctx context.Context, action *dorguv1.RemediationAction) (*TicketProblem, error) {
+	problem, err := g.checkTicket(ctx, action)
+	recordApply(problem, err)
+	return problem, err
+}
+
+func (g *Gate) checkTicket(ctx context.Context, action *dorguv1.RemediationAction) (*TicketProblem, error) {
 	if g == nil {
 		return &TicketProblem{GuardrailTicket, "no gate is configured, so no ticket can be honoured"}, nil
 	}
@@ -287,7 +293,7 @@ func (g *Gate) ticketTimingProblem(ticket *dorguv1.ApplyTicket) *TicketProblem {
 		return &TicketProblem{GuardrailTicket, "the apply ticket carries no issue time"}
 	}
 	if ticket.ExpiresAt.IsZero() || !g.now().Before(ticket.ExpiresAt.Time) {
-		return &TicketProblem{GuardrailTicket,
+		return &TicketProblem{GuardrailTicketExpired,
 			fmt.Sprintf("the apply ticket expired at %s", ticket.ExpiresAt.UTC().Format(time.RFC3339))}
 	}
 	if ticket.ExpiresAt.Sub(ticket.IssuedAt.Time) > TicketTTL {
@@ -299,7 +305,9 @@ func (g *Gate) ticketTimingProblem(ticket *dorguv1.ApplyTicket) *TicketProblem {
 // rederiveTicket runs ApprovalRecheck again on live state and requires that it
 // would issue the very ticket on the action.
 func (g *Gate) rederiveTicket(ctx context.Context, action *dorguv1.RemediationAction) (*TicketProblem, error) {
-	decision, err := g.Run(ctx, TicketCandidate(action), PhaseApprovalRecheck)
+	// Not Run: this is one Apply decision, counted by CheckTicket, and not also an
+	// approval re-check of its own.
+	decision, err := g.evaluate(ctx, TicketCandidate(action), PhaseApprovalRecheck, MetricPhaseApply)
 	if err != nil {
 		return nil, err
 	}
