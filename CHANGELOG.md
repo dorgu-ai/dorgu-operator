@@ -7,6 +7,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- **Internal: the health-check reconciler is split into cohesive files, with no behaviour change (harness P1, task 1.11).** `healthcheck_reconciler.go` (1,245 lines) is now the cycle only; the incident store (`incident_store.go`), incident subject and attribution (`incident_subject.go`), resolution (`incident_resolution.go`), the DorguEvent and Kubernetes Event writers (`incident_events.go`) and the proposal hand-off (`proposal_handoff.go`) each have their own file. Lifecycle broadcasts go through a new `Notifier` interface (`notifier.go`); the `WebSocket` field still works.
+- **Internal: the deny-list, diagnosis providers, AI planner and proposer are assembled by a testable `buildHealthPipeline` instead of inline in `main()`.** A wiring test fails if the AI diagnosis provider is gated by a checker that lacks the operator namespace, closing the #51 follow-up.
+
 ## [0.12.1] - 2026-11-07
 
 ### Upgrade notes

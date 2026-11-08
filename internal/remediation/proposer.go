@@ -240,6 +240,14 @@ func NewProposer(c client.Client, safety SafetyChecker, logger logr.Logger, opts
 	return p
 }
 
+// Safety returns the safety checker the proposer consults. It is exposed so
+// wiring tests can assert the proposer and the diagnosis provider share one
+// deny-list.
+func (p *Proposer) Safety() SafetyChecker { return p.safety }
+
+// Planner returns the AI planner, or nil when planning is disabled.
+func (p *Proposer) Planner() planner.Planner { return p.planner }
+
 // withholdFromModel reports whether diag touches any protected namespace.
 func (p *Proposer) withholdFromModel(ctx context.Context, diag diagnosis.Diagnosis) bool {
 	_, protected := diagnosis.ProtectedNamespace(ctx, p.safety, diag)
