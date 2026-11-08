@@ -242,7 +242,7 @@ func main() {
 		// 1. Assemble the deny-list, diagnosis providers, AI planner and proposer.
 		// buildHealthPipeline is the one place they are wired together, and it is
 		// built first because detection reads the same deny-list the gate does.
-		pipeline := buildHealthPipeline(mgr.GetClient(), cfg, operatorNS, setupLog)
+		pipeline := buildHealthPipeline(mgr.GetClient(), mgr.GetAPIReader(), cfg, operatorNS, setupLog)
 		diagnosisEngine := pipeline.DiagnosisEngine
 
 		// 2. Create detection collectors. The pod collector skips the namespaces the
@@ -323,12 +323,13 @@ func main() {
 		}
 
 		// 9. Register remediation controller (executor + verifier + rollback).
-		executor := remediation.NewExecutor(mgr.GetClient(), setupLog)
+		executor := remediation.NewExecutor(mgr.GetClient(), pipeline.Gate, setupLog)
 		verifier := remediation.NewVerifier(detectionEngine, mgr.GetClient(), setupLog)
 		rollbackHandler := remediation.NewRollback(mgr.GetClient(), setupLog)
 
 		if err := (&controller.RemediationController{
 			Client:   mgr.GetClient(),
+			Gate:     pipeline.Gate,
 			Executor: executor,
 			Verifier: verifier,
 			Rollback: rollbackHandler,

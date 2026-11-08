@@ -26,6 +26,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -34,6 +35,7 @@ import (
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
+	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation"
 )
 
@@ -134,7 +136,7 @@ var _ = Describe("RemediationController rollback scope (CR5-02)", func() {
 				},
 			},
 		}
-		Expect(k8sClient.Create(ctx, deploy)).To(Succeed())
+		Expect(k8sClient.Create(ctx, deploy, client.FieldOwner("kubectl-create"))).To(Succeed())
 		return deploy
 	}
 
@@ -200,19 +202,29 @@ var _ = Describe("RemediationController rollback scope (CR5-02)", func() {
 		collector := &remediationMockCollector{signals: signals}
 		return &RemediationController{
 			Client:   k8sClient,
-			Executor: remediation.NewExecutor(k8sClient, testLogger),
+			Gate:     envtestGate(testLogger),
+			Executor: remediation.NewExecutor(k8sClient, envtestGate(testLogger), testLogger),
 			Verifier: remediation.NewVerifier(detection.NewEngine(testLogger, collector), k8sClient, testLogger),
 			Rollback: remediation.NewRollback(k8sClient, testLogger),
 			Logger:   testLogger.WithName("rollback-scope-test"),
 		}
 	}
 
-	driveToRolledBack := func(controller *RemediationController, action *dorguv1.RemediationAction) *dorguv1.RemediationAction {
-		action.Status = dorguv1.RemediationActionStatus{Phase: RemediationPhaseApproved}
-		Expect(k8sClient.Status().Update(ctx, action)).To(Succeed())
+	// driveToRolledBack approves the action (the gate re-checks it and the operator
+	// applies the ticket), then lets afterApply play the CLI: it changes the live
+	// workload the way a patch with the user's own credentials would, once the
+	// ticket exists. Verification then degrades and the change is rolled back.
+	driveToRolledBack := func(
+		controller *RemediationController, action *dorguv1.RemediationAction, afterApply func(),
+	) *dorguv1.RemediationAction {
+		approveProposed(ctx, action)
 
 		key := client.ObjectKeyFromObject(action)
-		for range 3 {
+		_, err := controller.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
+		afterApply()
+		time.Sleep(1100 * time.Millisecond)
+		for range 2 {
 			_, err := controller.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
 			time.Sleep(1100 * time.Millisecond)
@@ -236,10 +248,15 @@ var _ = Describe("RemediationController rollback scope (CR5-02)", func() {
 	It("records the Deployment the rollback could not reach", func() {
 		persona := createPersona("rs-diverged-persona")
 		incident := createIncident("rs-diverged-incident", persona.Name)
-		healedDeployment("rs-diverged-persona", "512Mi")
+		deploy := healedDeployment("rs-diverged-persona", "256Mi")
 		action := groundedAction("rs-diverged-action", persona.Name, incident.Name, "rs-diverged-persona")
 
-		out := driveToRolledBack(degradedController(persona.Name), action)
+		out := driveToRolledBack(degradedController(persona.Name), action, func() {
+			// The CLI patches the Deployment to 512Mi with the user's credentials.
+			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy)).To(Succeed())
+			deploy.Spec.Template.Spec.Containers[0].Resources.Limits[corev1.ResourceMemory] = resource.MustParse("512Mi")
+			Expect(k8sClient.Update(ctx, deploy, client.FieldOwner(gate.DorguFieldManager))).To(Succeed())
+		})
 
 		// The half that always worked.
 		var rolledBackPersona dorguv1.ApplicationPersona
@@ -265,7 +282,7 @@ var _ = Describe("RemediationController rollback scope (CR5-02)", func() {
 		healedDeployment("rs-clean-persona", "256Mi")
 		action := groundedAction("rs-clean-action", persona.Name, incident.Name, "rs-clean-persona")
 
-		out := driveToRolledBack(degradedController(persona.Name), action)
+		out := driveToRolledBack(degradedController(persona.Name), action, func() {})
 
 		cond := conditionOf(out, ConditionWorkloadDiverged)
 		Expect(cond).NotTo(BeNil())
@@ -276,10 +293,20 @@ var _ = Describe("RemediationController rollback scope (CR5-02)", func() {
 	It("will not claim a clean rollback it could not verify", func() {
 		persona := createPersona("rs-unread-persona")
 		incident := createIncident("rs-unread-incident", persona.Name)
-		// No Deployment is created: the workload cannot be read.
-		action := groundedAction("rs-unread-action", persona.Name, incident.Name, "rs-unread-missing")
+		deploy := healedDeployment("rs-unread-persona", "256Mi")
+		action := groundedAction("rs-unread-action", persona.Name, incident.Name, "rs-unread-persona")
 
-		out := driveToRolledBack(degradedController(persona.Name), action)
+		out := driveToRolledBack(degradedController(persona.Name), action, func() {
+			// The Deployment is deleted and re-created after the ticket: a different
+			// workload (new UID), so Dorgu cannot say whether the one the heal
+			// patched still carries the change.
+			Expect(k8sClient.Delete(ctx, deploy)).To(Succeed())
+			Eventually(func() bool {
+				var gone appsv1.Deployment
+				return apierrors.IsNotFound(k8sClient.Get(ctx, client.ObjectKeyFromObject(deploy), &gone))
+			}).Should(BeTrue())
+			healedDeployment("rs-unread-persona", "256Mi")
+		})
 
 		cond := conditionOf(out, ConditionWorkloadDiverged)
 		Expect(cond).NotTo(BeNil())

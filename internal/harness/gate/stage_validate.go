@@ -58,6 +58,11 @@ func (validateStage) Run(_ context.Context, cand *Candidate, d *Decision) error 
 		return nil
 	}
 
+	// What kind of change this is belongs to the rules, not to the plan's wording.
+	if !validateActionClass(cand, d) {
+		return nil
+	}
+
 	// Shape before content: a command or patch the gate cannot parse with
 	// certainty is refused, not interpreted (R9, R10).
 	if !validateStepCommands(d) || !validatePatchShapes(d) {
@@ -103,6 +108,34 @@ func validateStepTypes(cand *Candidate, d *Decision) bool {
 
 	d.pass(StageValidate, GuardrailStepType, "every step is a typed step", nil)
 	return true
+}
+
+// ClassResourceAdjustment is the rules' SuggestedAction for a diagnosis whose
+// remedy is a persona resource change, the one class that may carry a
+// persona-update. It is the value the rule engine writes; the gate does not
+// import the diagnosis package, so it is named here.
+const ClassResourceAdjustment = "resource-adjustment"
+
+// validateActionClass refuses a plan whose action class is not the one the rules
+// recommended (V2). The plan's steps are authored by a model on the AI path, and
+// a model can word a plan however it likes; it cannot turn the rules' "fix the
+// deployment" (an image-pull failure) into a persona-update memory patch that
+// then clears every safety check on its own merits. A persona-update is admitted
+// only when the rules recommended a resource adjustment. An advisory plan
+// (manual, restart, scale, ...) applies nothing, so it is admitted whatever the
+// rules said. The check is proposal-only: at approval the spec is pinned to the
+// generation the proposal cleared. An empty recommendation is not a match.
+func validateActionClass(cand *Candidate, d *Decision) bool {
+	if d.Phase != PhaseProposal || !hasPersonaUpdate(d) {
+		return true
+	}
+	if cand.Facts.SuggestedAction == ClassResourceAdjustment {
+		return true
+	}
+	d.refuse(StageValidate, GuardrailActionClass,
+		"the plan changes the persona, but the rules did not recommend a resource adjustment for this diagnosis; the rules own the kind of change",
+		map[string]string{"rulesAction": truncate(cand.Facts.SuggestedAction, 64)})
+	return false
 }
 
 // resetAuthorVerdicts discards every verdict the plan arrived with. A verdict is

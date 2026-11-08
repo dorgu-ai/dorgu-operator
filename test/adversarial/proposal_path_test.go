@@ -55,7 +55,7 @@ func TestOP02UnlabelledActionsEvadeRateLimit(t *testing.T) {
 	createIncident(t, ns)
 
 	for i := range gate.DefaultMaxRemediationsPerHour {
-		createRA(t, newRA(ns, fmt.Sprintf("unlabelled-%d", i), withoutLabels()), "Pending")
+		createHandMadeRA(t, newRA(ns, fmt.Sprintf("unlabelled-%d", i), withoutLabels()), "Pending")
 	}
 
 	g := gate.New(k8sClient, logr.Discard())
@@ -269,7 +269,7 @@ func (f plannerFunc) PlanRemediation(context.Context, planner.RemediationContext
 func TestOP10NoProposalWithHealthCheckDisabled(t *testing.T) {
 	ns := newNamespace(t, "op-10")
 	createPersona(t, ns)
-	createDeployment(t, ns, baselineMemory)
+	createDeployment(t, ns)
 	createOOMKilledPod(t, ns)
 
 	// With the health check off, the ApplicationPersona reconciler is the only
@@ -448,6 +448,7 @@ func gateRun(t *testing.T, g *gate.Gate, ra *dorguv1.RemediationAction) *gate.De
 		IncidentRef: ra.Spec.IncidentRef,
 		Steps:       ra.Spec.Steps,
 		Action:      ra.Spec.Action,
+		Facts:       gate.Facts{SuggestedAction: gate.ClassResourceAdjustment},
 	}, gate.PhaseProposal)
 	if err != nil {
 		t.Fatalf("running the gate for %s/%s: %v", ra.Namespace, ra.Name, err)

@@ -23,8 +23,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
-
-	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 )
 
 // --- R1: the gate measures exactly what the executor applies --------------------
@@ -68,7 +66,7 @@ func TestR1_NothingLeftInActionPatchStillCountsAsAChange(t *testing.T) {
 
 func recheckCandidate(uid string) Candidate {
 	cand := planCandidate(personaUpdateStep(memPatch("384Mi")))
-	cand.Facts.PriorObserved = &dorguv1.GateObserved{WorkloadUID: uid}
+	cand.prior = priorObservation(uid)
 	return cand
 }
 
@@ -82,7 +80,7 @@ func TestR2_DeletedWorkloadRefusesAtApproval(t *testing.T) {
 }
 
 func TestR2_AmbiguousWorkloadRefusesAtApproval(t *testing.T) {
-	second := deployment("64Mi", func(d *appsv1.Deployment) { d.Name = "web-canary"; d.UID = "uid-2" })
+	second := deployment("64Mi", canaryOf)
 	g := newTestGate(t, fakeClient(t, persona("256Mi"), deployment("256Mi"), second))
 
 	stage, guardrail := refusedBy(t, run(t, g, recheckCandidate("uid-1"), PhaseApprovalRecheck))

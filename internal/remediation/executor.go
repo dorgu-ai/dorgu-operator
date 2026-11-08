@@ -19,6 +19,7 @@ package remediation
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/go-logr/logr"
@@ -34,31 +35,52 @@ import (
 // failure cooldown exists to protect against (F-03).
 type PreconditionError struct {
 	Reason string
+
+	// Guardrail is the machine-readable reason (a gate.Guardrail* value) when the
+	// gate refused; empty for a phase or wiring problem. Callers branch on it,
+	// never on Reason.
+	Guardrail string
 }
 
 func (e *PreconditionError) Error() string {
 	return fmt.Sprintf("precondition failed: %s", e.Reason)
 }
 
-// Executor applies approved RemediationAction patches to ApplicationPersona CRDs.
+// Executor applies the apply ticket of an approved RemediationAction to its
+// ApplicationPersona.
+//
+// It applies exactly status.applyTicket and nothing else: spec.steps[] is the
+// plan a human approved, and the ticket is that plan after the gate re-measured
+// it on live state at approval. spec.action is deprecated and never read here.
 type Executor struct {
 	client client.Client
+	gate   *gate.Gate
 	logger logr.Logger
 }
 
-// NewExecutor creates a new Executor.
-func NewExecutor(c client.Client, logger logr.Logger) *Executor {
+// NewExecutor creates a new Executor. The gate owns the check that a ticket is
+// still good to apply (CheckTicket); an Executor with no gate applies nothing.
+func NewExecutor(c client.Client, g *gate.Gate, logger logr.Logger) *Executor {
 	return &Executor{
 		client: c,
+		gate:   g,
 		logger: logger.WithName("executor"),
 	}
 }
 
-// Apply validates preconditions and applies the JSON merge patch to the target ApplicationPersona.
-// A precondition rejection is returned as a *PreconditionError: nothing was
-// written, so callers can distinguish it from a real apply failure.
+// Apply applies the ticket's patch to the target ApplicationPersona, and only
+// when the gate says the ticket stands: present, well-formed, unexpired, and
+// its workload still the one it was measured against.
+//
+// A refusal is returned as a *PreconditionError: nothing was written, so callers
+// can distinguish it from a real apply failure. An unreadable workload is a
+// refusal too, never a pass.
 func (e *Executor) Apply(ctx context.Context, action *dorguv1.RemediationAction) error {
-	if err := e.validatePreconditions(action); err != nil {
+	if err := e.validatePreconditions(ctx, action); err != nil {
+		var problem *gate.TicketProblem
+		if errors.As(err, &problem) {
+			return &PreconditionError{Reason: problem.Reason, Guardrail: problem.Guardrail}
+		}
 		return &PreconditionError{Reason: err.Error()}
 	}
 
@@ -74,7 +96,7 @@ func (e *Executor) Apply(ctx context.Context, action *dorguv1.RemediationAction)
 	}
 
 	// Apply JSON merge patch.
-	if err := e.applyPatch(ctx, persona, action.Spec.Action.Patch.Raw); err != nil {
+	if err := e.applyPatch(ctx, persona, action.Status.ApplyTicket.Patch.Raw); err != nil {
 		return fmt.Errorf("applying patch: %w", err)
 	}
 
@@ -86,30 +108,21 @@ func (e *Executor) Apply(ctx context.Context, action *dorguv1.RemediationAction)
 	return nil
 }
 
-// validatePreconditions checks that the action is ready to be applied.
-func (e *Executor) validatePreconditions(action *dorguv1.RemediationAction) error {
-	if action.Status.Phase != phaseApproved {
-		return fmt.Errorf("action must be in Approved phase, got %q", action.Status.Phase)
+// validatePreconditions checks that the action may be applied: it is Ticketed
+// and the gate honours its ticket. Nothing here judges the change; the gate did
+// that at approval, and this only confirms the clearance it wrote still stands.
+func (e *Executor) validatePreconditions(ctx context.Context, action *dorguv1.RemediationAction) error {
+	if action.Status.Phase != phaseTicketed {
+		return fmt.Errorf("action must be in Ticketed phase, got %q", action.Status.Phase)
 	}
 
-	if action.Spec.Action.Type != "persona-update" {
-		return fmt.Errorf("unsupported action type %q, only persona-update is supported", action.Spec.Action.Type)
+	problem, err := e.gate.CheckTicket(ctx, action)
+	if err != nil {
+		return fmt.Errorf("the apply ticket could not be checked against the live workload: %w", err)
 	}
-
-	if action.Spec.Action.Patch == nil || len(action.Spec.Action.Patch.Raw) == 0 {
-		return fmt.Errorf("patch must not be nil or empty")
+	if problem != nil {
+		return problem
 	}
-
-	if action.Spec.Action.PrePatchState == nil || len(action.Spec.Action.PrePatchState.Raw) == 0 {
-		return fmt.Errorf("prePatchState must not be nil or empty (required for rollback)")
-	}
-
-	// Validate patch is valid JSON.
-	var patchData map[string]any
-	if err := json.Unmarshal(action.Spec.Action.Patch.Raw, &patchData); err != nil {
-		return fmt.Errorf("patch is not valid JSON: %w", err)
-	}
-
 	return nil
 }
 

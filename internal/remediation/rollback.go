@@ -24,6 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
+	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
 )
 
 // Rollback reverses a remediation by applying the prePatchState as a merge patch.
@@ -40,37 +41,67 @@ func NewRollback(c client.Client, logger logr.Logger) *Rollback {
 	}
 }
 
-// Execute reverses the remediation patch by applying prePatchState to restore original values.
-func (r *Rollback) Execute(ctx context.Context, action *dorguv1.RemediationAction) error {
+// Execute reverses the remediation by restoring the baseline the gate recorded
+// when it cleared the plan (status.gate.prePatchState): the live values the change
+// was measured against, never the spec's own prePatchState, which whoever wrote
+// the RemediationAction chose. It restores only the fields that still hold what the
+// ticket wrote: a field someone changed since is left alone and returned in
+// RollbackResult.Skipped, so the caller can record the rollback as partial (F4).
+//
+// A change is only ever applied under an apply ticket, so an action without one
+// has nothing to roll back and is refused. The ticket's expiry and workload
+// version are deliberately not checked here: a heal that degrades well after its
+// ticket expired must still be undone, and by then the Deployment has been
+// patched.
+func (r *Rollback) Execute(ctx context.Context, action *dorguv1.RemediationAction) (*RollbackResult, error) {
 	// Validate rollback is enabled.
 	if action.Spec.Rollback == nil || !action.Spec.Rollback.Enabled {
-		return fmt.Errorf("rollback is not enabled for action %s", action.Name)
-	}
-
-	// Validate prePatchState exists.
-	if action.Spec.Action.PrePatchState == nil || len(action.Spec.Action.PrePatchState.Raw) == 0 {
-		return fmt.Errorf("prePatchState is nil or empty for action %s, cannot rollback", action.Name)
+		return nil, fmt.Errorf("rollback is not enabled for action %s", action.Name)
 	}
 
 	// Fetch the target persona.
 	persona, err := r.getTargetPersona(ctx, action)
 	if err != nil {
-		return fmt.Errorf("getting target persona for rollback: %w", err)
+		return nil, fmt.Errorf("getting target persona for rollback: %w", err)
 	}
 
-	// Create an executor to reuse the patch logic — prePatchState is the reverse patch.
-	exec := &Executor{client: r.client, logger: r.logger}
-	if err := exec.applyPatch(ctx, persona, action.Spec.Action.PrePatchState.Raw); err != nil {
-		return fmt.Errorf("applying rollback patch: %w", err)
+	// The gate decides what may be restored: the baseline it recorded, and only
+	// for fields that still hold what Dorgu wrote (F4).
+	plan, problem := gate.PlanRollback(action, persona)
+	if problem != nil {
+		return nil, fmt.Errorf("cannot roll back action %s: %w", action.Name, problem)
 	}
 
-	r.logger.Info("successfully rolled back remediation",
+	if plan.Patch != nil {
+		// Create an executor to reuse the patch logic: the baseline is the reverse patch.
+		exec := &Executor{client: r.client, logger: r.logger}
+		if err := exec.applyPatch(ctx, persona, plan.Patch.Raw); err != nil {
+			return nil, fmt.Errorf("applying rollback patch: %w", err)
+		}
+	}
+
+	r.logger.Info("rolled back remediation",
 		"action", action.Name,
 		"persona", fmt.Sprintf("%s/%s", persona.Namespace, persona.Name),
+		"restored", plan.Restored, "left", len(plan.Skipped),
 	)
 
-	return nil
+	return &RollbackResult{Restored: plan.Restored, Skipped: plan.Skipped}, nil
 }
+
+// RollbackResult is what a rollback did to the persona.
+type RollbackResult struct {
+	// Restored are the persona fields put back to the gate's baseline.
+	Restored []string
+
+	// Skipped are the fields left alone because the persona no longer holds what
+	// Dorgu wrote there (a human edited it after the heal), or because no baseline
+	// was recorded for them.
+	Skipped []gate.RollbackField
+}
+
+// Partial reports whether the rollback left some of Dorgu's change in place.
+func (r *RollbackResult) Partial() bool { return r != nil && len(r.Skipped) > 0 }
 
 // getTargetPersona fetches the ApplicationPersona referenced by the action.
 func (r *Rollback) getTargetPersona(ctx context.Context, action *dorguv1.RemediationAction) (*dorguv1.ApplicationPersona, error) {

@@ -171,7 +171,7 @@ type ResolutionInfo struct {
 	// Outcome is the result of the remediation.
 	// "acknowledged" means a human approved an advisory plan: the decision is
 	// recorded, nothing was applied, and the incident is still open.
-	// +kubebuilder:validation:Enum=resolved;partial;failed;rollback;acknowledged
+	// +kubebuilder:validation:Enum=resolved;partial;failed;rollback;acknowledged;self-resolved
 	// +optional
 	Outcome string `json:"outcome,omitempty"`
 

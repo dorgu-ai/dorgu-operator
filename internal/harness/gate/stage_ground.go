@@ -44,13 +44,20 @@ func (s groundStage) Run(ctx context.Context, cand *Candidate, d *Decision) erro
 	now := metav1.NewTime(s.g.now())
 	key := personaKey(cand)
 
-	ref, obs, ambiguous, err := s.observeWorkload(ctx, key.Namespace, key.Name, now)
+	// A stale cache must not decide an approval: the live workload is read
+	// uncached there, so the UID and resourceVersion the ticket binds are the API
+	// server's.
+	var reader client.Reader = s.g.client
+	if d.Phase == PhaseApprovalRecheck {
+		reader = s.g.reader
+	}
+	ref, obs, ambiguous, err := s.observeWorkload(ctx, reader, key.Namespace, key.Name, now)
 	if err != nil {
 		return err
 	}
 	d.WorkloadRef, d.Observation = ref, obs
 
-	persona, err := s.readPersona(ctx, cand, key)
+	persona, err := s.readPersona(ctx, reader, cand, key)
 	if err != nil {
 		return err
 	}
@@ -77,6 +84,14 @@ func (s groundStage) Run(ctx context.Context, cand *Candidate, d *Decision) erro
 		if !s.checkStillTheSameWorkload(cand, d) {
 			return nil
 		}
+	} else if ambiguous && hasPersonaUpdate(d) {
+		// Several Deployments answer to this persona and the gate cannot tell which
+		// one it is changing. Falling back to the persona as the baseline would
+		// measure the change against a point-in-time import that may be months stale,
+		// and a stale persona lets a 75% decrease pass (M3).
+		d.refuse(StageGround, GuardrailWorkloadAmbiguous,
+			"more than one Deployment answers to this persona, so the change cannot be measured against a live workload and a persona baseline is not trusted", nil)
+		return nil
 	}
 
 	// A change to a persona that is not there has nowhere to land, at proposal as
@@ -109,12 +124,12 @@ func (s groundStage) Run(ctx context.Context, cand *Candidate, d *Decision) erro
 // unresolved workload (every consumer treats it as owned and sizes from the
 // persona), at approval Run refuses it (R2).
 func (s groundStage) observeWorkload(
-	ctx context.Context, namespace, name string, now metav1.Time,
+	ctx context.Context, reader client.Reader, namespace, name string, now metav1.Time,
 ) (ref *dorguv1.WorkloadRef, obs *workload.Observation, ambiguous bool, err error) {
 	if namespace == "" || name == "" {
 		return workload.UnresolvedRef(now), nil, false, nil
 	}
-	obs, err = workload.Observe(ctx, s.g.client, namespace, name)
+	obs, err = workload.Observe(ctx, reader, namespace, name)
 	if err != nil {
 		var amb *workload.AmbiguousError
 		if errors.As(err, &amb) {
@@ -134,12 +149,12 @@ func (s groundStage) observeWorkload(
 
 // readPersona reads the target persona, nil when it does not exist. It returns an
 // error only for a failed read.
-func (s groundStage) readPersona(ctx context.Context, cand *Candidate, key client.ObjectKey) (*dorguv1.ApplicationPersona, error) {
+func (s groundStage) readPersona(ctx context.Context, reader client.Reader, cand *Candidate, key client.ObjectKey) (*dorguv1.ApplicationPersona, error) {
 	if cand.Target.Kind != kindApplicationPersona || key.Namespace == "" {
 		return nil, nil
 	}
 	var persona dorguv1.ApplicationPersona
-	if err := s.g.client.Get(ctx, key, &persona); err != nil {
+	if err := reader.Get(ctx, key, &persona); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil, nil
 		}
@@ -152,12 +167,31 @@ func (s groundStage) readPersona(ctx context.Context, cand *Candidate, key clien
 // replaced since the proposal: a Deployment that is gone, or one with a different
 // UID, is not the workload the facts the plan was reasoned against describe.
 //
-// A plan proposed against no live workload (no prior UID) has nothing to be
-// replaced; it is re-measured against whatever is there now.
+// The prior observation is the operator's own record of the proposal, derived by
+// ApprovalCandidate from status; a caller cannot supply one. Without it, or
+// without a workload UID in it, there is nothing the live cluster can be compared
+// to, so the approval is refused (M2): a hand-made RemediationAction, a spec
+// edited since it was cleared, and a plan that was never bound to a workload all
+// stop here.
 func (groundStage) checkStillTheSameWorkload(cand *Candidate, d *Decision) bool {
-	prior := cand.Facts.PriorObserved
-	if prior == nil || prior.WorkloadUID == "" {
-		return true
+	if cand.priorProblem != "" {
+		guardrail := cand.priorGuard
+		if guardrail == "" {
+			guardrail = GuardrailNoProposalRecord
+		}
+		d.refuse(StageGround, guardrail, cand.priorProblem, nil)
+		return false
+	}
+	prior := cand.prior
+	if prior == nil {
+		d.refuse(StageGround, GuardrailNoProposalRecord,
+			"the approval carries no record of what the operator observed when it proposed, so the live cluster has nothing to be compared to", nil)
+		return false
+	}
+	if prior.WorkloadUID == "" {
+		d.refuse(StageGround, GuardrailWorkloadUnbound,
+			"the plan was proposed without a live workload to bind it to, so an approval cannot be tied to the workload it would change; the steps stand as advice", nil)
+		return false
 	}
 	live := d.Observed.WorkloadUID
 	switch {

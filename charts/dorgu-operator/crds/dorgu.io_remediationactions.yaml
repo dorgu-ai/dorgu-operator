@@ -62,7 +62,11 @@ spec:
               action:
                 description: |-
                   Action describes the remediation to apply.
-                  Retained for back-compat: when Steps is empty, Action is the plan of record.
+
+                  DEPRECATED: steps[] is the only plan. Action is derived from the steps for
+                  back-compat and is never what the operator applies: the executor applies
+                  status.applyTicket, which the gate computes from steps[] at approval. It is
+                  retained for one release and will be removed.
                 properties:
                   patch:
                     description: Patch is the JSON merge patch to apply to the Persona
@@ -199,10 +203,9 @@ spec:
                 type: object
               steps:
                 description: |-
-                  Steps is an ordered, multi-step remediation plan. When non-empty it is the
-                  plan of record (and supersedes the single Action for planning purposes).
-                  NOTE (this sprint): Steps is populated and validated but not yet executed;
-                  the controller/executor continue to apply the single Action.
+                  Steps is the ordered remediation plan and the only plan: the operator's
+                  approval re-check turns its persona-update steps into the apply ticket, and
+                  the ticket is exactly what is applied.
                 items:
                   description: |-
                     RemediationStep is a single ordered action within a multi-step remediation plan.
@@ -483,6 +486,104 @@ spec:
                 description: AppliedAt is when the remediation patch was applied.
                 format: date-time
                 type: string
+              applyTicket:
+                description: |-
+                  ApplyTicket is what the gate cleared at approval: the one change that may be
+                  applied, bound to the live workload it was measured against. The executor and
+                  the CLI apply exactly this and nothing else, and refuse when it is missing,
+                  expired, or its workload no longer matches. Written by the operator only.
+                properties:
+                  container:
+                    description: |-
+                      Container is the container in that Deployment whose resources the ticket
+                      changes.
+                    type: string
+                  expiresAt:
+                    description: |-
+                      ExpiresAt is when the ticket stops being valid. Nothing is applied under an
+                      expired ticket.
+                    format: date-time
+                    type: string
+                  issuedAt:
+                    description: |-
+                      IssuedAt is when the operator wrote the ticket. Operator-set. A client that
+                      recorded its approval at time T accepts only a ticket issued at or after T,
+                      so a ticket that was already there before the approval cannot be mistaken for
+                      the answer to it.
+                    format: date-time
+                    type: string
+                  observedGeneration:
+                    description: |-
+                      ObservedGeneration is metadata.generation of the Deployment when the ticket
+                      was written. Generation moves only when the Deployment's spec does, so unlike
+                      resourceVersion it is not disturbed by status or scale writes: a client that
+                      compares it asks "did the spec change under the ticket", which is the question.
+                    format: int64
+                    type: integer
+                  observedResourceVersion:
+                    description: |-
+                      ObservedResourceVersion is the resourceVersion of the Deployment when the
+                      ticket was written. A ticket whose workload has since been changed by
+                      someone else is stale and is refused.
+                    type: string
+                  patch:
+                    description: |-
+                      Patch is the JSON merge patch the gate cleared, in persona-spec shape
+                      ({"spec":{"resources":{...}}}): every persona-update step of the plan,
+                      clamped and merged in order.
+                    x-kubernetes-preserve-unknown-fields: true
+                  verdicts:
+                    description: Verdicts is every guardrail the approval re-check
+                      ran and what each decided.
+                    items:
+                      description: GateVerdict is one guardrail's decision.
+                      properties:
+                        guardrail:
+                          description: |-
+                            Guardrail names the check within the stage, e.g. blast-radius,
+                            rate-limit, deny-list.
+                          type: string
+                        numbers:
+                          additionalProperties:
+                            type: string
+                          description: |-
+                            Numbers carries the inputs of the verdict (baseline, requested, ratio,
+                            ceiling) as data, so no client has to parse them out of Reason.
+                          type: object
+                        reason:
+                          description: Reason is a sentence safe to show a human.
+                            It never contains model text.
+                          maxLength: 1024
+                          type: string
+                        stage:
+                          description: |-
+                            Stage is the pipeline stage: Validate, Ground, Ownership, Guardrails,
+                            ModePolicy or DedupCooldown.
+                          type: string
+                        verdict:
+                          description: Verdict is pass, clamp or refuse.
+                          enum:
+                          - pass
+                          - clamp
+                          - refuse
+                          type: string
+                      required:
+                      - guardrail
+                      - stage
+                      - verdict
+                      type: object
+                    maxItems: 64
+                    type: array
+                    x-kubernetes-list-type: atomic
+                  workloadUID:
+                    description: |-
+                      WorkloadUID is the UID of the live Deployment the ticket was measured
+                      against. A Deployment with another UID is another workload, and the ticket
+                      does not apply to it.
+                    type: string
+                required:
+                - expiresAt
+                type: object
               approvedAt:
                 description: ApprovedAt is when the remediation was approved.
                 format: date-time
@@ -720,6 +821,10 @@ spec:
               phase:
                 description: |-
                   Phase tracks the remediation lifecycle.
+                  Ticketed means a human approved the plan and the gate re-checked it on live
+                  state and cleared it: status.applyTicket is what may be applied, and nothing
+                  else. Apply refuses without a valid, unexpired ticket.
+
                   Acknowledged is the terminal phase for an approved plan with nothing to
                   apply: its steps are advisory, so approval records the decision and the
                   operator changes nothing. It is not a failure and does not trip the
@@ -727,6 +832,7 @@ spec:
                 enum:
                 - Pending
                 - Approved
+                - Ticketed
                 - Applying
                 - Verifying
                 - Completed

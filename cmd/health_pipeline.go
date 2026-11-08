@@ -51,12 +51,15 @@ type healthPipeline struct {
 }
 
 // buildHealthPipeline assembles the gate, diagnosis providers,
-// planner and proposer from the operator configuration. operatorNS is the
+// planner and proposer from the operator configuration. reader is the uncached
+// API reader the gate decides on where a stale cache would be permissive; nil
+// falls back to the client. operatorNS is the
 // operator's own namespace ("" when unknown); the deny-list protects it.
 //
 // It makes no network calls: LLM clients are constructed but not used.
 func buildHealthPipeline(
 	c client.Client,
+	reader client.Reader,
 	cfg operatorConfig,
 	operatorNS string,
 	log logr.Logger,
@@ -73,6 +76,12 @@ func buildHealthPipeline(
 		// gate refuses every proposal, rule-based ones included, rather than risk
 		// planning a change in the namespace Dorgu itself runs in.
 		gateOpts = append(gateOpts, gate.WithOperatorNamespaceUnknown())
+	}
+	if reader != nil {
+		// Sibling RemediationActions (rate limit, concurrency, dedup) and the live
+		// workload at approval are read from the API server, not the cache, so a
+		// proposal made a moment ago is visible to the next decision (R11).
+		gateOpts = append(gateOpts, gate.WithReader(reader))
 	}
 	g := gate.New(c, log, gateOpts...)
 

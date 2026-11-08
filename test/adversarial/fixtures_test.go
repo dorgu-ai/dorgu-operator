@@ -35,6 +35,7 @@ import (
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/controller"
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
+	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation"
 )
 
@@ -47,6 +48,7 @@ const (
 	personaUpdate    = "persona-update"
 	phaseApproved    = "Approved"
 	phaseApplying    = "Applying"
+	phaseFailed      = "Failed"
 	phaseVerifying   = "Verifying"
 	signalOOMKilled  = "OOMKilled"
 	containerName    = "app"
@@ -110,8 +112,9 @@ func createIncident(t *testing.T, ns string) {
 	mustCreate(t, im)
 }
 
-// createDeployment creates the live workload with the given memory limit.
-func createDeployment(t *testing.T, ns, memoryLimit string) *appsv1.Deployment {
+// createDeployment creates the live workload: baselineMemory and baselineCPU
+// limits, one container.
+func createDeployment(t *testing.T, ns string) *appsv1.Deployment {
 	t.Helper()
 	replicas := int32(1)
 	labels := map[string]string{"app": appName}
@@ -126,7 +129,8 @@ func createDeployment(t *testing.T, ns, memoryLimit string) *appsv1.Deployment {
 					Name:  containerName,
 					Image: "nginx:1.27",
 					Resources: corev1.ResourceRequirements{Limits: corev1.ResourceList{
-						corev1.ResourceMemory: resource.MustParse(memoryLimit),
+						corev1.ResourceMemory: resource.MustParse(baselineMemory),
+						corev1.ResourceCPU:    resource.MustParse(baselineCPU),
 					}},
 				}}},
 			},
@@ -175,6 +179,17 @@ func newRA(ns, name string, opts ...raOption) *dorguv1.RemediationAction {
 	for _, opt := range opts {
 		opt(ra)
 	}
+	// steps[] is the only plan: a proposal the operator wrote carries its change as
+	// a step, with the single action derived from it. A scenario that sets its own
+	// steps keeps them.
+	if len(ra.Spec.Steps) == 0 {
+		ra.Spec.Steps = []dorguv1.RemediationStep{{
+			Order: 1, ID: "step-1", Type: personaUpdate, AutoExecutable: true,
+			Description:   ra.Spec.Explanation,
+			Patch:         ra.Spec.Action.Patch.DeepCopy(),
+			PrePatchState: ra.Spec.Action.PrePatchState.DeepCopy(),
+		}}
+	}
 	return ra
 }
 
@@ -192,15 +207,74 @@ func withoutLabels() raOption {
 	return func(ra *dorguv1.RemediationAction) { ra.Labels = nil }
 }
 
-// createRA creates the action and moves it to phase, as the proposer and the
-// CLI do through the status subresource. An empty phase leaves it as created.
+// testGate is the one gate the scenarios share, built the way cmd/main.go builds
+// it: the uncached reader is the API server itself here.
+func testGate() *gate.Gate {
+	return gate.New(k8sClient, logr.Discard(), gate.WithReader(k8sClient))
+}
+
+// createRA creates the action as the operator's proposer does: the gate rules on
+// the plan, and its decision and the Proposed condition (pinning the spec
+// generation it cleared) are written to status, so the action is Pending and
+// approvable. A non-empty phase then moves it there, as the CLI does through the
+// status subresource. An empty phase leaves it as created, unproposed.
 func createRA(t *testing.T, ra *dorguv1.RemediationAction, phase string) *dorguv1.RemediationAction {
+	t.Helper()
+	mustCreate(t, ra)
+	if phase == "" {
+		return ra
+	}
+	proposeAsOperator(t, ra)
+	if phase != "Pending" {
+		setPhase(t, ra, phase)
+	}
+	return ra
+}
+
+// createHandMadeRA creates the action the way anyone with create on
+// remediationactions can: no gate ran, no proposal record exists. It is moved to
+// phase through the status subresource.
+func createHandMadeRA(t *testing.T, ra *dorguv1.RemediationAction, phase string) *dorguv1.RemediationAction {
 	t.Helper()
 	mustCreate(t, ra)
 	if phase != "" {
 		setPhase(t, ra, phase)
 	}
 	return ra
+}
+
+// proposeAsOperator writes what the operator's proposer writes after the gate
+// clears a plan: status.gate from a Proposal run, the Proposed condition at the
+// spec generation, and phase Pending.
+func proposeAsOperator(t *testing.T, ra *dorguv1.RemediationAction) {
+	t.Helper()
+	ctx := context.Background()
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(ra), ra); err != nil {
+		t.Fatalf("getting %s: %v", ra.Name, err)
+	}
+	decision, err := testGate().Run(ctx, gate.Candidate{
+		Target: ra.Spec.PersonaRef, Namespace: ra.Namespace, Name: ra.Name,
+		Source: ra.Spec.PlanSource, IncidentRef: ra.Spec.IncidentRef,
+		Steps: ra.Spec.Steps, Final: true,
+		Facts: gate.Facts{SuggestedAction: gate.ClassResourceAdjustment},
+	}, gate.PhaseProposal)
+	if err != nil {
+		t.Fatalf("running the proposal gate on %s: %v", ra.Name, err)
+	}
+	if !decision.Allowed() {
+		t.Fatalf("the gate refused the fixture proposal %s: %s", ra.Name, decision.SkipReason())
+	}
+	ra.Status = dorguv1.RemediationActionStatus{
+		Phase: "Pending",
+		Gate:  decision.Status(),
+		Conditions: []metav1.Condition{{
+			Type: dorguv1.ConditionProposed, Status: metav1.ConditionTrue, Reason: dorguv1.ReasonGateCleared,
+			ObservedGeneration: ra.Generation, LastTransitionTime: metav1.Now(),
+		}},
+	}
+	if err := k8sClient.Status().Update(ctx, ra); err != nil {
+		t.Fatalf("recording the proposal on %s: %v", ra.Name, err)
+	}
 }
 
 // setPhase writes status.phase the way `dorgu remediation approve` does.
@@ -236,7 +310,8 @@ func newRemediationController(signals ...detection.Signal) *controller.Remediati
 	engine := detection.NewEngine(log, staticCollector{signals: signals})
 	return &controller.RemediationController{
 		Client:   k8sClient,
-		Executor: remediation.NewExecutor(k8sClient, log),
+		Gate:     testGate(),
+		Executor: remediation.NewExecutor(k8sClient, testGate(), log),
 		Verifier: remediation.NewVerifier(engine, k8sClient, log),
 		Rollback: remediation.NewRollback(k8sClient, log),
 		Logger:   log,

@@ -214,6 +214,7 @@ spec:
                     - failed
                     - rollback
                     - acknowledged
+                    - self-resolved
                     type: string
                   remediationRef:
                     description: RemediationRef references the RemediationAction that

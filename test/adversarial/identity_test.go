@@ -57,7 +57,7 @@ var (
 func TestID01ServiceAccountApproves(t *testing.T) {
 	ns := newNamespace(t, "id-01")
 	createIncident(t, ns)
-	ra := createRA(t, newRA(ns, "proposal"), "Pending")
+	ra := createHandMadeRA(t, newRA(ns, "proposal"), "Pending")
 
 	bot := userClient(t, ns, "system:serviceaccount:"+ns+":ci-bot",
 		[]string{"system:serviceaccounts", "system:serviceaccounts:" + ns}, statusWriter)
@@ -88,7 +88,7 @@ func TestID02ProposerApprovesOwnProposal(t *testing.T) {
 func TestID03ApprovedByNotTheAuthenticatedUser(t *testing.T) {
 	ns := newNamespace(t, "id-03")
 	createIncident(t, ns)
-	ra := createRA(t, newRA(ns, "proposal"), "Pending")
+	ra := createHandMadeRA(t, newRA(ns, "proposal"), "Pending")
 
 	alice := userClient(t, ns, "alice", nil, statusWriter)
 	err := approveAs(alice, ra, "cli-user")

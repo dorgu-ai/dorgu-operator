@@ -82,7 +82,7 @@ func TestGround_NoNamespaceMeansNoRead(t *testing.T) {
 }
 
 func TestGround_AmbiguousWorkloadIsUnresolvedNotGuessed(t *testing.T) {
-	second := deployment("64Mi", func(d *appsv1.Deployment) { d.Name = "web-canary"; d.UID = "uid-2" })
+	second := deployment("64Mi", canaryOf)
 	second.Labels = map[string]string{"app": testPersona}
 	g := newTestGate(t, fakeClient(t, persona("256Mi"), deployment("128Mi"), second))
 	d := run(t, g, planCandidate(personaUpdateStep(memPatch("192Mi"))), PhaseApprovalRecheck)
@@ -113,7 +113,7 @@ func TestGround_PersonaReadFailureIsReturned(t *testing.T) {
 func TestGround_ApprovalRefusesAReplacedWorkload(t *testing.T) {
 	g := newTestGate(t, fakeClient(t, persona("256Mi"), deployment("256Mi")))
 	cand := planCandidate(personaUpdateStep(memPatch("300Mi")))
-	cand.Facts.PriorObserved = &dorguv1.GateObserved{WorkloadUID: "an-older-deployment"}
+	cand.prior = priorObservation("an-older-deployment")
 
 	d := run(t, g, cand, PhaseApprovalRecheck)
 
@@ -125,7 +125,7 @@ func TestGround_ApprovalRefusesAReplacedWorkload(t *testing.T) {
 func TestGround_ApprovalAcceptsTheSameWorkload(t *testing.T) {
 	g := newTestGate(t, fakeClient(t, persona("256Mi"), deployment("256Mi")))
 	cand := planCandidate(personaUpdateStep(memPatch("300Mi")))
-	cand.Facts.PriorObserved = &dorguv1.GateObserved{WorkloadUID: "uid-1"}
+	cand.prior = priorObservation("uid-1")
 
 	d := run(t, g, cand, PhaseApprovalRecheck)
 

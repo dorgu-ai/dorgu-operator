@@ -46,6 +46,9 @@ const (
 	phaseVerifying = "Verifying"
 	phaseFailed    = "Failed"
 
+	phaseRolledBack = "RolledBack"
+	phaseTicketed   = "Ticketed"
+
 	// conditionApplied mirrors the controller's Applied condition type, whose
 	// reason distinguishes a rejected-before-apply action from a real failure.
 	conditionApplied = "Applied"
@@ -194,7 +197,7 @@ func (s guardrailsStage) concurrent(cand *Candidate, d *Decision, siblings []dor
 	for i := range siblings {
 		sib := &siblings[i]
 		switch sib.Status.Phase {
-		case phaseApplying, phaseVerifying:
+		case phaseApplying, phaseVerifying, phaseTicketed:
 		case phaseApproved:
 			if d.Phase == PhaseApprovalRecheck && !approvedBefore(sib, cand) {
 				continue
@@ -233,7 +236,7 @@ func approvedBefore(sib *dorguv1.RemediationAction, cand *Candidate) bool {
 func (s guardrailsStage) failedCooldown(cand *Candidate, d *Decision, siblings []dorguv1.RemediationAction) {
 	for i := range siblings {
 		sib := &siblings[i]
-		if sib.Status.Phase != phaseFailed || rejectedBeforeApply(sib) {
+		if !wentWrong(sib) {
 			continue
 		}
 		failedAt := sib.CreationTimestamp.Time
@@ -251,6 +254,20 @@ func (s guardrailsStage) failedCooldown(cand *Candidate, d *Decision, siblings [
 	d.pass(StageGuardrails, GuardrailFailedCooldown, "no recent failed remediation for the persona", nil)
 }
 
+// wentWrong reports whether a sibling is a remediation that actually went wrong:
+// one that Failed after touching the cluster, or one that was applied and then
+// rolled back because it did not hold. Both leave the persona unsettled, and a
+// RolledBack action used to be re-proposed at once (L4).
+func wentWrong(sib *dorguv1.RemediationAction) bool {
+	switch sib.Status.Phase {
+	case phaseFailed:
+		return !rejectedBeforeApply(sib)
+	case phaseRolledBack:
+		return true
+	}
+	return false
+}
+
 // rejectedBeforeApply reports whether a Failed action was refused before anything
 // was written to the cluster, as recorded on its Applied condition.
 func rejectedBeforeApply(action *dorguv1.RemediationAction) bool {
@@ -258,7 +275,8 @@ func rejectedBeforeApply(action *dorguv1.RemediationAction) bool {
 		return false
 	}
 	for _, c := range action.Status.Conditions {
-		if c.Type == conditionApplied && c.Reason == dorguv1.ReasonPreconditionRejected {
+		if c.Type == conditionApplied &&
+			(c.Reason == dorguv1.ReasonPreconditionRejected || c.Reason == dorguv1.ReasonGateRefusedAtApproval) {
 			return true
 		}
 	}
@@ -555,7 +573,7 @@ func blastRadiusViolations(patch []byte, baseline map[string]string) []Violation
 // itself. A read failure is returned: the gate cannot count what it cannot list.
 func (g *Gate) siblings(ctx context.Context, cand *Candidate) ([]dorguv1.RemediationAction, error) {
 	var list dorguv1.RemediationActionList
-	if err := g.client.List(ctx, &list); err != nil {
+	if err := g.reader.List(ctx, &list); err != nil {
 		return nil, fmt.Errorf("listing RemediationActions: %w", err)
 	}
 

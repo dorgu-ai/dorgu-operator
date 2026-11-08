@@ -61,7 +61,7 @@ func existingRA(name, personaName, incidentName, phase string) *dorguv1.Remediat
 // a second RemediationAction when an active (Pending) one already targets the
 // incident — the core fix for the per-cycle remediation multiplicity (WS8 F2).
 func TestProposer_Dedup_SkipsWhenActiveExists(t *testing.T) {
-	activePhases := []string{"", "Pending", "Approved", "Applying", "Verifying"}
+	activePhases := []string{"", "Pending", "Approved", "Ticketed", "Applying", "Verifying"}
 	for _, phase := range activePhases {
 		t.Run("phase="+phaseLabel(phase), func(t *testing.T) {
 			scheme := newTestScheme()
@@ -180,7 +180,7 @@ func TestProposer_AIXorRule_PlannerError(t *testing.T) {
 	require.NoError(t, c.List(context.Background(), &list))
 	require.Len(t, list.Items, 1, "exactly one rule-based remediation")
 	assert.NotEqual(t, dorguv1.PlanSourceAIAnthropic, list.Items[0].Spec.PlanSource, "no AI plan when planner errors")
-	assert.Empty(t, list.Items[0].Spec.Steps, "rule-based path emits a single Action, not Steps")
+	assertRuleBasedSingleStep(t, &list.Items[0])
 }
 
 // existingResourceRA builds an active/terminal RemediationAction that actually

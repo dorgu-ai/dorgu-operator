@@ -64,7 +64,7 @@ func renderedSurfaces(action *dorguv1.RemediationAction) []string {
 
 	add("planSummary", action.Spec.PlanSummary, allStepSafety(action))
 	add("explanation", action.Spec.Explanation, allStepSafety(action))
-	out = append(out, patchSurfaces("action.patch", action.Spec.Action.Patch)...)
+	out = append(out, patchSurfaces("action.patch", planned(action).Patch)...)
 
 	for i := range action.Spec.Steps {
 		step := &action.Spec.Steps[i]
@@ -193,7 +193,7 @@ func TestProposer_CR501_RefusedValuesNeverReachARenderedSurface(t *testing.T) {
 	// And the plan still does something: 2x of the live 8Mi is what survives.
 	require.True(t, action.HasAutoApplicableChange(),
 		"scrubbing the refused values must not turn a real fix into an empty plan")
-	assert.Equal(t, "16Mi", patchLimit(t, action.Spec.Action.Patch.Raw, "memory"))
+	assert.Equal(t, "16Mi", patchLimit(t, planned(action).Patch.Raw, "memory"))
 }
 
 // TestProposer_CR501_CommandIsDroppedNotRewritten pins the shape of the fix on
@@ -358,8 +358,8 @@ func TestScrubRefusedValues(t *testing.T) {
 				return a
 			},
 			assert: func(t *testing.T, a *dorguv1.RemediationAction) {
-				assert.Nil(t, a.Spec.Action.Patch)
-				assert.Equal(t, dorguv1.ActionTypeNotification, a.Spec.Action.Type,
+				assert.Nil(t, planned(a).Patch)
+				assert.Equal(t, dorguv1.ActionTypeNotification, planned(a).Type,
 					"an action with nothing left to apply is not a persona-update")
 			},
 		},

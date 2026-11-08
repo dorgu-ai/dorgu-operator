@@ -141,9 +141,9 @@ func TestProposer_AIPath_CR01_UnappliablePlanIsMadeAppliable(t *testing.T) {
 
 	// The back-compat Action the executor reads is a persona-update, not a
 	// notification, so `dorgu remediation approve` has something to apply.
-	assert.Equal(t, dorguv1.ActionTypePersonaUpdate, a.Spec.Action.Type)
-	require.NotNil(t, a.Spec.Action.Patch)
-	assert.JSONEq(t, `{"spec":{"resources":{"limits":{"memory":"128Mi"}}}}`, string(a.Spec.Action.Patch.Raw))
+	assert.Equal(t, dorguv1.ActionTypePersonaUpdate, planned(a).Type)
+	require.NotNil(t, planned(a).Patch)
+	assert.JSONEq(t, `{"spec":{"resources":{"limits":{"memory":"128Mi"}}}}`, string(planned(a).Patch.Raw))
 
 	require.NoError(t, a.ValidateAutoExecutable())
 }
@@ -267,7 +267,7 @@ func TestProposer_AIPath_CR01_NoPhantomPersonaUpdateStep(t *testing.T) {
 	assert.Equal(t, "step-2", a.Spec.Steps[1].ID)
 
 	assert.False(t, a.HasAutoApplicableChange())
-	assert.Equal(t, dorguv1.ActionTypeNotification, a.Spec.Action.Type)
+	assert.Equal(t, dorguv1.ActionTypeNotification, planned(a).Type)
 	assert.Contains(t, a.Spec.Explanation, "all advisory (nothing is applied for you)",
 		"the plan says plainly that it will not fix this")
 }

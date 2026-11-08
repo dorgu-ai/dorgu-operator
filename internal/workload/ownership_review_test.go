@@ -86,3 +86,17 @@ func TestDetectOwner_DorguOwnManagersAndHandsOnKubectlStayUnmanaged(t *testing.T
 		assert.False(t, DetectOwner(deployWith(nil, nil, entry)).IsOwned(), "manager %q (%s)", entry.Manager, entry.Operation)
 	}
 }
+
+// F5 (B5 review): manager names are compared exactly. A differently-cased "Dorgu"
+// or "KUBECTL-edit" is somebody else's manager, not Dorgu's or kubectl's.
+func TestDetectOwner_ManagerNamesAreMatchedExactlyNotCaseInsensitively(t *testing.T) {
+	for _, entry := range []metav1.ManagedFieldsEntry{
+		withFields(updateBy("Dorgu"), containerResourcesFields),
+		withFields(updateBy("DORGU"), containerResourcesFields),
+		withFields(updateBy("Dorgu-Operator"), containerResourcesFields),
+		withFields(updateBy("KUBECTL-edit"), containerResourcesFields),
+		withFields(updateBy("Kube-Controller-Manager"), containerResourcesFields),
+	} {
+		assert.True(t, DetectOwner(deployWith(nil, nil, entry)).IsOwned(), "manager %q", entry.Manager)
+	}
+}

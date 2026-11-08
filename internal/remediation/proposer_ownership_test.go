@@ -220,7 +220,7 @@ func TestProposer_OwnershipDoesNotTouchPersonaSteps(t *testing.T) {
 		"a Helm-owned workload does not stop the operator writing its own persona")
 	require.NotNil(t, personaStep.Patch)
 	assert.Contains(t, string(personaStep.Patch.Raw), "64Mi")
-	assert.Equal(t, dorguv1.ActionTypePersonaUpdate, action.Spec.Action.Type)
+	assert.Equal(t, dorguv1.ActionTypePersonaUpdate, planned(action).Type)
 }
 
 // TestProposer_AIPath_CapIsRelativeToLiveWorkload is F-04 on the AI path: a
@@ -269,7 +269,7 @@ func TestProposer_AIPath_CapIsRelativeToLiveWorkload(t *testing.T) {
 	assert.True(t, step.AutoExecutable)
 	assert.JSONEq(t, `{"spec":{"resources":{"limits":{"memory":"64Mi"}}}}`, string(step.Patch.Raw),
 		"64Mi is 2x the live value, which is as far as the guardrail goes")
-	assert.Equal(t, dorguv1.ActionTypePersonaUpdate, result.Action.Spec.Action.Type)
+	assert.Equal(t, dorguv1.ActionTypePersonaUpdate, planned(result.Action).Type)
 }
 
 // TestProposer_AIPath_DropsPatchKeysTheWorkloadLacks is F-05 on the AI path: the

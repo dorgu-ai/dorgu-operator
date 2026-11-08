@@ -101,12 +101,13 @@ var _ = Describe("Harness metrics wiring", func() {
 			},
 		}
 		Expect(k8sClient.Create(testCtx, ra)).To(Succeed())
-		ra.Status.Phase = RemediationPhaseApproved
-		Expect(k8sClient.Status().Update(testCtx, ra)).To(Succeed())
+		ensurePersonaDeployment(testCtx, persona.Name)
+		approveProposed(testCtx, ra)
 
 		rc := &RemediationController{
 			Client:   k8sClient,
-			Executor: remediation.NewExecutor(k8sClient, log),
+			Gate:     envtestGate(log),
+			Executor: remediation.NewExecutor(k8sClient, envtestGate(log), log),
 			Verifier: remediation.NewVerifier(detection.NewEngine(log), k8sClient, log),
 			Rollback: remediation.NewRollback(k8sClient, log),
 			Logger:   log,

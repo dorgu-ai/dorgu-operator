@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -29,6 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
+	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
 	"github.com/dorgu-ai/dorgu-operator/internal/metrics"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation"
 )
@@ -41,12 +43,23 @@ const (
 	IncidentOutcomePartial      = "partial"
 	IncidentOutcomeFailed       = "failed"
 	IncidentOutcomeAcknowledged = "acknowledged"
+
+	// IncidentOutcomeSelfResolved: the incident cleared and verification passed,
+	// but nothing Dorgu proposed was ever applied to the workload (--no-heal, a
+	// declined prompt, a patch that changed nothing), so the recovery is not a Dorgu
+	// heal and no KPI may count it as one. The HealCredited condition on the
+	// RemediationAction says the same thing.
+	IncidentOutcomeSelfResolved = "self-resolved"
 )
 
 // RemediationAction phase constants.
 const (
-	RemediationPhasePending   = "Pending"
-	RemediationPhaseApproved  = "Approved"
+	RemediationPhasePending  = "Pending"
+	RemediationPhaseApproved = "Approved"
+	// RemediationPhaseTicketed is where an approval that passed the gate's re-check
+	// on live state waits to be applied: status.applyTicket is the one change that
+	// may land.
+	RemediationPhaseTicketed  = "Ticketed"
 	RemediationPhaseApplying  = "Applying"
 	RemediationPhaseVerifying = "Verifying"
 	RemediationPhaseCompleted = "Completed"
@@ -85,6 +98,28 @@ const (
 	// pre-remediation, and what to do about it, and is written to be printed
 	// verbatim by a client.
 	ConditionWorkloadDiverged = "WorkloadDiverged"
+
+	// ConditionPersonaEdited reports what a rollback left alone: persona fields a
+	// human changed after the heal. True when any field was left, with the fields
+	// in the message. Its reason is a gate.ReasonRollback* enum.
+	ConditionPersonaEdited = "PersonaEditedSinceHeal"
+
+	// ConditionHealCredited is whether the recovery may be counted as a Dorgu heal.
+	// True only when the CLI recorded a patch and the Deployment's generation moved
+	// past the ticket's. False says why not, so a KPI exclusion is readable from
+	// status without inference.
+	ConditionHealCredited = "HealCredited"
+
+	// ReasonNothingPatched is the HealCredited=False reason when no workload change
+	// followed the ticket.
+	ReasonNothingPatched = "NothingPatched"
+
+	// ReasonResourcesNotTicket is the HealCredited=False reason when the live
+	// container does not hold the values the ticket wrote.
+	ReasonResourcesNotTicket = "ResourcesNotTicket"
+
+	// ReasonWorkloadPatchedByTicket is the HealCredited=True reason.
+	ReasonWorkloadPatchedByTicket = "WorkloadPatchedByTicket"
 )
 
 // Default verification wait and retry constants.
@@ -102,6 +137,12 @@ const (
 // +kubebuilder:rbac:groups=dorgu.io,resources=incidentmemories/status,verbs=get;update;patch
 type RemediationController struct {
 	client.Client
+
+	// Gate is the one gate. The controller asks it to re-check an approval on live
+	// state and to confirm the workload still matches the ticket; it decides
+	// nothing about safety itself. With no gate nothing is approved.
+	Gate *gate.Gate
+
 	Executor *remediation.Executor
 	Verifier *remediation.Verifier
 	Rollback *remediation.Rollback
@@ -130,7 +171,10 @@ func (r *RemediationController) Reconcile(ctx context.Context, req ctrl.Request)
 	if err == nil {
 		metrics.RecordTransition(from, action.Status.Phase)
 	}
-	return result, err
+	// A status write that lost an optimistic-lock race, or an object that went away,
+	// is not a fault: requeue quietly at V(1) instead of an ERROR line and a
+	// reconcile-error count (N4).
+	return quietRaces(logger, result, err)
 }
 
 // dispatch runs the handler for the action's current phase.
@@ -143,6 +187,9 @@ func (r *RemediationController) dispatch(
 
 	case RemediationPhaseApproved:
 		return r.handleApproved(ctx, logger, action)
+
+	case RemediationPhaseTicketed:
+		return r.handleTicketed(ctx, logger, action)
 
 	case RemediationPhaseApplying:
 		return r.handleApplying(ctx, logger, action)
@@ -279,12 +326,20 @@ func (r *RemediationController) transitionToExpired(
 	return nil
 }
 
-// handleApproved applies the remediation patch and transitions to Applying.
+// handleApproved re-checks an approval against the cluster as it is now, and
+// either issues the apply ticket or refuses.
 //
 // An approved plan with nothing to apply settles as Acknowledged instead: its
-// steps are advisory, so there is no patch to run and nothing has gone wrong.
+// steps are advisory, so there is nothing to clear and nothing has gone wrong.
 // Sending it to the executor is what used to mark it Failed and put the app into
 // a 30-minute remediation blackout (F-03).
+//
+// For everything else the gate runs again (ApprovalRecheck) on live state: a
+// proposal can be hours old, and an approval says yes to a plan, not to whatever
+// the cluster has become. A refusal is persisted with its reason and ends the
+// action as Failed/GateRefusedAtApproval with no cooldown, since nothing was
+// applied. A pass becomes status.applyTicket and the phase Ticketed, and the
+// ticket is applied in the same pass.
 func (r *RemediationController) handleApproved(ctx context.Context, logger logr.Logger, action *dorguv1.RemediationAction) (ctrl.Result, error) {
 	// A proposal approved after its deadline was approved against a cluster that
 	// no longer exists. Refuse it rather than apply it (OP-14).
@@ -300,14 +355,80 @@ func (r *RemediationController) handleApproved(ctx context.Context, logger logr.
 		return ctrl.Result{}, r.transitionToAcknowledged(ctx, action)
 	}
 
-	logger.Info("executing approved remediation")
+	decision, err := r.Gate.Run(ctx, gate.ApprovalCandidate(action), gate.PhaseApprovalRecheck)
+	if err != nil {
+		// The gate could not decide (a read failed). Nothing is applied and the
+		// approval is retried; this is never treated as a pass. The error is
+		// returned, and controller-runtime logs a returned error once: logging it
+		// here as well would print it twice (N4).
+		return ctrl.Result{}, fmt.Errorf("the approval re-check could not run; nothing was applied, will retry: %w", err)
+	}
+	if !decision.Allowed() {
+		return ctrl.Result{}, r.refuseAtApproval(ctx, logger, action, decision)
+	}
+
+	ticket, err := decision.Ticket()
+	if err != nil {
+		// The gate cleared a plan that, after clamping, applies nothing.
+		return ctrl.Result{}, r.refuseAtApproval(ctx, logger, action, decision)
+	}
+
+	action.Status.Phase = RemediationPhaseTicketed
+	action.Status.ApplyTicket = ticket
+	action.Status.Gate = decision.Status()
+	setCondition(&action.Status.Conditions, dorguv1.ConditionTicketed, metav1.ConditionTrue, dorguv1.ReasonTicketIssued,
+		fmt.Sprintf("the gate re-checked this approval on live state and issued an apply ticket valid until %s",
+			ticket.ExpiresAt.UTC().Format(time.RFC3339)))
+	if err := r.Status().Update(ctx, action); err != nil {
+		return ctrl.Result{}, fmt.Errorf("updating status to Ticketed: %w", err)
+	}
+
+	logger.Info("approval cleared the gate on live state; ticket issued", "expiresAt", ticket.ExpiresAt)
+
+	return r.handleTicketed(ctx, logger, action)
+}
+
+// refuseAtApproval ends an approval the gate refused: Failed with the
+// GateRefusedAtApproval reason, no cooldown (nothing was applied), the refusing
+// guardrail persisted as an enum on the GateRefused condition, and the whole
+// decision on status.gate.
+func (r *RemediationController) refuseAtApproval(
+	ctx context.Context, logger logr.Logger, action *dorguv1.RemediationAction, decision *gate.Decision,
+) error {
+	stage, guardrail := decision.RefusedBy()
+	reason := decision.SkipReason()
+	if guardrail == "" {
+		guardrail = gate.GuardrailNoPlan
+		reason = "the gate cleared the plan but nothing is left to apply after it was clamped"
+	}
+	logger.Info("the gate refused this approval on live state; nothing was applied",
+		"stage", stage, "guardrail", guardrail, "result", decision.Result)
+
+	action.Status.Gate = decision.Status()
+	setCondition(&action.Status.Conditions, dorguv1.ConditionGateRefused, metav1.ConditionTrue,
+		gate.ReasonEnum(guardrail), reason)
+
+	return r.transitionToFailedWithReason(ctx, action, dorguv1.ReasonGateRefusedAtApproval,
+		fmt.Sprintf("refused at approval (%s): %s; nothing was applied", guardrail, reason))
+}
+
+// handleTicketed applies the apply ticket: exactly its patch, and only when the
+// gate confirms the ticket still stands (present, unexpired, same workload).
+func (r *RemediationController) handleTicketed(ctx context.Context, logger logr.Logger, action *dorguv1.RemediationAction) (ctrl.Result, error) {
+	logger.Info("applying the apply ticket")
 
 	if err := r.Executor.Apply(ctx, action); err != nil {
 		var precondition *remediation.PreconditionError
 		if errors.As(err, &precondition) {
 			// Nothing was written to the cluster, so this must not count as a
 			// failed remediation for the cooldown.
-			logger.Error(err, "remediation refused before apply")
+			logger.Error(err, "remediation refused before apply", "guardrail", precondition.Guardrail)
+			if precondition.Guardrail != "" {
+				// The re-run of the gate at apply refused: persist which guardrail,
+				// as an enum, beside the refusal at approval's.
+				setCondition(&action.Status.Conditions, dorguv1.ConditionGateRefused, metav1.ConditionTrue,
+					gate.ReasonEnum(precondition.Guardrail), precondition.Reason)
+			}
 			return ctrl.Result{}, r.transitionToFailedWithReason(ctx, action,
 				dorguv1.ReasonPreconditionRejected,
 				fmt.Sprintf("%v; nothing was applied", err))
@@ -386,7 +507,19 @@ func (r *RemediationController) handleVerifying(ctx context.Context, logger logr
 }
 
 // handleVerificationHealthy completes the remediation and updates the incident.
+//
+// Healthy is not always clean. When the workload was changed by someone else
+// after the ticket was written (replaced, or edited by another writer), the
+// verification result cannot be credited to the change Dorgu applied: the outcome
+// is recorded as partial with the WorkloadDiverged reason. The phase stays
+// Completed, since verification did pass; the condition and the incident outcome
+// are what a KPI reads to tell a clean heal from an unattributable one.
 func (r *RemediationController) handleVerificationHealthy(ctx context.Context, logger logr.Logger, action *dorguv1.RemediationAction) (ctrl.Result, error) {
+	outcome := r.recordTicketDivergence(ctx, logger, action)
+	if outcome == IncidentOutcomeResolved {
+		outcome = r.creditOrSelfResolve(ctx, logger, action)
+	}
+
 	action.Status.Phase = RemediationPhaseCompleted
 	setCondition(&action.Status.Conditions, ConditionVerified, metav1.ConditionTrue, "HealthRestored", "Verification confirmed health restored")
 
@@ -395,12 +528,107 @@ func (r *RemediationController) handleVerificationHealthy(ctx context.Context, l
 	}
 
 	// Update incident with resolution info.
-	if err := r.updateIncidentResolution(ctx, action, IncidentOutcomeResolved); err != nil {
-		logger.Error(err, "failed to update incident resolution")
+	if err := r.updateIncidentResolution(ctx, action, outcome); err != nil {
+		logFailure(logger, err, "failed to update incident resolution")
 	}
 
-	logger.Info("remediation completed successfully")
+	logger.Info("remediation completed", "incidentOutcome", outcome)
 	return ctrl.Result{}, nil
+}
+
+// recordTicketDivergence compares the live workload to the ticket and returns the
+// incident outcome for a healthy verification: resolved for a clean heal, partial
+// when the workload diverged from the ticket or could not be read to tell.
+//
+// An action applied before tickets existed has none to compare to and stays
+// resolved. A workload that cannot be read is not claimed clean: it is partial
+// with its own reason, so it never counts as a clean heal.
+func (r *RemediationController) recordTicketDivergence(
+	ctx context.Context, logger logr.Logger, action *dorguv1.RemediationAction,
+) string {
+	if action.Status.ApplyTicket == nil {
+		return IncidentOutcomeResolved
+	}
+
+	problem, err := r.Gate.WorkloadDivergence(ctx, action)
+	switch {
+	case err != nil:
+		logger.Error(err, "could not read the workload to compare it to the ticket")
+		setCondition(&action.Status.Conditions, ConditionWorkloadDiverged, metav1.ConditionUnknown,
+			remediation.ReasonWorkloadUnreadable,
+			"Verification passed, but Dorgu could not read the workload to tell whether someone else changed it since the ticket. This is not counted as a clean heal.")
+		return IncidentOutcomePartial
+	case problem != nil:
+		logger.Info("verification passed, but the workload diverged from the ticket", "guardrail", problem.Guardrail)
+		setCondition(&action.Status.Conditions, ConditionWorkloadDiverged, metav1.ConditionTrue,
+			dorguv1.ReasonWorkloadDivergedFromTicket,
+			"Verification passed, but the workload was changed by someone else after the ticket was written ("+problem.Reason+
+				"), so the heal cannot be credited to the change Dorgu applied.")
+		return IncidentOutcomePartial
+	}
+	setCondition(&action.Status.Conditions, ConditionWorkloadDiverged, metav1.ConditionFalse,
+		"WorkloadMatchesTicket", "The workload still matches the ticket: nothing but the approved change touched it.")
+	return IncidentOutcomeResolved
+}
+
+// creditOrSelfResolve decides whether a clean, healthy verification is a Dorgu
+// heal. It is only when the workload was actually changed after the ticket: the
+// CLI recorded its patch (WorkloadPatched) and the Deployment's generation moved
+// past the ticket's observed one. A --no-heal approval, a declined prompt and a
+// patch that changed nothing leave neither, and the recovery is then the
+// application's own: outcome self-resolved, HealCredited=False, never counted as
+// a heal (F10). The generation is the apiserver's, so a status writer cannot
+// claim a heal by adding the condition alone.
+//
+// An action with no ticket predates tickets and stays resolved. If the workload
+// cannot be read the heal is not credited either.
+func (r *RemediationController) creditOrSelfResolve(
+	ctx context.Context, logger logr.Logger, action *dorguv1.RemediationAction,
+) string {
+	ticket := action.Status.ApplyTicket
+	if ticket == nil {
+		return IncidentOutcomeResolved
+	}
+
+	patched := false
+	notTicket := ""
+	if cond := findCondition(action.Status.Conditions, gate.ConditionWorkloadPatched); cond != nil && cond.Status == metav1.ConditionTrue {
+		evidence, err := r.Gate.HealEvidence(ctx, action)
+		switch {
+		case err != nil:
+			logFailure(logger, err, "could not read the workload to confirm the patch; not crediting the heal")
+		case evidence.Generation <= ticket.ObservedGeneration:
+			// The Deployment's spec never moved: the patch changed nothing.
+		case !evidence.ResourcesMatchTicket:
+			notTicket = evidence.Mismatch
+		default:
+			patched = true
+		}
+	}
+	if patched {
+		setCondition(&action.Status.Conditions, ConditionHealCredited, metav1.ConditionTrue, ReasonWorkloadPatchedByTicket,
+			"The workload was changed after the ticket (recorded by the CLI, confirmed by the Deployment's generation) and its resources are the ticket's: this recovery counts as a Dorgu heal.")
+		return IncidentOutcomeResolved
+	}
+	if notTicket != "" {
+		setCondition(&action.Status.Conditions, ConditionHealCredited, metav1.ConditionFalse, ReasonResourcesNotTicket,
+			"The workload changed after the ticket, but its resources are not the values the ticket wrote ("+notTicket+
+				"), so what recovered it is not this heal and it is not counted as a Dorgu heal.")
+		return IncidentOutcomeSelfResolved
+	}
+	setCondition(&action.Status.Conditions, ConditionHealCredited, metav1.ConditionFalse, ReasonNothingPatched,
+		"Nothing Dorgu proposed was applied to the workload (no patch recorded, or the Deployment's generation did not move), so this recovery is the application's own and is not counted as a Dorgu heal.")
+	return IncidentOutcomeSelfResolved
+}
+
+// findCondition returns the condition of the given type, or nil.
+func findCondition(conditions []metav1.Condition, condType string) *metav1.Condition {
+	for i := range conditions {
+		if conditions[i].Type == condType {
+			return &conditions[i]
+		}
+	}
+	return nil
 }
 
 // handleVerificationDegraded rolls the change back because health degraded.
@@ -436,7 +664,8 @@ func (r *RemediationController) rollBack(
 ) (ctrl.Result, error) {
 	persona := fmt.Sprintf("%s/%s", personaNamespaceOf(action), action.Spec.PersonaRef.Name)
 
-	if err := r.Rollback.Execute(ctx, action); err != nil {
+	restoration, err := r.Rollback.Execute(ctx, action)
+	if err != nil {
 		logger.Error(err, "rollback failed")
 		return ctrl.Result{}, r.transitionToFailed(ctx, action, fmt.Sprintf(
 			"rollback failed: %v. %s The change is STILL APPLIED to ApplicationPersona %s and was NOT undone.",
@@ -450,6 +679,7 @@ func (r *RemediationController) rollBack(
 	// changed keeps the change. Leaving that unsaid is what let a user read
 	// "RolledBack" and walk away from a cluster that had not rolled back.
 	outcome := r.recordRollbackScope(ctx, logger, action)
+	edited := recordPersonaEdits(action, restoration, persona)
 
 	setCondition(&action.Status.Conditions, ConditionRolledBack, metav1.ConditionTrue, reason,
 		cause+" "+rollbackScopeSentence(outcome, persona))
@@ -460,15 +690,44 @@ func (r *RemediationController) rollBack(
 
 	// A rollback that left the workload changed is partial, not a rollback.
 	resolution := IncidentOutcomeRollback
-	if outcome.Diverged() {
+	if outcome.Diverged() || edited {
 		resolution = IncidentOutcomePartial
 	}
 	if err := r.updateIncidentResolution(ctx, action, resolution); err != nil {
-		logger.Error(err, "failed to update incident resolution after rollback")
+		logFailure(logger, err, "failed to update incident resolution after rollback")
 	}
 
 	logger.Info("remediation rolled back", "reason", reason, "incidentOutcome", resolution)
 	return ctrl.Result{}, nil
+}
+
+// recordPersonaEdits states on the action which persona fields the rollback left
+// alone and why, and reports whether there were any (F4). The operator restores
+// what Dorgu wrote; a field a human changed afterwards is theirs, and the record
+// must say the rollback was partial instead of "RolledBack".
+func recordPersonaEdits(action *dorguv1.RemediationAction, result *remediation.RollbackResult, persona string) bool {
+	if !result.Partial() {
+		setCondition(&action.Status.Conditions, ConditionPersonaEdited, metav1.ConditionFalse,
+			"PersonaRestored", "Every persona field Dorgu changed was restored.")
+		return false
+	}
+	reason := result.Skipped[0].Reason
+	parts := make([]string, 0, len(result.Skipped))
+	for _, f := range result.Skipped {
+		if f.Reason != reason {
+			reason = "Mixed"
+		}
+		switch f.Reason {
+		case gate.ReasonRollbackHumanEdited:
+			parts = append(parts, fmt.Sprintf("%s is %s, Dorgu wrote %s", f.Path, f.Current, f.Wrote))
+		default:
+			parts = append(parts, fmt.Sprintf("%s has no recorded baseline to restore (Dorgu wrote %s)", f.Path, f.Wrote))
+		}
+	}
+	setCondition(&action.Status.Conditions, ConditionPersonaEdited, metav1.ConditionTrue, reason,
+		fmt.Sprintf("The rollback left %d field(s) of ApplicationPersona %s as they are, so it is partial: %s. "+
+			"A rollback restores what Dorgu changed, never a later edit.", len(result.Skipped), persona, strings.Join(parts, "; ")))
+	return true
 }
 
 // rollbackScopeSentence is the one sentence on the RolledBack condition that
@@ -605,7 +864,7 @@ func (r *RemediationController) transitionToFailedWithReason(
 
 	// Update incident with failure info.
 	if err := r.updateIncidentResolution(ctx, action, IncidentOutcomeFailed); err != nil {
-		r.Logger.Error(err, "failed to update incident resolution on failure")
+		logFailure(r.Logger, err, "failed to update incident resolution on failure")
 	}
 
 	return nil
@@ -649,7 +908,7 @@ func (r *RemediationController) updateIncidentResolution(ctx context.Context, ac
 	// Set the resolved phase label on the metadata here (before the spec
 	// update) so it lands on the same write — labels are metadata, so a
 	// Status().Update() below cannot persist them.
-	if outcome == IncidentOutcomeResolved {
+	if outcome == IncidentOutcomeResolved || outcome == IncidentOutcomeSelfResolved {
 		if incident.Labels == nil {
 			incident.Labels = make(map[string]string)
 		}
@@ -663,7 +922,7 @@ func (r *RemediationController) updateIncidentResolution(ctx context.Context, ac
 	// If resolved, update incident status phase. Re-fetch inside the retry
 	// loop so we pick up the new ResourceVersion after our own spec update
 	// (and any concurrent writes from the healthcheck reconciler).
-	if outcome == IncidentOutcomeResolved {
+	if outcome == IncidentOutcomeResolved || outcome == IncidentOutcomeSelfResolved {
 		statusErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 			if err := r.Get(ctx, key, &incident); err != nil {
 				return err

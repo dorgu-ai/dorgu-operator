@@ -52,13 +52,13 @@ func TestProposer_PersonaMissingTheLimitTheWorkloadHas(t *testing.T) {
 	require.True(t, result.Proposed)
 
 	action := result.Action
-	assert.Equal(t, "128Mi", patchLimit(t, action.Spec.Action.Patch.Raw, "memory"))
+	assert.Equal(t, "128Mi", patchLimit(t, planned(action).Patch.Raw, "memory"))
 
-	require.NotNil(t, action.Spec.Action.PrePatchState)
-	assert.Equal(t, "64Mi", patchLimit(t, action.Spec.Action.PrePatchState.Raw, "memory"),
+	require.NotNil(t, planned(action).PrePatchState)
+	assert.Equal(t, "64Mi", patchLimit(t, planned(action).PrePatchState.Raw, "memory"),
 		"with no persona value to restore, the rollback target is the live value")
 
 	var pre map[string]any
-	require.NoError(t, json.Unmarshal(action.Spec.Action.PrePatchState.Raw, &pre))
+	require.NoError(t, json.Unmarshal(planned(action).PrePatchState.Raw, &pre))
 	assert.NotEmpty(t, pre, "the executor refuses an action with an empty pre-patch state")
 }
