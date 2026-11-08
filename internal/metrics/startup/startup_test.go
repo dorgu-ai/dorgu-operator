@@ -61,7 +61,7 @@ func TestEveryDorguSeriesExistsAtZeroBeforeAnythingHappens(t *testing.T) {
 	}
 
 	for _, name := range []string{
-		"dorgu_incidents_total", "dorgu_incidents_resolved_total", "dorgu_incident_time_to_detect_seconds",
+		"dorgu_incidents_total", "dorgu_incident_recurrences_total", "dorgu_incidents_resolved_total", "dorgu_incident_time_to_detect_seconds",
 		"dorgu_proposals_total", "dorgu_remediation_transitions_total", "dorgu_gate_decisions_total",
 		"dorgu_gate_stage_duration_seconds", "dorgu_guardrail_verdicts_total", "dorgu_tickets_total",
 		"dorgu_heal_credit_total", "dorgu_verifications_total", "dorgu_rollbacks_total", "dorgu_stage_duration_seconds",

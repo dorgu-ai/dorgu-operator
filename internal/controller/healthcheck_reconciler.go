@@ -67,6 +67,12 @@ const (
 	AttributionPersona      = "persona"
 	AttributionUnattributed = "unattributed"
 
+	// AnnotationRecurrenceOf names the Resolved incident this one is a recurrence
+	// of, and AnnotationRecurrenceCount says how many earlier incidents of the
+	// same fault the cluster has recorded (1 for the first recurrence).
+	AnnotationRecurrenceOf    = "dorgu.io/recurrence-of"
+	AnnotationRecurrenceCount = "dorgu.io/recurrence-count"
+
 	// IncidentMemory phase constants.
 	PhaseDetected      = "Detected"
 	PhaseInvestigating = "Investigating"
@@ -275,10 +281,22 @@ func (r *HealthCheckReconciler) processGroup(
 func (r *HealthCheckReconciler) previousOccurrences(subject incidentSubject) func(context.Context, diagnosis.Diagnosis) int32 {
 	return func(ctx context.Context, d diagnosis.Diagnosis) int32 {
 		existing, err := r.findMatchingIncident(ctx, subject, &d)
-		if err != nil || existing == nil {
+		if err != nil {
 			return 0
 		}
-		return existing.Status.OccurrenceCount
+		if existing != nil {
+			return existing.Status.OccurrenceCount
+		}
+		// No open incident: when the fault is back after one resolved, it is not a
+		// first sighting, and the model is told how often it was seen before.
+		resolved, err := r.resolvedPredecessors(ctx, subject, &d)
+		if err != nil {
+			return 0
+		}
+		if previous := latestResolved(resolved); previous != nil {
+			return previous.Status.OccurrenceCount
+		}
+		return 0
 	}
 }
 

@@ -171,3 +171,12 @@ func TestLLMCountersAreRegistered(t *testing.T) {
 		}
 	}
 }
+
+func TestRecordIncidentRecurrenceIncrements(t *testing.T) {
+	series := incidentRecurrencesTotal.WithLabelValues("resource", "persona")
+	before := testutil.ToFloat64(series)
+	RecordIncidentRecurrence("resource", "persona")
+	if got := testutil.ToFloat64(series) - before; got != 1 {
+		t.Errorf("recurrences delta = %v, want 1", got)
+	}
+}

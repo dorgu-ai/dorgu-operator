@@ -59,6 +59,12 @@ var (
 		Help: "IncidentMemory records opened, by diagnosis category (class) and attribution (scope).",
 	}, []string{"class", "scope"})
 
+	incidentRecurrencesTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "dorgu_incident_recurrences_total",
+		Help: "Incidents opened because a fault came back after an earlier incident of it resolved, by diagnosis " +
+			"category (class) and attribution (scope). Each is also counted in dorgu_incidents_total.",
+	}, []string{"class", "scope"})
+
 	proposalsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "dorgu_proposals_total",
 		Help: "Remediation proposal attempts, by producer (source), suggested action and result " +
@@ -129,7 +135,7 @@ var (
 )
 
 func init() {
-	ctrlmetrics.Registry.MustRegister(incidentsTotal, proposalsTotal, transitionsTotal,
+	ctrlmetrics.Registry.MustRegister(incidentsTotal, incidentRecurrencesTotal, proposalsTotal, transitionsTotal,
 		llmRequestsTotal, llmTokensTotal, llmInvalidOutputTotal, llmCacheTotal)
 }
 
@@ -161,6 +167,12 @@ func RecordLLMCache(purpose, result string) {
 // RecordIncident counts a newly opened incident.
 func RecordIncident(class, scope string) {
 	incidentsTotal.WithLabelValues(class, scope).Inc()
+}
+
+// RecordIncidentRecurrence counts a newly opened incident that is a recurrence of
+// a resolved one.
+func RecordIncidentRecurrence(class, scope string) {
+	incidentRecurrencesTotal.WithLabelValues(class, scope).Inc()
 }
 
 // RecordProposal counts one proposal attempt.

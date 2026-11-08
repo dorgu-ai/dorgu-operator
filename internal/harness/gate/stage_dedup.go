@@ -95,8 +95,8 @@ func activeRemediationReason(cand *Candidate, siblings []dorguv1.RemediationActi
 		if !slices.Contains(activeRemediationPhases, ra.Status.Phase) {
 			continue
 		}
-		if ra.Spec.IncidentRef.Name == incident.Name {
-			return fmt.Sprintf("active remediation already exists for incident %s", incident.Name)
+		if SameIncidentLineage(ra.Spec.IncidentRef.Name, incident.Name) {
+			return fmt.Sprintf("active remediation already exists for incident %s", ra.Spec.IncidentRef.Name)
 		}
 		if cand.Facts.TargetPath != "" && remediationTargetsPath(ra, cand.Facts.TargetPath) {
 			return fmt.Sprintf("active remediation already exists for persona %s targeting %s (via %s)",
@@ -124,7 +124,10 @@ func remediationTargetsPath(ra *dorguv1.RemediationAction, target string) bool {
 // rejectionReason reports whether a prior rejection should stop this proposal.
 //
 // The suppression is scoped to the incident and its target (CF4-2): a rejection
-// is a no to one fix for one incident, not a blanket mute on the persona. It
+// is a no to one fix for one incident, not a blanket mute on the persona. "One
+// incident" means one fault across its recurrences (see IncidentLineage): a
+// fault that comes back after resolving is a new IncidentMemory, and the human's
+// no to its fix still holds for the cooldown. It
 // lifts when the cooldown expires or the signal materially changes, which here
 // means the live diagnosis is more severe than the incident the user declined.
 //
@@ -135,7 +138,7 @@ func (s dedupCooldownStage) rejectionReason(cand *Candidate, siblings []dorguv1.
 	incident := cand.Facts.Incident
 	for i := range siblings {
 		ra := &siblings[i]
-		if ra.Status.Phase != phaseRejected || ra.Spec.IncidentRef.Name != incident.Name {
+		if ra.Status.Phase != phaseRejected || !SameIncidentLineage(ra.Spec.IncidentRef.Name, incident.Name) {
 			continue
 		}
 		if cand.Facts.PrimarySignal != incident.Spec.Detection.Signal {

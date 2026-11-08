@@ -180,7 +180,8 @@ func (r *IncidentController) updateConditions(im *dorguv1.IncidentMemory) {
 	}
 	setCondition(&im.Status.Conditions, ConditionResolved, resolvedStatus, resolvedReason, resolvedMsg)
 
-	// Recurring condition: True when occurrenceCount > 1.
+	// Recurring condition: True when occurrenceCount > 1, or when this incident is a
+	// recurrence of a resolved one.
 	recurringStatus := metav1.ConditionFalse
 	recurringReason := "FirstOccurrence"
 	recurringMsg := "This is the first occurrence"
@@ -188,6 +189,14 @@ func (r *IncidentController) updateConditions(im *dorguv1.IncidentMemory) {
 		recurringStatus = metav1.ConditionTrue
 		recurringReason = "MultipleOccurrences"
 		recurringMsg = fmt.Sprintf("Incident has occurred %d times", im.Status.OccurrenceCount)
+	}
+	// A recurrence is recurring from its first sighting: the fault is back after an
+	// earlier incident of it resolved.
+	if prior := im.Annotations[AnnotationRecurrenceOf]; prior != "" {
+		recurringStatus = metav1.ConditionTrue
+		recurringReason = "RecurrenceOfResolvedIncident"
+		recurringMsg = fmt.Sprintf("This fault is back after incident %s resolved (earlier incidents of it: %s); this incident has occurred %d time(s)",
+			prior, im.Annotations[AnnotationRecurrenceCount], im.Status.OccurrenceCount)
 	}
 	setCondition(&im.Status.Conditions, ConditionRecurring, recurringStatus, recurringReason, recurringMsg)
 }

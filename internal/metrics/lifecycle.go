@@ -250,6 +250,7 @@ func preRegisterProposals() {
 	for _, class := range incidentClasses {
 		for _, scope := range []string{"persona", "unattributed"} {
 			incidentsTotal.WithLabelValues(class, scope)
+			incidentRecurrencesTotal.WithLabelValues(class, scope)
 		}
 	}
 	for _, t := range phaseTransitions {
