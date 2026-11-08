@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -49,7 +50,20 @@ import (
 const (
 	costCycles          = 10
 	maxCallsPerIncident = 3
+	costClockStep       = 20 * time.Second
 )
+
+// tickingClock returns a clock that advances by step on every read.
+func tickingClock(step time.Duration) func() time.Time {
+	var mu sync.Mutex
+	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
+	return func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		now = now.Add(step)
+		return now
+	}
+}
 
 type callCounts struct {
 	diagnosis int
@@ -142,7 +156,11 @@ func newCostFixture(t *testing.T, sc costScenario, aiOpts ...diagnosis.AIOption)
 	detectionEngine := detection.NewEngine(logger, sc.collector(c, logger))
 	detectionEngine.SetPersonaCorrelator(detection.NewPersonaCorrelator(c, logger))
 
-	g := gate.New(c, logger, gate.WithProtectedNamespaces("dorgu-system"))
+	// The gate stamps WorkloadRef.ObservedAt from its clock on every proposal.
+	// A clock frozen inside one test run hid a fingerprint that included that
+	// stamp (review V1), so the clock moves 20s per read, as wall time would
+	// between health cycles.
+	g := gate.New(c, logger, gate.WithProtectedNamespaces("dorgu-system"), gate.WithClock(tickingClock(costClockStep)))
 	model := newCountingModel()
 	pl := &countingPlanner{err: sc.plannerErr}
 

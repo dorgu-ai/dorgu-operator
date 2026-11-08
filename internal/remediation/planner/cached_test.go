@@ -85,6 +85,55 @@ func TestCachedPlanner_UnchangedSituationAsksOnce(t *testing.T) {
 	assert.Equal(t, 1.0, planCache(t, "miss")-missesBefore)
 }
 
+// Review V1: the gate stamps WorkloadRef.ObservedAt with its clock on every
+// proposal, so a fingerprint that includes the stamp never matches twice.
+func TestPlanFingerprint_IgnoresWhenTheWorkloadWasObserved(t *testing.T) {
+	at := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
+	first, later := baseContext(), baseContext()
+	first.Workload.Ref.ObservedAt = &metav1.Time{Time: at}
+	later.Workload.Ref.ObservedAt = &metav1.Time{Time: at.Add(time.Minute)}
+
+	assert.Equal(t, PlanFingerprint(first), PlanFingerprint(later),
+		"ObservedAt moves every cycle and says nothing about the situation")
+}
+
+func TestCachedPlanner_AMovingObservationClockStillHitsTheCache(t *testing.T) {
+	inner := &countingInner{plan: cachedTestPlan()}
+	p := NewCachedPlanner(inner, time.Hour, logr.Discard())
+	at := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
+
+	for i := range 10 {
+		rc := baseContext()
+		rc.Workload.Ref.ObservedAt = &metav1.Time{Time: at.Add(time.Duration(i) * time.Minute)}
+		_, err := p.PlanRemediation(context.Background(), rc)
+		require.NoError(t, err)
+	}
+	assert.Equal(t, 1, inner.calls)
+}
+
+// The stable fields that DO describe the situation must still change the key.
+func TestPlanFingerprint_StableWorkloadFieldsStillMatter(t *testing.T) {
+	base := PlanFingerprint(baseContext())
+	tests := map[string]func(*dorguv1.WorkloadRef){
+		"kind":      func(r *dorguv1.WorkloadRef) { r.Kind = "StatefulSet" },
+		"name":      func(r *dorguv1.WorkloadRef) { r.Name = "other" },
+		"namespace": func(r *dorguv1.WorkloadRef) { r.Namespace = "prod" },
+		"container": func(r *dorguv1.WorkloadRef) { r.Container = "sidecar" },
+		"managedBy": func(r *dorguv1.WorkloadRef) { r.ManagedBy = "helm" },
+		"image":     func(r *dorguv1.WorkloadRef) { r.ObservedImage = "app:2" },
+		"requests": func(r *dorguv1.WorkloadRef) {
+			r.ObservedResources.Requests = &dorguv1.ResourceValues{CPU: "100m"}
+		},
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			rc := baseContext()
+			mutate(rc.Workload.Ref)
+			assert.NotEqual(t, base, PlanFingerprint(rc))
+		})
+	}
+}
+
 func TestCachedPlanner_ChangedSituationAsksAgain(t *testing.T) {
 	tests := map[string]func(*RemediationContext){
 		"the live limit changed": func(rc *RemediationContext) {

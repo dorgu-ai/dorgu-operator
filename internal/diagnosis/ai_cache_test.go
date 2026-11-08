@@ -345,6 +345,29 @@ func TestFingerprint(t *testing.T) {
 		}
 	})
 
+	// Review V1 audit: the planner fingerprint hashed a timestamp the gate stamps
+	// every cycle. Nothing in the diagnosis fingerprint may move with the clock
+	// either: every time on a Diagnosis and on its signals advances by a minute
+	// per "cycle" here, and the key must not.
+	t.Run("a moving clock does not change it", func(t *testing.T) {
+		start := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
+		seen := map[string]int{}
+		for cycle := range 10 {
+			at := start.Add(time.Duration(cycle) * time.Minute)
+			sig := oomSignalIn("apps")
+			sig.DetectedAt = at
+			d := rules(sig)
+			d.DiagnosedAt = at
+			for i := range d.Contributing {
+				d.Contributing[i].Signal.DetectedAt = at
+			}
+			seen[Fingerprint(d)]++
+		}
+		if len(seen) != 1 {
+			t.Errorf("ten cycles at one-minute steps produced %d distinct fingerprints, want 1", len(seen))
+		}
+	})
+
 	t.Run("a restarted pod is the same workload", func(t *testing.T) {
 		restarted := oomSignalIn("apps")
 		restarted.Resource.Name = "worker-zzz99"

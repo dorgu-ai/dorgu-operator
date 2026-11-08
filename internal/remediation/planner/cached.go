@@ -27,6 +27,7 @@ import (
 
 	"github.com/go-logr/logr"
 
+	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
 	"github.com/dorgu-ai/dorgu-operator/internal/llm"
 	"github.com/dorgu-ai/dorgu-operator/internal/metrics"
@@ -96,9 +97,7 @@ func PlanFingerprint(rc RemediationContext) string {
 	write("diagnosis=%s\n", diagnosis.Fingerprint(rc.Diagnosis))
 
 	if rc.Workload != nil && rc.Workload.Ref != nil {
-		if raw, err := json.Marshal(rc.Workload.Ref); err == nil {
-			write("workload=%s\n", raw)
-		}
+		writeWorkload(write, rc.Workload.Ref)
 	}
 	if rc.AppPersona != nil {
 		if raw, err := json.Marshal(rc.AppPersona.Spec.Resources); err == nil {
@@ -117,6 +116,22 @@ func PlanFingerprint(rc RemediationContext) string {
 	}
 
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// writeWorkload adds the stable identity of the live workload to the key: what
+// it is, who manages it, and what was observed on it. It lists fields one by one
+// on purpose. WorkloadRef also carries ObservedAt, which the gate stamps with its
+// clock on every proposal; hashing the whole struct made every cycle a new
+// situation and the cache never hit (review V1). ManagedByDetail is prose that
+// restates ManagedBy, so it is left out too.
+func writeWorkload(write func(string, ...any), ref *dorguv1.WorkloadRef) {
+	write("workload=%s/%s/%s container=%s managedBy=%s image=%s\n",
+		ref.Kind, ref.Namespace, ref.Name, ref.Container, ref.ManagedBy, ref.ObservedImage)
+	if ref.ObservedResources != nil {
+		if raw, err := json.Marshal(ref.ObservedResources); err == nil {
+			write("observed=%s\n", raw)
+		}
+	}
 }
 
 // clonePlan copies a plan so a caller that edits its steps cannot change what the
