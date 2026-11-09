@@ -98,6 +98,13 @@ func (s guardrailsStage) completeness(cand *Candidate, d *Decision) {
 	if target == "" || cand.Facts.AdvisoryAllowed {
 		return
 	}
+	if DeployerOwned(d.WorkloadRef) {
+		// A workload a deployer owns is advised, never changed (B10 b): a plan that applies
+		// nothing is the considered outcome there, not a plan that failed to produce a fix.
+		d.pass(StageGuardrails, GuardrailNothingApplies,
+			"the workload is owned by a deployer, so the plan is advice and applies nothing by design", nil)
+		return
+	}
 	if AppliesDiagnosedChange(d.Steps, d.Action, target) {
 		d.pass(StageGuardrails, GuardrailNothingApplies, "the plan applies the diagnosed change", nil)
 		return

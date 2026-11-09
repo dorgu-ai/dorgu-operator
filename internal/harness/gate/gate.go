@@ -197,6 +197,12 @@ func (g *Gate) evaluate(ctx context.Context, cand Candidate, phase Phase, metric
 		if d.Result == ResultRefuse {
 			break
 		}
+		// An approval for a workload a deployer owns applies nothing: what the later
+		// stages measure (blast radius, rate limit, mode) belongs to a change that will
+		// not be made. The integrity checks (Validate, Ground) and ownership have ruled.
+		if d.ownerAdvisory {
+			break
+		}
 	}
 	return d, nil
 }

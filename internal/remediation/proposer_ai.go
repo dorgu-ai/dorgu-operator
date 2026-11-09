@@ -165,6 +165,11 @@ func (p *Proposer) gateAndPersistPlan(
 	// "the headline still advertised the rejected value" one screen further down.
 	applyOwnershipShaping(action, workloadRef)
 
+	// A workload that Helm, Argo CD, Flux or kustomize owns gets advice only, the
+	// persona-update step included (B10 b). The gate has already measured that step
+	// against the live workload, so the values it quotes are the permitted ones.
+	adviseForOwner(action, workloadRef)
+
 	// The explanation's auto/advisory split is only true once the gate has run and
 	// the plan has been shaped.
 	//

@@ -135,9 +135,11 @@ func TestProposer_NoWorkloadWriteCommandForOwnedWorkload(t *testing.T) {
 					"step %d command writes to an owned workload: %q", step.Order, step.Command)
 			}
 
-			// Read-only commands stay: they are useful and harmless.
+			// Read-only commands stay: they are useful and harmless. The persona step became
+			// the same advice the workload step gives, so the plan has two steps (B10 b).
+			require.Len(t, action.Spec.Steps, 2)
 			assert.Equal(t, "kubectl rollout status deployment/my-app -n default",
-				action.Spec.Steps[2].Command)
+				action.Spec.Steps[1].Command)
 		})
 	}
 }
@@ -191,7 +193,7 @@ func TestProposer_PlanTextDiffersByOwner(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.owner, func(t *testing.T) {
 			action := proposeAgainst(t, tc.owner)
-			step := action.Spec.Steps[1]
+			step := action.Spec.Steps[0]
 
 			for _, want := range tc.wantInStep {
 				assert.Contains(t, step.Description, want)
@@ -207,20 +209,22 @@ func TestProposer_PlanTextDiffersByOwner(t *testing.T) {
 	}
 }
 
-// TestProposer_OwnershipDoesNotTouchPersonaSteps is the distinction that is
-// easiest to get wrong: the operator patching the ApplicationPersona is always
-// safe, so ownership must not demote it. Only the CLI patching the Deployment
-// is gated.
-func TestProposer_OwnershipDoesNotTouchPersonaSteps(t *testing.T) {
+// TestProposer_OwnershipTurnsPersonaStepsIntoAdvice replaces the B9-era contract, that
+// ownership never demoted a persona step because the operator writing its own persona
+// is safe. It is safe, and D1.1 finding 5 showed it is still wrong for a workload a
+// deployer owns: the plan promised "1 applied on approval" and approval patched the
+// persona while the owner's source of truth was never asked. Only the persona-update
+// of an owned workload is demoted; see TestB10Owned_* for the whole contract.
+func TestProposer_OwnershipTurnsPersonaStepsIntoAdvice(t *testing.T) {
 	action := proposeAgainst(t, dorguv1.ManagedByHelm)
 
-	personaStep := action.Spec.Steps[0]
-	require.Equal(t, dorguv1.StepTypePersonaUpdate, personaStep.Type)
-	assert.True(t, personaStep.AutoExecutable,
-		"a Helm-owned workload does not stop the operator writing its own persona")
-	require.NotNil(t, personaStep.Patch)
-	assert.Contains(t, string(personaStep.Patch.Raw), "64Mi")
-	assert.Equal(t, dorguv1.ActionTypePersonaUpdate, planned(action).Type)
+	for _, step := range action.Spec.Steps {
+		assert.NotEqual(t, dorguv1.StepTypePersonaUpdate, step.Type, "step %d", step.Order)
+		assert.False(t, step.AutoExecutable, "step %d", step.Order)
+		assert.Nil(t, step.Patch, "step %d", step.Order)
+	}
+	assert.Equal(t, dorguv1.ActionTypeNotification, planned(action).Type)
+	assert.Contains(t, action.Spec.Steps[0].Description, "64Mi", "the permitted value is still named")
 }
 
 // TestProposer_AIPath_CapIsRelativeToLiveWorkload is F-04 on the AI path: a
@@ -460,7 +464,9 @@ func TestProposer_OwnerInstructionQuotesThePermittedValue(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, result.Proposed)
 
-	owned := result.Action.Spec.Steps[1]
+	// The persona step became the same advice as the workload step and was not repeated (B10 b).
+	require.Len(t, result.Action.Spec.Steps, 1)
+	owned := result.Action.Spec.Steps[0]
 	assert.Empty(t, owned.Command, "a Helm-owned Deployment never gets a write command")
 	assert.Contains(t, owned.Description, "resources.limits.memory: 16Mi",
 		"the owner instruction names what the guardrail permits")

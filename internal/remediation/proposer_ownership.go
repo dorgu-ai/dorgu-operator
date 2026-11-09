@@ -17,11 +17,15 @@ limitations under the License.
 package remediation
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strings"
 
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
+	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
 	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
 )
 
@@ -245,4 +249,127 @@ func whyDorguWillNotPatch(ref *dorguv1.WorkloadRef) string {
 		}
 		return "Dorgu could not identify what manages this Deployment, so it will not patch it. Unknown is treated as owned, because a patch that collides with an unseen owner breaks their next deploy."
 	}
+}
+
+// adviseForOwner turns a plan for a workload that Helm, Argo CD, Flux or kustomize owns
+// into advice, and reports how many persona-update steps it converted (B10 b, D1.1 #5).
+//
+// applyOwnershipShaping above leaves persona-update steps alone, on the reasoning that the
+// operator writing its own ApplicationPersona is always safe. It is safe, and it was
+// still wrong for these workloads: the plan read "1 applied on approval", approving it
+// patched the persona, the Deployment kept its old values, and the deployer's source of
+// truth was never asked. An owned workload's change belongs in the owner's source, so
+// every step here is advice and none is auto-executable.
+//
+// Each persona-update step becomes a config-change step that says what to set and where,
+// in the same words the owner-shaped workload step already uses. A conversion whose
+// words equal a step the plan already has is dropped rather than repeated. The patch and
+// its pre-patch state go with the step: nothing in the plan can be read as a change to
+// apply, by this operator or by a client that reads steps[].
+//
+// Unknown ownership and an unresolved workload are not touched: with no evidence of a
+// deployer the persona proposal stands as before. It must run before the gate rules on
+// the plan as final, which refuses an owned workload's plan that still has an auto step.
+func adviseForOwner(action *dorguv1.RemediationAction, ref *dorguv1.WorkloadRef) int {
+	if action == nil || !gate.DeployerOwned(ref) {
+		return 0
+	}
+
+	reason := whyDorguWillNotPatch(ref)
+
+	seen := make(map[string]bool, len(action.Spec.Steps))
+	for i := range action.Spec.Steps {
+		if action.Spec.Steps[i].Type != dorguv1.StepTypePersonaUpdate {
+			seen[action.Spec.Steps[i].Description] = true
+		}
+	}
+
+	kept := make([]dorguv1.RemediationStep, 0, len(action.Spec.Steps))
+	converted := 0
+	for i := range action.Spec.Steps {
+		step := action.Spec.Steps[i].DeepCopy()
+		if step.Type != dorguv1.StepTypePersonaUpdate {
+			kept = append(kept, *step)
+			continue
+		}
+		converted++
+
+		own := changesOfPatch(step.Patch)
+		if len(own) > 0 {
+			step.Description = ownerInstruction(ref, own, step.Description)
+		}
+		step.Rationale = gate.AppendNote(step.Rationale, reason)
+		step.Type = dorguv1.StepTypeConfigChange
+		step.AutoExecutable = false
+		step.Patch, step.PrePatchState, step.Command = nil, nil, ""
+		if seen[step.Description] {
+			continue
+		}
+		seen[step.Description] = true
+		kept = append(kept, *step)
+	}
+	if converted == 0 {
+		return 0
+	}
+
+	for i := range kept {
+		kept[i].Order = int32(i + 1) //nolint:gosec // bounded by the plan's own step count
+		kept[i].ID = fmt.Sprintf("step-%d", i+1)
+	}
+	action.Spec.Steps = kept
+	action.Spec.Action = gate.DeriveAction(kept)
+	action.Spec.PlanSummary = gate.AppendNote(action.Spec.PlanSummary, reason)
+	return converted
+}
+
+// adviseAndSeal shapes a rule-based plan for a workload a deployer owns as advice and
+// has the gate rule on it as final. It returns the sealing decision, or the refusal.
+func (p *Proposer) adviseAndSeal(
+	ctx context.Context,
+	action *dorguv1.RemediationAction,
+	diag diagnosis.Diagnosis,
+	incident *dorguv1.IncidentMemory,
+	ref *dorguv1.WorkloadRef,
+) (*gate.Decision, *ProposalResult) {
+	if adviseForOwner(action, ref) > 0 {
+		action.Spec.Explanation = gate.AppendNote(action.Spec.Explanation, ownerAdviceNote(ref))
+	}
+	sealed, refusal := p.seal(ctx, action, diag, incident, false)
+	if refusal != nil {
+		return nil, refusal
+	}
+	installDecision(action, sealed)
+	return sealed, nil
+}
+
+// changesOfPatch reads the resource changes one persona patch makes, as the keys and
+// values a reader sets in their own source of truth.
+func changesOfPatch(patch *apiextensionsv1.JSON) []resourceChange {
+	if patch == nil || len(patch.Raw) == 0 {
+		return nil
+	}
+	probe := &dorguv1.RemediationAction{Spec: dorguv1.RemediationActionSpec{
+		Steps: []dorguv1.RemediationStep{{Type: dorguv1.StepTypePersonaUpdate, Patch: patch}},
+	}}
+	return proposedResourceChanges(probe)
+}
+
+// ownerAdviceNote is the sentence appended to an owned workload's explanation: who owns
+// it, and that Dorgu changes neither the persona nor the Deployment.
+func ownerAdviceNote(ref *dorguv1.WorkloadRef) string {
+	owner := strings.TrimSpace(ref.ManagedByDetail)
+	if owner == "" {
+		switch ref.ManagedBy {
+		case dorguv1.ManagedByHelm:
+			owner = "a Helm release"
+		case dorguv1.ManagedByArgoCD:
+			owner = "an ArgoCD application"
+		case dorguv1.ManagedByFlux:
+			owner = "a Flux controller"
+		default:
+			owner = "a kustomize overlay"
+		}
+	}
+	return fmt.Sprintf("%s owns this workload, so Dorgu will not change its persona or the Deployment: this is advice for you to apply in its source of truth.",
+		strings.ToUpper(owner[:1])+owner[1:])
 }

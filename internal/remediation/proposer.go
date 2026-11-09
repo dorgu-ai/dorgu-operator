@@ -373,7 +373,12 @@ func (p *Proposer) proposeResourceAdjustment(
 
 	// The gate rules on the plan. This path never reshapes it afterwards, so the
 	// candidate is final: a clamp is installed, a refusal ends the proposal.
-	dec, err := p.gate.Run(ctx, candidateFor(action, diag, incident, true), gate.PhaseProposal)
+	//
+	// A workload a deployer owns gets advice only (B10 b). The persona step is measured
+	// first, as a plan the gate has not seen finished, so the value the advice quotes is
+	// one the guardrails cleared; it is then shaped as advice and ruled on again as final.
+	owned := gate.DeployerOwned(workloadRef)
+	dec, err := p.gate.Run(ctx, candidateFor(action, diag, incident, !owned), gate.PhaseProposal)
 	if err != nil {
 		return nil, fmt.Errorf("gate: %w", err)
 	}
@@ -381,6 +386,12 @@ func (p *Proposer) proposeResourceAdjustment(
 		return skipped(dec), nil
 	}
 	installDecision(action, dec)
+	if owned {
+		var refusal *ProposalResult
+		if dec, refusal = p.adviseAndSeal(ctx, action, diag, incident, workloadRef); refusal != nil {
+			return refusal, nil
+		}
+	}
 
 	// CR5-03, on this path too. A rule-based plan records no step verdicts, so
 	// its at-the-cap disclosure claims a clamp that never happened just as the
