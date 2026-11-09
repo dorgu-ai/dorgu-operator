@@ -87,6 +87,12 @@ jobs:
           subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
+          # push-to-registry also makes the action write an "artifact metadata storage record", which
+          # only feeds the organization's Linked Artifacts page and needs the artifact-metadata: write
+          # permission (without it the step warns "Failed to create storage record"). Verification
+          # (`gh attestation verify`) does not use it, so it is switched off rather than widening the
+          # token's permissions.
+          create-storage-record: false
 
   helm:
     name: Package & Publish Helm Chart
@@ -135,6 +141,17 @@ jobs:
         with:
           subject-path: dist/dorgu-operator-*.tgz
 
+      # attest-build-provenance with push-to-registry reads registry credentials from the Docker
+      # config (~/.docker/config.json). `helm registry login` writes Helm's own credentials file
+      # instead, so the chart attestation failed with "No credentials found for registry ghcr.io".
+      # This login is for the attest step; the Helm login below stays for `helm push`.
+      - name: Log in to GHCR (attestation)
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Log in to GHCR (Helm OCI)
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io \
@@ -172,6 +189,8 @@ jobs:
           subject-name: ghcr.io/${{ github.repository_owner }}/dorgu-operator-charts/dorgu-operator
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
+          # See the image attestation: no storage record, so no artifact-metadata: write permission.
+          create-storage-record: false
 
       - name: Upload chart artifact
         uses: actions/upload-artifact@v4
