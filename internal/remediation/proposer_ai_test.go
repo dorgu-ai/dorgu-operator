@@ -601,3 +601,26 @@ func assertRuleBasedSingleStep(t *testing.T, action *dorguv1.RemediationAction) 
 	assert.JSONEq(t, string(step.Patch.Raw), string(planned(action).Patch.Raw),
 		"spec.action is derived from steps[]")
 }
+
+// Re-review N-3: a proposal records the signal it answers, on both paths, so a
+// rejection can later be read as a no to that shape of the fault only.
+func TestProposer_RecordsTheSignalItAnswers(t *testing.T) {
+	for name, opts := range map[string][]ProposerOption{
+		"rule path": nil,
+		"AI path":   {WithPlanner(&stubPlanner{plan: threeStepPlan()})},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := fake.NewClientBuilder().WithScheme(newTestScheme()).
+				WithRuntimeObjects(newTestPersona(defaultNamespace, "my-app")).
+				WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+			p := NewProposer(c, gate.New(c, testLogger()), testLogger(), opts...)
+			incident := newTestIncident(defaultNamespace, "oom", "my-app", "OOMKilled")
+
+			result, err := p.Propose(context.Background(), newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical), incident)
+
+			require.NoError(t, err)
+			require.True(t, result.Proposed)
+			assert.Equal(t, "OOMKilled", result.Action.Annotations[gate.AnnotationAnswersSignal])
+		})
+	}
+}

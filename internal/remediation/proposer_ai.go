@@ -300,6 +300,7 @@ func (p *Proposer) buildPlanAction(
 				"dorgu.io/persona-name":      diag.PersonaRef.Name,
 				"dorgu.io/persona-namespace": namespace,
 			},
+			Annotations: answersSignal(diag),
 		},
 		Spec: dorguv1.RemediationActionSpec{
 			IncidentRef: dorguv1.IncidentReference{

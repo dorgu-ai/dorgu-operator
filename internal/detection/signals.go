@@ -172,3 +172,26 @@ func SeverityRank(s Severity) int {
 		return -1
 	}
 }
+
+// faultRank orders the signals of the progression of one container's fault, by how
+// far along it is. A readiness failure is the mildest; the kubelet restarting the
+// container for an unknown reason, then for a liveness probe, is worse; then
+// CrashLoopBackOff; and an OOM kill is the worst, the one with a cause to fix.
+// Liveness, with the kubelet's own event behind it, outranks a restart loop of
+// unknown cause.
+var faultRank = map[SignalType]int{
+	SignalReadinessNotReady: 1,
+	SignalRestartLoop:       2,
+	SignalLivenessRestarts:  3,
+	SignalCrashLoopBackOff:  4,
+	SignalOOMKilled:         5,
+}
+
+// FaultRank returns a signal's rank in the progression of one container's fault,
+// and whether it is part of it at all. Everything that treats the progression as
+// one fault (merging incidents, the recurrence cap, the rejection cooldown) asks
+// here, so there is one ordering.
+func FaultRank(t SignalType) (int, bool) {
+	rank, ok := faultRank[t]
+	return rank, ok
+}

@@ -177,3 +177,61 @@ func TestOwnActiveProposalCoversTheWholeLineage(t *testing.T) {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+// Re-review N-3: a rejection is a no to the shape of the fault the human saw. A
+// no to the milder plan must not silence the proposal for a strictly worse shape
+// of the same fault, and a no to the worse shape still holds for the milder one.
+func TestRejectionCooldownIsForTheShapeThatWasRejected(t *testing.T) {
+	g := &Gate{now: func() time.Time { return fixedNow }}
+	s := dedupCooldownStage{g: g}
+	rejected := func(answers string, ago time.Duration) dorguv1.RemediationAction {
+		ra := raFor("ra-1", baseIncident, phaseRejected)
+		if answers != "" {
+			ra.Annotations = map[string]string{AnnotationAnswersSignal: answers}
+		}
+		ra.Status.Conditions = []metav1.Condition{{
+			Type: ConditionRejected, Status: metav1.ConditionTrue, LastTransitionTime: metav1.NewTime(fixedNow.Add(-ago)),
+		}}
+		return ra
+	}
+	candidate := func(signal string) *Candidate {
+		cand := lineageCandidate(baseIncident)
+		cand.Facts.PrimarySignal = signal
+		cand.Facts.Incident.Spec.Detection.Signal = signal // the incident has escalated to it
+		return cand
+	}
+	tests := []struct {
+		name     string
+		rejected string
+		now      string
+		held     bool
+	}{
+		{"a no to readiness does not silence an OOM", "ReadinessNotReady", "OOMKilled", false},
+		{"a no to readiness does not silence a crash loop", "ReadinessNotReady", "CrashLoopBackOff", false},
+		{"a no to a restart loop does not silence the liveness finding", "RestartLoop", "LivenessRestarts", false},
+		{"a no to the OOM still holds when it is only readiness again", "OOMKilled", "ReadinessNotReady", true},
+		{"a no to the same shape holds", "ReadinessNotReady", "ReadinessNotReady", true},
+		{"a rejection that does not say what it answered holds, as before", "", "OOMKilled", true},
+		{"a signal outside the progression is compared as before", "ImagePullBackOff", "ImagePullBackOff", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reason := s.rejectionReason(candidate(tt.now), []dorguv1.RemediationAction{rejected(tt.rejected, 10*time.Minute)})
+			assert.Equal(t, tt.held, reason != "", "reason: %q", reason)
+		})
+	}
+}
+
+func TestRejectionCooldownStillExpires(t *testing.T) {
+	g := &Gate{now: func() time.Time { return fixedNow }}
+	s := dedupCooldownStage{g: g}
+	ra := raFor("ra-1", baseIncident, phaseRejected)
+	ra.Annotations = map[string]string{AnnotationAnswersSignal: "OOMKilled"}
+	ra.Status.Conditions = []metav1.Condition{{
+		Type: ConditionRejected, Status: metav1.ConditionTrue, LastTransitionTime: metav1.NewTime(fixedNow.Add(-2 * time.Hour)),
+	}}
+	cand := lineageCandidate(baseIncident)
+	cand.Facts.PrimarySignal = "ReadinessNotReady"
+	cand.Facts.Incident.Spec.Detection.Signal = "ReadinessNotReady"
+	assert.Empty(t, s.rejectionReason(cand, []dorguv1.RemediationAction{ra}))
+}

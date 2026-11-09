@@ -50,6 +50,11 @@ const (
 	maxLineageLength = maxIncidentNameLength - 13
 )
 
+// AnnotationAnswersSignal is the annotation a RemediationAction carries naming the
+// signal of the diagnosis it answers, so that a rejection can later be read as a
+// no to THAT shape of a fault and not to every shape (see rejectionReason).
+const AnnotationAnswersSignal = "dorgu.io/answers-signal"
+
 var generationSuffix = regexp.MustCompile(`-r([0-9]+)$`)
 
 // withoutGeneration removes a trailing recurrence suffix. A base name always ends

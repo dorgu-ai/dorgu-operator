@@ -129,7 +129,10 @@ func remediationTargetsPath(ra *dorguv1.RemediationAction, target string) bool {
 // fault that comes back after resolving is a new IncidentMemory, and the human's
 // no to its fix still holds for the cooldown. It
 // lifts when the cooldown expires or the signal materially changes, which here
-// means the live diagnosis is more severe than the incident the user declined.
+// means the live diagnosis is more severe than the incident the user declined, or
+// is a strictly worse shape of the fault than the one the rejected plan answered
+// (an incident that escalated has its own severity raised, so the severity
+// comparison alone would call the escalation "the same").
 //
 // Deliberately not covered: a rejection on incident A does not suppress a
 // different incident B that happens to resolve to the same patch. Cross-incident
@@ -149,6 +152,12 @@ func (s dedupCooldownStage) rejectionReason(cand *Candidate, siblings []dorguv1.
 			continue
 		}
 
+		if strictlyWorseShape(cand.Facts.PrimarySignal, ra.Annotations[AnnotationAnswersSignal]) {
+			// The human said no to a milder shape of this fault. The fault is now a
+			// worse one, which they have not been asked about.
+			continue
+		}
+
 		rejectedAt, stamped := rejectionTime(ra)
 		if !stamped {
 			// The CLI rejects by patching status.phase alone; the operator stamps the
@@ -162,6 +171,16 @@ func (s dedupCooldownStage) rejectionReason(cand *Candidate, siblings []dorguv1.
 		}
 	}
 	return ""
+}
+
+// strictlyWorseShape reports whether signal is further along the progression of
+// one container's fault than the signal a rejected proposal answered. A rejection
+// that does not say what it answered, or a signal outside the progression, is never
+// "worse": it is compared as it always was.
+func strictlyWorseShape(signal, answered string) bool {
+	now, nowOK := detection.FaultRank(detection.SignalType(signal))
+	was, wasOK := detection.FaultRank(detection.SignalType(answered))
+	return nowOK && wasOK && now > was
 }
 
 // rejectionTime returns when the rejection was recorded, and whether a timestamp
