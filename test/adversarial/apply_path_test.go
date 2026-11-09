@@ -53,8 +53,8 @@ func TestOP01HandCreatedSixteenXPatch(t *testing.T) {
 	_, err := reconcile(t, newRemediationController(), ra)
 
 	mem := personaMemory(t, ns)
-	blocked := mem == baselineMemory && ra.Status.Phase == phaseFailed && ra.Status.ApplyTicket == nil &&
-		refusedAtApproval(ra)
+	ended := ra.Status.Phase == phaseFailed || ra.Status.Phase == phaseExpired
+	blocked := mem == baselineMemory && ended && ra.Status.ApplyTicket == nil && refusedAtApproval(ra)
 	Expect(t, "OP-01", blocked, fmt.Sprintf("persona memory %s -> %s, RA phase %q, ticket %v, reconcile err %v",
 		baselineMemory, mem, ra.Status.Phase, ra.Status.ApplyTicket != nil, err))
 }
@@ -301,17 +301,23 @@ func TestOP09ForgedSafetyVerdict(t *testing.T) {
 		inStatus, personaMemory(t, ns), ra.Status.Phase, err))
 }
 
-// refusedAtApproval reports whether ra ended as the gate's refusal at approval:
-// Failed, with the GateRefusedAtApproval reason and the refusing guardrail
-// persisted on the GateRefused condition.
+// refusedAtApproval reports whether ra ended as the gate's refusal at approval, with
+// the refusing guardrail persisted on the GateRefused condition: Failed with the
+// GateRefusedAtApproval reason, or, for an action the gate has no record of
+// clearing (hand-made, or made before the gate), Expired with the PredatesGate
+// reason (B8: nothing failed, so it is not a failed remediation; nothing was applied
+// either way, which the callers assert).
 func refusedAtApproval(ra *dorguv1.RemediationAction) bool {
-	if ra.Status.Phase != phaseFailed {
+	if ra.Status.Phase != phaseFailed && ra.Status.Phase != phaseExpired {
 		return false
 	}
 	applied, refused := false, false
 	for _, c := range ra.Status.Conditions {
 		switch {
-		case c.Type == "Applied" && c.Reason == dorguv1.ReasonGateRefusedAtApproval:
+		case ra.Status.Phase == phaseFailed && c.Type == "Applied" && c.Reason == dorguv1.ReasonGateRefusedAtApproval:
+			applied = true
+		case ra.Status.Phase == phaseExpired && c.Type == "Expired" && c.Status == metav1.ConditionTrue &&
+			c.Reason == "PredatesGate":
 			applied = true
 		case c.Type == dorguv1.ConditionGateRefused && c.Status == metav1.ConditionTrue && c.Reason != "":
 			refused = true

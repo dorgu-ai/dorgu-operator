@@ -87,6 +87,12 @@ const (
 	// ReasonApprovalTimedOut is the ConditionExpired reason.
 	ReasonApprovalTimedOut = "ApprovalTimedOut"
 
+	// ReasonPredatesGate is the third ConditionExpired reason: the proposal was made
+	// before the gate existed (by a 0.12.x operator), so it carries no record of the
+	// gate clearing it and cannot be approved. Nothing failed; the operator proposes
+	// again.
+	ReasonPredatesGate = "PredatesGate"
+
 	// ReasonSuperseded is the other ConditionExpired reason: the incident the
 	// proposal answered escalated to a worse shape, so the advice no longer fits.
 	ReasonSuperseded = "Superseded"
@@ -434,6 +440,19 @@ func (r *RemediationController) refuseAtApproval(
 		gate.ReasonEnum(guardrail), reason)
 
 	message := fmt.Sprintf("refused at approval (%s): %s; nothing was applied", guardrail, reason)
+	if guardrail == gate.GuardrailNoProposalRecord {
+		// No record that the operator's gate cleared this plan: a proposal made by an
+		// operator from before the gate (or one not made by the operator at all). It
+		// cannot be approved, but nothing failed, so it is not a failed remediation.
+		if err := r.expirePredatingGate(ctx, action, reason); err != nil {
+			return err
+		}
+		r.reportApprovalRefusal(action, stage, message)
+		if action.Status.ApprovedAt != nil {
+			observeDecisionTime(action, action.Status.ApprovedAt.Time)
+		}
+		return nil
+	}
 	if err := r.transitionToFailedWithReason(ctx, action, dorguv1.ReasonGateRefusedAtApproval, message); err != nil {
 		return err
 	}
@@ -441,6 +460,24 @@ func (r *RemediationController) refuseAtApproval(
 	if action.Status.ApprovedAt != nil {
 		observeDecisionTime(action, action.Status.ApprovedAt.Time)
 	}
+	return nil
+}
+
+// expirePredatingGate settles a proposal the gate has no record of as Expired with
+// the reason PredatesGate. Like every Expired it is terminal, nothing was applied,
+// and it is neither a rejection nor a failure: no cooldown holds the application,
+// and the operator proposes again for the incident if the problem persists.
+func (r *RemediationController) expirePredatingGate(ctx context.Context, action *dorguv1.RemediationAction, detail string) error {
+	message := "This proposal predates the operator's gate (it was made by an older operator, or not by the operator), " +
+		"so the gate has no record of clearing it and it cannot be approved: " + detail + ". Nothing was applied. " +
+		"It is not a rejection and not a failure and starts no cooldown; the operator proposes again if the problem persists."
+	action.Status.Phase = RemediationPhaseExpired
+	action.Status.ApplyTicket = nil
+	setCondition(&action.Status.Conditions, ConditionExpired, metav1.ConditionTrue, ReasonPredatesGate, message)
+	if err := r.Status().Update(ctx, action); err != nil {
+		return fmt.Errorf("updating status to Expired: %w", err)
+	}
+	emit(r.Recorder, action, corev1.EventTypeWarning, EventReasonExpired, message)
 	return nil
 }
 

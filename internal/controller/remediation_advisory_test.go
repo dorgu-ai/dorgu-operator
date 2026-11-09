@@ -202,14 +202,16 @@ var _ = Describe("RemediationController advisory plans", func() {
 
 		var updated dorguv1.RemediationAction
 		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(action), &updated)).To(Succeed())
-		Expect(updated.Status.Phase).To(Equal(RemediationPhaseFailed))
+		// A proposal the gate never cleared predates the gate: Expired/PredatesGate, not
+		// a failed remediation (B8, EKS QA F-3).
+		Expect(updated.Status.Phase).To(Equal(RemediationPhaseExpired))
 		Expect(updated.Status.AppliedAt).To(BeNil())
 		Expect(updated.Status.ApplyTicket).To(BeNil())
 
-		applied := findCondition(updated.Status.Conditions, ConditionApplied)
-		Expect(applied).NotTo(BeNil())
-		Expect(applied.Reason).To(Equal(dorguv1.ReasonGateRefusedAtApproval))
-		Expect(applied.Message).To(ContainSubstring("nothing was applied"))
+		expired := findCondition(updated.Status.Conditions, ConditionExpired)
+		Expect(expired).NotTo(BeNil())
+		Expect(expired.Reason).To(Equal(ReasonPredatesGate))
+		Expect(expired.Message).To(ContainSubstring("Nothing was applied"))
 
 		// The refusal is persisted with its reason as an enum, not only as prose.
 		refused := findCondition(updated.Status.Conditions, dorguv1.ConditionGateRefused)
