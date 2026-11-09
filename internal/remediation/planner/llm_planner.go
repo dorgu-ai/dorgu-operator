@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/dorgu-ai/dorgu-operator/internal/llm"
+	"github.com/dorgu-ai/dorgu-operator/internal/metrics"
 )
 
 const (
@@ -92,6 +93,9 @@ func (p *LLMPlanner) PlanRemediation(ctx context.Context, rc RemediationContext)
 		if parseErr == nil {
 			return plan, nil
 		}
+		// The model replied and the reply is not a usable plan. Counted like an invalid
+		// diagnosis reply, so a model that keeps answering with nothing shows on the dashboard.
+		metrics.RecordLLMInvalidOutput(p.client.Provider(), llm.PurposePlanning)
 		lastErr = parseErr
 	}
 
@@ -107,7 +111,13 @@ func extractPlan(raw json.RawMessage) (*RemediationPlan, error) {
 	if err := json.Unmarshal(raw, &plan); err != nil {
 		return nil, fmt.Errorf("unmarshal tool input: %w", err)
 	}
-	return plan.toPlan(), nil
+	result := plan.toPlan()
+	if len(result.Steps) == 0 {
+		// A plan with no steps proposes nothing. It used to parse as a success and be cached
+		// for the whole cache TTL (D1.1 finding 7); it is an unusable reply, asked once more.
+		return nil, fmt.Errorf("the plan has no steps")
+	}
+	return result, nil
 }
 
 // rawPlan mirrors the tool schema. patch is a JSON-encoded string in the schema

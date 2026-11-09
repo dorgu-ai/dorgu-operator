@@ -131,7 +131,7 @@ func TestPlanSystemPrompt_CarriesTheGroundingAndOwnershipRules(t *testing.T) {
 		"OWNERSHIP",
 		"NEVER suggest a command that writes to it",
 		"managedBy \"unknown\" is treated as owned",
-		"persona-update steps are unaffected",
+		"do not apply to persona-update steps",
 	} {
 		assert.Contains(t, planSystemPrompt, want)
 	}

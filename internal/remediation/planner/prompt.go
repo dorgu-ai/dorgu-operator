@@ -79,9 +79,11 @@ O3. Instead, tell the reader exactly what to change in the owner's source of
 O4. managedBy "unknown" is treated as owned. Do not suggest workload writes.
 O5. Read-only commands (kubectl get, describe, logs, top, events, rollout
    status/history) are fine for any workload.
-O6. persona-update steps are unaffected by all of this. The operator patches the
-   ApplicationPersona, never the workload, so those steps stay safe and
-   auto-applied whoever owns the Deployment.
+O6. The command rules above (O2 to O5) do not apply to persona-update steps: use
+   one for a resource change whoever owns the Deployment. When another system
+   owns the Deployment, Dorgu turns that step into advice for the owner's source
+   of truth instead of applying it, so word its description as an instruction
+   and not as a promise that anything is applied for the reader.
 
 Rules you MUST follow:
 1. Order steps by execution sequence, starting at 1.
@@ -124,6 +126,9 @@ Rules you MUST follow:
    approaches that previously failed or were rolled back.
 7. Give a concise rootCause and a confidence between 0 and 1.
 8. Each step needs a short description, a rationale, and a risk (low|medium|high).
+   Write real sentences for both. Never use a filler such as "placeholder".
+9. Submit at least one step, never an empty steps list. If no change is warranted,
+   submit a single manual step that says what to check and why.
 
 Be specific and actionable. Do not include caveats about being an AI.`
 
