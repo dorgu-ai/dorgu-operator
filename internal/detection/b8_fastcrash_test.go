@@ -23,6 +23,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // B8 EKS QA F-4: a container that exits 1 five seconds after it starts was
@@ -157,4 +158,45 @@ func TestPendingLong_StillRaisedForAPodThatIsPendingForAnotherReason(t *testing.
 			assert.Equal(t, []SignalType{SignalPodPendingLong}, signalTypes(sigs))
 		})
 	}
+}
+
+// The kubelet's back-off spaces a fast crasher's restarts further apart every time,
+// so asking for two restarts to be OBSERVED after the first sighting took about two
+// minutes (measured on EKS: 117 s). For a pod younger than the window every restart
+// it has had happened inside it, so its restart count is the delta, and the first
+// sighting is already evidence.
+
+func youngCrasher(c *fakeClock, age time.Duration, restarts int32) corev1.Pod {
+	pod := runningPod("api-1", terminatedBetweenRuns(c, restarts))
+	pod.CreationTimestamp = ago(c, age)
+	return pod
+}
+
+func TestFastCrasher_AYoungPodsRestartCountIsTheDeltaAtFirstSight(t *testing.T) {
+	c := newClock()
+	sigs := collectWith(t, c, []corev1.Pod{youngCrasher(c, 45*time.Second, 2)}, nil)
+
+	require.True(t, hasType(sigs, SignalRestartLoop), "two restarts in the pod's 45 seconds of life, got %v", signalTypes(sigs))
+}
+
+func TestFastCrasher_OneRestartOfAYoungPodIsNotALoop(t *testing.T) {
+	c := newClock()
+	sigs := collectWith(t, c, []corev1.Pod{youngCrasher(c, 20*time.Second, 1)}, nil)
+
+	assert.False(t, hasLoop(sigs))
+}
+
+func TestFastCrasher_AnOldPodsLifetimeCountIsNotEvidenceAtFirstSight(t *testing.T) {
+	c := newClock()
+	sigs := collectWith(t, c, []corev1.Pod{youngCrasher(c, 3*time.Hour, 5)}, nil)
+
+	assert.False(t, hasLoop(sigs), "first sight of an old pod only seeds the history")
+}
+
+func TestFastCrasher_AYoungPodWithNoCreationTimeIsNotAssumedYoung(t *testing.T) {
+	c := newClock()
+	pod := youngCrasher(c, 0, 5)
+	pod.CreationTimestamp = metav1.Time{}
+
+	assert.False(t, hasLoop(collectWith(t, c, []corev1.Pod{pod}, nil)))
 }

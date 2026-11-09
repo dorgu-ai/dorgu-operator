@@ -83,6 +83,7 @@ func (p *PodCollector) probeSignals(
 	ctx context.Context, pod corev1.Pod, cs corev1.ContainerStatus, now time.Time, found []Signal, book *eventBook,
 ) []Signal {
 	delta, history := p.restarts.observe(restartKey(pod, cs), now, cs.RestartCount)
+	delta, history = p.restartsInYoungPod(pod, cs, now, delta, history)
 
 	if ownedByCrashOrOOM(found) {
 		return nil
@@ -182,6 +183,26 @@ func (p *PodCollector) loopWorthALookup(cs corev1.ContainerStatus, now time.Time
 	recentKill := cs.RestartCount >= p.livenessRestarts && !last.FinishedAt.IsZero() &&
 		now.Sub(last.FinishedAt.Time) <= p.livenessWindow
 	return observedLoop || recentKill
+}
+
+// restartsInYoungPod answers "how many restarts in the window" for a pod that is
+// younger than the window, when the tracker cannot (the first sighting, or a gap).
+// Every restart such a pod has had happened inside the window, so its restart count
+// is the delta. This matters for a container that crashes right after it starts:
+// the kubelet's back-off doubles the time between its restarts, so waiting to
+// OBSERVE two of them after the first sighting took about two minutes (EKS QA
+// 2026-11-09, measured 117 s). A pod with no creation time, or an older one, is not
+// assumed young: its lifetime count says nothing about the window.
+func (p *PodCollector) restartsInYoungPod(
+	pod corev1.Pod, cs corev1.ContainerStatus, now time.Time, delta int32, history restartHistory,
+) (int32, restartHistory) {
+	if history == historyInWindow || pod.CreationTimestamp.IsZero() {
+		return delta, history
+	}
+	if age := now.Sub(pod.CreationTimestamp.Time); age < 0 || age > p.livenessWindow {
+		return delta, history
+	}
+	return cs.RestartCount, historyInWindow
 }
 
 // latestExit is the termination that ended the container's most recent run. While
@@ -388,7 +409,9 @@ func (p *PodCollector) planEventReads(pods []corev1.Pod, now time.Time) map[stri
 		key := podKey(pod)
 		isPrio, isRest := false, false
 		for _, cs := range pod.Status.ContainerStatuses {
-			if delta, history := p.restarts.peek(restartKey(pod, cs), now, cs.RestartCount); p.loopWorthALookup(
+			delta, history := p.restarts.peek(restartKey(pod, cs), now, cs.RestartCount)
+			delta, history = p.restartsInYoungPod(pod, cs, now, delta, history)
+			if p.loopWorthALookup(
 				cs, now, history == historyInWindow && delta >= p.livenessRestarts) {
 				isPrio = true
 				break
