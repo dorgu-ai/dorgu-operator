@@ -42,6 +42,10 @@ import (
 // offending steps are dropped now, the remainder goes through the full gate, and the
 // refused command text appears nowhere in what is kept.
 
+// rulesDeploymentFix is the rules' SuggestedAction for an image-pull failure: fix the
+// Deployment, no persona change.
+const rulesDeploymentFix = "deployment-fix"
+
 // notPlain is a command the display sanitizer lets through and the gate's plain-kubectl
 // check refuses: braces and brackets in a jsonpath expression.
 const notPlain = "kubectl get pods -l app=my-app -o jsonpath='{.items[*].status.containerStatuses[*].state.waiting.reason}'"
@@ -71,7 +75,7 @@ func proposeImageError(t *testing.T, plan *planner.RemediationPlan) (*ProposalRe
 	p := NewProposer(c, gate.New(c, testLogger()), testLogger(), WithPlanner(cp))
 	diag := newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical)
 	diag.Contributing[0].Signal.Type = detection.SignalImagePullBackOff
-	diag.SuggestedAction = "deployment-fix"
+	diag.SuggestedAction = rulesDeploymentFix
 	incident := newTestIncident(defaultNamespace, "image", "my-app", "ImagePullBackOff")
 	result, err := p.Propose(context.Background(), diag, incident)
 	require.NoError(t, err)
@@ -204,7 +208,7 @@ func TestStepCommandRefusal_ANarrowedPlanThatCannotBeGatedLeavesTheFirstRefusal(
 	p := NewProposer(c, gate.New(c, testLogger()), testLogger())
 	refusal := &ProposalResult{Stage: gate.StageValidate, Reason: gate.GuardrailStepCommand}
 	diag := newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical)
-	diag.SuggestedAction = "deployment-fix"
+	diag.SuggestedAction = rulesDeploymentFix
 	steps := []dorguv1.RemediationStep{{Order: 1, ID: "step-1", Type: dorguv1.StepTypeManual, Description: "look", Risk: "low"}}
 
 	result, err := p.proposeNarrowed(context.Background(), diag, newTestIncident(defaultNamespace, "image", "my-app", "ImagePullBackOff"),
