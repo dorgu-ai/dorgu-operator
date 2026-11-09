@@ -85,6 +85,13 @@ type ProposalResult struct {
 	// Decision is the gate's last word on the proposal: nil only when the
 	// proposal was skipped before the gate was asked.
 	Decision *gate.Decision
+
+	// PlanRefusal is set on a proposal that was made after the gate refused the AI
+	// planner's first plan at Validate/ActionClass (a persona-update the rules did
+	// not authorise) and the plan's advisory steps were proposed instead. It is the
+	// refusal of the first plan, so the caller records it (a condition and an Event
+	// on the incident, as for any refusal) while still reporting the proposal.
+	PlanRefusal *ProposalResult
 }
 
 // RemediationProposer generates RemediationAction CRDs from diagnoses.

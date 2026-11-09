@@ -7,6 +7,12 @@
 {{- if .Values.llm.provider }}
 {{- $_ := include "dorgu-operator.llmKeyEnv" . }}
 {{- end }}
+{{- /* Keys added after 0.12.1 are read with dig and a default, never as
+       .Values.a.b.c: `helm upgrade --reuse-values` reuses the previous release's
+       values and ignores this chart's values.yaml, so a new key (or its parent map)
+       can be absent and a direct read would panic or render an empty flag. The
+       defaults here must match values.yaml (chart_reuse_values_test.go checks). */}}
+{{- $eventPipeline := dig "enabled" false (.Values.eventPipeline | default dict) }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -61,12 +67,12 @@ spec:
             - --enable-health-check={{ .Values.healthCheck.enabled }}
             {{- if .Values.healthCheck.enabled }}
             - --health-check-interval={{ .Values.healthCheck.interval }}
-            - --readiness-threshold={{ .Values.healthCheck.readinessThreshold }}
-            - --liveness-restart-count={{ .Values.healthCheck.livenessRestarts.count }}
-            - --liveness-restart-window={{ .Values.healthCheck.livenessRestarts.window }}
-            - --incident-recurrence-cap={{ .Values.healthCheck.recurrence.cap }}
-            - --incident-recurrence-window={{ .Values.healthCheck.recurrence.window }}
-            - --resolved-incident-retention={{ .Values.healthCheck.resolvedRetention }}
+            - --readiness-threshold={{ dig "readinessThreshold" "2m" .Values.healthCheck }}
+            - --liveness-restart-count={{ dig "livenessRestarts" "count" 2 .Values.healthCheck }}
+            - --liveness-restart-window={{ dig "livenessRestarts" "window" "10m" .Values.healthCheck }}
+            - --incident-recurrence-cap={{ dig "recurrence" "cap" 3 .Values.healthCheck }}
+            - --incident-recurrence-window={{ dig "recurrence" "window" "24h" .Values.healthCheck }}
+            - --resolved-incident-retention={{ dig "resolvedRetention" "720h" .Values.healthCheck }}
             {{- end }}
             {{- if not .Values.metricsServer.enabled }}
             - --enable-metrics-server=false
@@ -74,8 +80,8 @@ spec:
             {{- /* Rendered unconditionally so the pod spec states whether the event
                    pipeline runs. The bounds on DorguEvent records only mean
                    something when it does; maxRecords: 0 means "no cap". */}}
-            - --enable-event-pipeline={{ .Values.eventPipeline.enabled }}
-            {{- if .Values.eventPipeline.enabled }}
+            - --enable-event-pipeline={{ $eventPipeline }}
+            {{- if $eventPipeline }}
             - --dorgu-event-retention={{ .Values.dorguEvents.retention }}
             - --dorgu-event-max-records={{ .Values.dorguEvents.maxRecords }}
             {{- end }}
@@ -86,7 +92,7 @@ spec:
             - --llm-model={{ .Values.llm.model }}
             {{- end }}
             {{- if .Values.llm.provider }}
-            - --llm-cache-ttl={{ .Values.llm.cacheTTL }}
+            - --llm-cache-ttl={{ dig "cacheTTL" "30m" .Values.llm }}
             {{- end }}
             {{- /* The API key is never passed as an inline arg (it would leak into the
                    pod spec and `helm get values`). It is injected as the provider's key
@@ -96,7 +102,7 @@ spec:
             {{- end }}
             {{- /* Rendered unconditionally so the pod spec states how long a proposal
                    may wait for approval before it expires. */}}
-            - --remediation-pending-ttl={{ .Values.remediation.pendingTTL }}
+            - --remediation-pending-ttl={{ dig "pendingTTL" "24h" (.Values.remediation | default dict) }}
             {{- with .Values.safety.excludedNamespaces }}
             - --safety-excluded-namespaces={{ join "," . }}
             {{- end }}

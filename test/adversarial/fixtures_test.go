@@ -49,6 +49,7 @@ const (
 	phaseApproved    = "Approved"
 	phaseApplying    = "Applying"
 	phaseFailed      = "Failed"
+	phaseExpired     = "Expired"
 	phaseVerifying   = "Verifying"
 	signalOOMKilled  = "OOMKilled"
 	containerName    = "app"

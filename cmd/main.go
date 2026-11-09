@@ -129,17 +129,13 @@ func main() {
 		HealthProbeBindAddress: cfg.probeAddr,
 		LeaderElection:         cfg.enableLeaderElection,
 		LeaderElectionID:       "48ec518d.dorgu.io",
-		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
-		// when the Manager ends. This requires the binary to immediately end when the
-		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly
-		// speeds up voluntary leader transitions as the new leader don't have to wait
-		// LeaseDuration time first.
-		//
-		// In the default scaffold provided, the program ends immediately after
-		// the manager stops, so would be fine to enable this option. However,
-		// if you are doing or is intended to do any operation such as perform cleanups
-		// after the manager stops then its usage might be unsafe.
-		// LeaderElectionReleaseOnCancel: true,
+		// Step down voluntarily when the manager ends, so a rolling update does not leave
+		// detection without a leader for the lease duration (EKS QA 2026-11-09 F-6: about
+		// 30 s after every helm upgrade). Safe here because mgr.Start is the last thing
+		// main does: the process exits as soon as it returns, with no cleanup after it.
+		// Keep it that way: work added after mgr.Start would run while another replica
+		// already holds the lease.
+		LeaderElectionReleaseOnCancel: true,
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")

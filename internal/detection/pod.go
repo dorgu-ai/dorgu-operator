@@ -279,6 +279,14 @@ func (p *PodCollector) checkPendingLong(pod corev1.Pod, now time.Time) (Signal, 
 		return Signal{}, false
 	}
 
+	// A pod whose image cannot be pulled stays Pending, so it would cross this
+	// threshold too and open a second incident for the one fault. The image error
+	// is the cause and has its own signal; this one is for a pod that is Pending
+	// for any other reason (EKS QA 2026-11-09 F-1).
+	if hasImageError(pod) {
+		return Signal{}, false
+	}
+
 	age := now.Sub(pod.CreationTimestamp.Time)
 	if age < p.pendingTimeout {
 		return Signal{}, false
@@ -330,6 +338,30 @@ func (p *PodCollector) checkContainer(pod corev1.Pod, cs corev1.ContainerStatus,
 	return signals
 }
 
+// isImageErrorReason is true for the waiting reasons of a container whose image cannot be
+// used: the pull failed (and is being retried, or backed off), or the reference is
+// not a valid image name.
+func isImageErrorReason(reason string) bool {
+	switch reason {
+	case "ImagePullBackOff", "ErrImagePull", "InvalidImageName":
+		return true
+	}
+	return false
+}
+
+// hasImageError reports whether any container of the pod, an init container
+// included, is waiting on an image error.
+func hasImageError(pod corev1.Pod) bool {
+	for _, group := range [][]corev1.ContainerStatus{pod.Status.InitContainerStatuses, pod.Status.ContainerStatuses} {
+		for i := range group {
+			if w := group[i].State.Waiting; w != nil && isImageErrorReason(w.Reason) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // checkWaiting detects CrashLoopBackOff and ImagePullBackOff.
 func (p *PodCollector) checkWaiting(pod corev1.Pod, cs corev1.ContainerStatus, now time.Time) (Signal, bool) {
 	reason := cs.State.Waiting.Reason
@@ -347,7 +379,7 @@ func (p *PodCollector) checkWaiting(pod corev1.Pod, cs corev1.ContainerStatus, n
 			Metadata:   containerMetadata(pod, cs),
 		}, true
 
-	case "ImagePullBackOff", "ErrImagePull":
+	case "ImagePullBackOff", "ErrImagePull", "InvalidImageName":
 		return Signal{
 			Type:       SignalImagePullBackOff,
 			Severity:   SeverityWarning,

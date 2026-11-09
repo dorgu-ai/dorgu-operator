@@ -55,6 +55,12 @@ func (r *HealthCheckReconciler) proposeRemediation(
 		if r.firstProposalFor(ctx, incident, result.Action) {
 			metrics.RecordStageDuration(metrics.StageDetectToProposal, time.Since(incident.Spec.Detection.FirstSeen.Time))
 		}
+		// The gate refused the AI plan's persona change and its advisory steps were
+		// proposed instead: the refusal of the first plan is still recorded (KPI I3),
+		// and the proposal answers it.
+		if refused := result.PlanRefusal; refused != nil && gate.IsStage(refused.Stage) {
+			r.recordProposalRefusal(ctx, incident, refused)
+		}
 		r.clearProposalRefusal(ctx, incident, dorguv1.ReasonProposalMade, "a RemediationAction was proposed for this incident")
 	case result.SkipReason != "":
 		r.Logger.V(1).Info("remediation skipped", "reason", result.SkipReason, "incident", incident.Name,

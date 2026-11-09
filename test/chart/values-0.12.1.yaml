@@ -1,0 +1,142 @@
+# The values.yaml shipped with chart 0.12.1 (git show 101d092:charts/dorgu-operator/values.yaml), unchanged.
+# helm upgrade --reuse-values reuses the previous release's computed values and ignores the new chart's
+# defaults, so a chart upgraded that way sees exactly this set of keys and none of the 0.13.0 ones.
+# Default values for dorgu-operator.
+
+replicaCount: 1
+
+image:
+  repository: ghcr.io/dorgu-ai/dorgu-operator
+  pullPolicy: IfNotPresent
+  tag: ""  # Defaults to appVersion
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+# Validation settings
+validation:
+  requeueInterval: 60s
+
+# Leader election
+leaderElection:
+  enabled: true
+
+# Operator bootstrap behavior
+operator:
+  # Auto-create a default ClusterPersona named 'dorgu-cluster' on startup if none exists.
+  # Set to false if you manage ClusterPersonas via GitOps and do not want operator interference.
+  autoCreateClusterPersona: true
+  # How often the operator re-ensures the auto-created ClusterPersona exists. Acts as a
+  # self-healing safety net so the persona converges even if the startup bootstrap missed
+  # (transient API error / leader-lease flap). Clamped to a 30s minimum by the operator.
+  # Only applied when autoCreateClusterPersona is true. Empty uses the operator default (2m).
+  clusterPersonaEnsureInterval: ""
+
+# Metrics
+metrics:
+  enabled: true
+  bindAddress: ":8443"
+  secure: true
+
+# Health probes
+healthProbe:
+  bindAddress: ":8081"
+
+# ArgoCD integration
+argocd:
+  enabled: true  # Enable ArgoCD Application watching
+
+# Prometheus integration for resource baseline learning
+prometheus:
+  enabled: false
+  url: ""  # e.g., http://prometheus-server.monitoring:9090
+
+# WebSocket server for CLI real-time communication
+websocket:
+  enabled: false
+  port: 9090
+  # Service configuration for WebSocket
+  service:
+    type: ClusterIP
+    port: 9090
+
+# Health check reconciler: detection, diagnosis, incident records, and remediation
+# proposals. On by default, because self-healing is the product and an operator
+# that detects nothing is indistinguishable from a broken install.
+# Turn it off with --set healthCheck.enabled=false. Off means off: the operator
+# then records ApplicationPersona health only, and never opens an incident or
+# proposes a fix.
+#
+# This is local and free. AI diagnosis and AI remediation planning stay opt-in
+# (llm.provider + a key + aiRemediation.enabled below): inference costs money and
+# sends cluster data to a third party, so that consent has to be explicit.
+healthCheck:
+  enabled: true
+  interval: 60s
+
+# Remediation safety. Dorgu never remediates kube-system or the namespace it is
+# installed in (read from the pod's own namespace). List any other namespace it
+# must never touch here; maps to --safety-excluded-namespaces. ClusterPersona
+# spec.policies.selfHealing.excludeNamespaces is honoured as well.
+safety:
+  excludedNamespaces: []
+
+# Metrics-server integration for container-level CPU/memory detection
+metricsServer:
+  enabled: true
+
+# DorguEvent records: dorgu's own log of what it saw, queryable with
+# `kubectl get dorguevent -A`. They live in etcd, so they are bounded twice over.
+# A record is removed once it is older than `retention`, and the oldest are
+# removed early if the count exceeds `maxRecords`. The cap is the bound that
+# holds on a large cluster, where records arrive faster than any time window
+# retires them: a five-app cluster produced roughly 2,700 a day.
+# Set maxRecords: 0 to drop the cap and keep retention as the only bound.
+dorguEvents:
+  retention: 24h
+  maxRecords: 2000
+
+# AI provider config: "claude" (Anthropic) or "gemini" (Google). AI diagnosis works
+# with either; AI remediation planning (aiRemediation below) is Claude-only for now.
+# Bedrock/IRSA is a future workstream.
+# The API key is injected from a Kubernetes Secret as the env var the provider needs,
+# ANTHROPIC_API_KEY for claude or GEMINI_API_KEY for gemini, never as an inline
+# pod-spec arg.
+#   Production: create a Secret out-of-band and set llm.existingSecret (PREFERRED — the
+#               key never appears in `helm get values` / `helm template`).
+#   Dev:        set llm.apiKey + llm.createSecret=true (chart stores it in a Secret).
+# NEVER commit a real key — use values-local.yaml (gitignored). See values-local.example.yaml.
+llm:
+  provider: ""            # "claude" or "gemini"; empty disables AI
+  model: ""               # empty = provider default (claude-sonnet-4-6 / gemini-2.0-flash)
+  existingSecret: ""      # name of a pre-created Secret holding the API key (PREFERRED)
+  existingSecretKey: ""   # key within the Secret; empty = ANTHROPIC_API_KEY or GEMINI_API_KEY per provider
+  apiKey: ""              # DEV ONLY: raw key; requires createSecret=true to be stored in a Secret
+  createSecret: false     # when true + apiKey set, chart creates a Secret for the key
+
+# AI-generated ordered remediation (WS1). Claude only: with llm.provider=gemini the
+# operator keeps the rule-based planner. When enabled + llm.provider set, the planner
+# produces ordered Steps[] on RemediationAction. Deterministic rules remain the floor.
+# Maps to the operator's --enable-ai-remediation flag; only takes effect when llm.provider
+# is set (the flag is omitted otherwise, so the operator default applies but AI stays off
+# without a provider/key).
+aiRemediation:
+  enabled: false          # maps to --enable-ai-remediation
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 128Mi
+  requests:
+    cpu: 10m
+    memory: 64Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
