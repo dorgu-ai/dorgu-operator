@@ -186,17 +186,21 @@ func (p *PodCollector) loopWorthALookup(cs corev1.ContainerStatus, now time.Time
 }
 
 // restartsInYoungPod answers "how many restarts in the window" for a pod that is
-// younger than the window, when the tracker cannot (the first sighting, or a gap).
-// Every restart such a pod has had happened inside the window, so its restart count
-// is the delta. This matters for a container that crashes right after it starts:
-// the kubelet's back-off doubles the time between its restarts, so waiting to
-// OBSERVE two of them after the first sighting took about two minutes (EKS QA
-// 2026-11-09, measured 117 s). A pod with no creation time, or an older one, is not
-// assumed young: its lifetime count says nothing about the window.
+// younger than the window. Every restart such a pod has had happened inside the
+// window, so its restart count is the delta, on every cycle while the pod is that
+// young, not only at the first sighting. This matters for a container that crashes
+// right after it starts: the kubelet's back-off doubles the time between its
+// restarts, so waiting to OBSERVE two of them after the first sighting took about
+// two minutes (EKS QA 2026-11-09, measured 117 s), and applying the count only at
+// the first sighting made the signal vanish on the next cycle, because the tracker
+// had been seeded with that very count (review M-2). Once the pod is older than the
+// window, the tracker's own history, which has been recording every cycle, decides.
+// A pod with no creation time is not assumed young: its lifetime count says nothing
+// about the window.
 func (p *PodCollector) restartsInYoungPod(
 	pod corev1.Pod, cs corev1.ContainerStatus, now time.Time, delta int32, history restartHistory,
 ) (int32, restartHistory) {
-	if history == historyInWindow || pod.CreationTimestamp.IsZero() {
+	if pod.CreationTimestamp.IsZero() {
 		return delta, history
 	}
 	if age := now.Sub(pod.CreationTimestamp.Time); age < 0 || age > p.livenessWindow {

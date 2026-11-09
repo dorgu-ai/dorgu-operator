@@ -37,10 +37,11 @@ import (
 // pod collector no longer raises PodPendingLong for a pod with an image error, and
 // this is the rest of it, for the two signals meeting anyway in either order:
 //
-//   - image error first, then PodPendingLong for the same pod (a cycle in which the
-//     image error was momentarily not visible): the PodPendingLong diagnosis is
-//     folded into the image-error incident, which stays active, and gets nothing of
-//     its own;
+//   - image error first, then PodPendingLong for the same pod while the image error
+//     is still showing for it this cycle: the PodPendingLong diagnosis is folded into
+//     the image-error incident, which stays active, and gets nothing of its own. Once
+//     the image error is gone, a PodPendingLong is the pod's own, different fault and
+//     opens its own incident;
 //   - PodPendingLong first (the pod was Pending for another reason), then the image
 //     error: the incident for the pending pod keeps its record, but the proposal
 //     made for it is advice for a fault that is now an image error, so a Pending one
@@ -58,6 +59,14 @@ func (r *HealthCheckReconciler) imageErrorCovering(
 	ctx context.Context, subject incidentSubject, diag *diagnosis.Diagnosis,
 ) (*dorguv1.IncidentMemory, error) {
 	if primarySignalType(diag) != detection.SignalPodPendingLong {
+		return nil, nil
+	}
+	// Only while the image error is still current for the pod. The collector raises
+	// PodPendingLong for a pod with no image error, so this diagnosis normally means
+	// the image was fixed and the pod is Pending for another reason (an init
+	// container, a volume): that is its own fault, and folding it into the image
+	// error's incident would keep that incident alive and hide it (review L-1).
+	if !familyViewFrom(ctx).imageErrorLive(diag.AffectedResources) {
 		return nil, nil
 	}
 	incidents, err := r.applicationIncidents(ctx, subject)

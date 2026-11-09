@@ -19,11 +19,14 @@ package remediation
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
@@ -152,4 +155,34 @@ func TestActionClassRefusal_AMemoryOnlyPlanIsStillRefused(t *testing.T) {
 	assert.Equal(t, gate.StageValidate, result.Stage)
 	assert.Equal(t, gate.GuardrailActionClass, result.Reason)
 	assert.Nil(t, result.PlanRefusal)
+}
+
+// L-6: if the second pass fails, the first refusal still stands as the result, so the
+// caller records it on the incident (condition and Event) as it does for any refusal.
+func TestActionClassRefusal_AFailedFallbackStillReportsTheRefusal(t *testing.T) {
+	truth := fake.NewClientBuilder().WithScheme(newTestScheme()).
+		WithRuntimeObjects(newTestPersona(defaultNamespace, "my-app")).
+		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+	pc := &planCounter{plan: memoryRaisePlusAdvice()}
+	c := interceptor.NewClient(truth, interceptor.Funcs{
+		List: func(ctx context.Context, w client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			// The preflight and the first gate pass (which stops at Validate) are done once the
+			// planner has answered; the next RemediationAction list is the fallback's gate run.
+			if _, ok := list.(*dorguv1.RemediationActionList); ok && pc.calls > 0 {
+				return errors.New("the API server is unavailable")
+			}
+			return w.List(ctx, list, opts...)
+		},
+	})
+	p := NewProposer(c, gate.New(c, testLogger()), testLogger(), WithPlanner(pc))
+	diag := newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical)
+	diag.Contributing[0].Signal.Type = detection.SignalCrashLoopBackOff
+	diag.SuggestedAction = rulesInvestigate
+
+	result, err := p.Propose(context.Background(), diag, newTestIncident(defaultNamespace, "crash", "my-app", "CrashLoopBackOff"))
+	require.NoError(t, err)
+
+	assert.False(t, result.Proposed)
+	assert.Equal(t, gate.StageValidate, result.Stage, "the ActionClass refusal is the result, so it is recorded")
+	assert.Equal(t, gate.GuardrailActionClass, result.Reason)
 }

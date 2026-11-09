@@ -82,15 +82,22 @@ const kindPod = "Pod"
 type familyView struct {
 	pods    map[string]bool
 	signals map[string]bool
+	// imagePods are the pods showing an image-error signal this cycle (not part of the
+	// fault progression), so a PodPendingLong can be told from one whose image error is
+	// still current from one whose image error is gone.
+	imagePods map[string]bool
 }
 
 type familyViewKey struct{}
 
 // newFamilyView builds the view from one application's signals.
 func newFamilyView(signals []detection.Signal) *familyView {
-	v := &familyView{pods: map[string]bool{}, signals: map[string]bool{}}
+	v := &familyView{pods: map[string]bool{}, signals: map[string]bool{}, imagePods: map[string]bool{}}
 	for i := range signals {
 		sig := &signals[i]
+		if sig.Type == detection.SignalImagePullBackOff && sig.Resource.Kind == kindPod {
+			v.imagePods[sig.Resource.Namespace+"/"+sig.Resource.Name] = true
+		}
 		if _, ok := detection.FaultRank(sig.Type); !ok {
 			continue
 		}
@@ -112,7 +119,18 @@ func familyViewFrom(ctx context.Context) *familyView {
 	if v, ok := ctx.Value(familyViewKey{}).(*familyView); ok && v != nil {
 		return v
 	}
-	return &familyView{pods: map[string]bool{}, signals: map[string]bool{}}
+	return &familyView{pods: map[string]bool{}, signals: map[string]bool{}, imagePods: map[string]bool{}}
+}
+
+// imageErrorLive reports whether any of the resources is a pod that shows an image
+// error this cycle.
+func (v *familyView) imageErrorLive(refs []dorguv1.ResourceReference) bool {
+	for _, ref := range refs {
+		if ref.Kind == kindPod && v.imagePods[ref.Namespace+"/"+ref.Name] {
+			return true
+		}
+	}
+	return false
 }
 
 // signalLive reports whether the signal is being seen this cycle for a container the

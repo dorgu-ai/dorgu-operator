@@ -19,6 +19,7 @@ package remediation
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -73,7 +74,7 @@ func (p *Proposer) proposeWithPlanner(
 	}
 
 	steps := mapPlannedSteps(plan, rc.AppPersona)
-	return p.gateAndPersistPlan(ctx, diag, incident, plan, steps, rc, workloadRef, true)
+	return p.gateAndPersistPlan(ctx, diag, incident, plan, steps, rc, workloadRef, true, nil)
 }
 
 // gateAndPersistPlan puts a plan's steps through the gate and persists what it
@@ -92,6 +93,7 @@ func (p *Proposer) gateAndPersistPlan(
 	rc *planner.RemediationContext,
 	workloadRef *dorguv1.WorkloadRef,
 	advisoryFallback bool,
+	dropped []refusedValue,
 ) (*ProposalResult, error) {
 	action := p.buildPlanAction(diag, incident, plan, steps, workloadRef)
 
@@ -108,8 +110,16 @@ func (p *Proposer) gateAndPersistPlan(
 			if advisory := advisorySteps(steps); len(advisory) > 0 {
 				p.logger.Info("the gate refused the AI plan's persona change; proposing its advisory steps instead",
 					"incident", incident.Name, "advisorySteps", len(advisory))
-				result, err := p.gateAndPersistPlan(ctx, diag, incident, plan, advisory, rc, workloadRef, false)
-				if err == nil && result != nil && result.Proposed {
+				result, err := p.gateAndPersistPlan(ctx, diag, incident, plan, advisory, rc, workloadRef, false,
+					droppedPersonaValues(steps))
+				switch {
+				case err != nil && !errors.Is(err, errPersistFailed):
+					// The advisory pass failed. The first refusal is still the answer, so it is
+					// recorded on the incident like any refusal (review L-6); the failure is a log line.
+					p.logger.Info("could not propose the AI plan's advisory steps; the refusal of its persona change stands",
+						"incident", incident.Name, "error", err.Error())
+					return refusal, nil
+				case err == nil && result != nil && result.Proposed:
 					result.PlanRefusal = refusal
 				}
 				return result, err
@@ -161,6 +171,16 @@ func (p *Proposer) gateAndPersistPlan(
 	// This must stay ABOVE discloseBlastRadiusClamp: that appends the cap caveat
 	// to Explanation, and recomputing afterwards would erase it.
 	action.Spec.Explanation = planExplanation(action.Spec.Steps)
+
+	// The advisory fallback dropped a persona change the rules did not authorise. The
+	// model's prose for the steps that stayed can still describe it ("with memory
+	// raised to 384Mi, ..."): take those sentences out and say what happened.
+	if len(dropped) > 0 {
+		if scrubbed := scrubDroppedChange(action, dropped); scrubbed > 0 {
+			p.logger.Info("removed text about the dropped persona change from the advisory plan",
+				"action", action.Name, "surfaces", scrubbed)
+		}
+	}
 
 	// The planner is told to keep changes within ~2x the live limit, so a plan
 	// can arrive already pressed against the cap. Damp its confidence rather

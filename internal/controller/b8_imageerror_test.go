@@ -102,3 +102,21 @@ func TestPendingLong_WithoutAnImageErrorKeepsItsProposal(t *testing.T) {
 
 	assert.Equal(t, RemediationPhasePending, e.actionNamed(ra.Name).Status.Phase)
 }
+
+// F-4 / M-2: a crash loop that continues is one signal for as long as it lasts, so it
+// is one incident and one proposal, and nothing is superseded or re-proposed.
+func TestContinuingRestartLoopIsOneIncidentAndOneProposalOverFiveCycles(t *testing.T) {
+	e := newRecurrenceEnv(t, noiseClient(t, recurrencePersonaObject()))
+	e.setLoop()
+	e.cycle()
+	ra := advisoryFor(t, e, e.onlyOpen().Name, RemediationPhasePending)
+	for range 4 {
+		e.setLoop()
+		e.cycle()
+	}
+
+	require.Len(t, e.incidents(), 1, "got %s", incidentSignals(e.incidents()))
+	assert.EqualValues(t, 5, e.onlyOpen().Status.OccurrenceCount)
+	assert.Len(t, e.actions(), 1, "one proposal")
+	assert.Equal(t, RemediationPhasePending, e.actionNamed(ra.Name).Status.Phase, "and it was not superseded")
+}
