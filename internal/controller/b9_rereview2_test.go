@@ -3,7 +3,6 @@ package controller
 import (
 	"context"
 	"errors"
-	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"testing"
 	"time"
 
@@ -13,6 +12,7 @@ import (
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
@@ -24,16 +24,16 @@ import (
 
 func rejectedRA(t *testing.T, e *recurrenceEnv, name, incident, answers string, rejectedAgo time.Duration) *dorguv1.RemediationAction {
 	t.Helper()
-	ra := raFor(name, incident, "Rejected")
+	ra := raFor(name, incident, RemediationPhaseRejected)
 	ra.CreationTimestamp = metav1.NewTime(time.Now().Add(-20 * time.Minute))
 	ra.Spec.PersonaRef = dorguv1.PersonaReference{Kind: "ApplicationPersona", Name: recurrencePersona, Namespace: recurrenceNS}
 	if answers != "" {
 		ra.Annotations = map[string]string{gate.AnnotationAnswersSignal: answers}
 	}
 	require.NoError(t, e.c.Create(context.Background(), ra))
-	ra.Status.Phase = "Rejected"
+	ra.Status.Phase = RemediationPhaseRejected
 	ra.Status.Conditions = []metav1.Condition{{
-		Type: "Rejected", Status: metav1.ConditionTrue, Reason: "Rejected",
+		Type: ConditionRejected, Status: metav1.ConditionTrue, Reason: ReasonUserRejected,
 		LastTransitionTime: metav1.NewTime(time.Now().Add(-rejectedAgo)),
 	}}
 	require.NoError(t, e.c.Status().Update(context.Background(), ra))
@@ -43,7 +43,7 @@ func rejectedRA(t *testing.T, e *recurrenceEnv, name, incident, answers string, 
 func (e *recurrenceEnv) nonRejectedActions() int {
 	n := 0
 	for _, a := range e.actions() {
-		if a.Status.Phase != "Rejected" {
+		if a.Status.Phase != RemediationPhaseRejected {
 			n++
 		}
 	}
@@ -160,7 +160,7 @@ func TestRereview2_Q3_FlappingBetweenShapesChurnsProposalsThenStarves(t *testing
 	rec := record.NewFakeRecorder(1000)
 	e.r.Recorder = rec
 
-	for i := 0; i < 12; i++ {
+	for range 12 {
 		e.setOOM()
 		e.cycle()
 		stampCreationNow(t, e)
@@ -250,7 +250,7 @@ func TestRereview2_Q2_ApprovalAfterSupersedeIsUndoneOnceAndDoesNotLoop(t *testin
 
 	rec := record.NewFakeRecorder(50)
 	rc := &RemediationController{Client: e.c, Logger: noiseLogger(), Recorder: rec}
-	for i := 0; i < 4; i++ {
+	for range 4 {
 		_, err := rc.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(ra)})
 		require.NoError(t, err)
 	}
@@ -378,7 +378,7 @@ func TestRereview2_N1_ReplicasShareAContainerNameButNotAFault(t *testing.T) {
 	e.count.signals = []detection.Signal{ready}
 	e.cycle()
 	t.Logf("crash cleared: %v", incidentSignals(e.incidents()))
-	var kinds []string
+	kinds := make([]string, 0, len(e.open()))
 	for _, im := range e.open() {
 		kinds = append(kinds, im.Spec.Detection.Signal)
 	}

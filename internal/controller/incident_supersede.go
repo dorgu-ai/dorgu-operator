@@ -88,7 +88,7 @@ func overtakenByEscalation(ra *dorguv1.RemediationAction, incident *dorguv1.Inci
 	if answered := ra.Annotations[gate.AnnotationAnswersSignal]; answered != "" {
 		was, wasRanked := rankOf(answered)
 		now, nowRanked := rankOf(incident.Spec.Detection.Signal)
-		return !(wasRanked && nowRanked && was >= now)
+		return !wasRanked || !nowRanked || was < now
 	}
 	escalated, err := time.Parse(time.RFC3339, incident.Annotations[gate.AnnotationEscalatedAt])
 	return err == nil && escalated.After(ra.CreationTimestamp.Time)
