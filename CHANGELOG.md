@@ -21,6 +21,7 @@ Patch release for the findings of the dogfood upgrade to 0.13.0 (D1.1), paired w
 
 ### Added
 
+- **A durable record of a proposal refusal: `ProposalRefusalRecorded` (D1.1 finding 4).** `ProposalRefused` is the live state, and it is rewritten to `False` when the incident resolves or when a later proposal answers it (the step-command and action-class fallbacks do that at once), so `dorgu report` lost the refusal and showed an empty refusal mix beside 3 counted `Validate/step-command` refusals. The same refusal is now also written as the condition `ProposalRefusalRecorded` on the IncidentMemory: status `True`, the same `<Stage>_<Reason>` enum as its reason, the time of the first refusal with that reason, and a fixed message with no plan text. Nothing clears it. An incident carries one, for its latest distinct reason; a deferral is not a refusal and leaves none. No CRD schema change (it is a standard condition). **Upgrade the CLI to v0.14.1 to read it**; an older CLI ignores it. A refusal an older operator already cleared cannot be recovered.
 - **Build provenance attestation (D1.1 finding 9).** The release workflow attests the operator image (the pushed manifest list), the Helm chart in the registry (the OCI artifact) and the chart archive on the release page with `actions/attest-build-provenance`. Verify them with `gh attestation verify` (commands in the README, "Verify what you install"). Releases before this one have no attestation. The workflow change is exercised by the first tag that includes it.
 
 ### Fixed

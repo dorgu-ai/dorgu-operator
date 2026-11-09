@@ -90,6 +90,11 @@ func (r *HealthCheckReconciler) recordProposalRefusal(
 			return nil
 		}
 		setCondition(&fresh.Status.Conditions, dorguv1.ConditionProposalRefused, metav1.ConditionTrue, reason, result.SkipReason)
+		// The durable record, which nothing clears (B10 f): ProposalRefused is rewritten when the
+		// incident resolves or a proposal answers it, and `dorgu report` could then not count
+		// a refusal that had happened. The message carries no plan text.
+		setCondition(&fresh.Status.Conditions, dorguv1.ConditionProposalRefusalRecorded, metav1.ConditionTrue, reason,
+			"the gate refused a proposal for this incident; this record is kept after ProposalRefused is cleared")
 		changed = true
 		return r.Client.Status().Update(ctx, &fresh)
 	})
