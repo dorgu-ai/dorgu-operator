@@ -95,10 +95,12 @@ func TestRereview_ExitZeroLivenessKillPastTheEventBudgetIsMissed(t *testing.T) {
 		maxEventReadsPerCycle, maxEventReadsPerCycle, signalTypes(sigs))
 }
 
-// Characterization: with an Error exit the same pod still raises a signal, but as
-// the weaker RestartLoop whose rule says "no kubelet event blames a probe", which
-// is false: an event does, it was just not read.
-func TestRereview_ErrorExitPastTheBudgetIsCalledARestartLoopWhileTheKubeletSaidLiveness_Characterization(t *testing.T) {
+// Re-review N-6, the Error-exit half. With an Error exit the same pod used to raise
+// the weaker RestartLoop, whose rule says "no kubelet event blames a probe", which
+// was false: an event did, it was just not read. The pod now gets its read first,
+// so it is reported for what the kubelet says it is. (Adopted as a characterization
+// of the old behaviour; it now pins the fix.)
+func TestRereview_ErrorExitPastTheBudgetIsNowALivenessFailureWithItsEvidence(t *testing.T) {
 	c := newClock()
 	pods := manyNotReadyPods(c, maxEventReadsPerCycle)
 	live, evs := liveKillPod(c, "z-live")
@@ -108,8 +110,8 @@ func TestRereview_ErrorExitPastTheBudgetIsCalledARestartLoopWhileTheKubeletSaidL
 	})
 	s, ok := loopSignal(sigs)
 	require.True(t, ok)
-	assert.Equal(t, SignalRestartLoop, s.Type)
-	assert.Equal(t, evidenceUnavailable, s.Metadata["livenessKillEvents"])
+	assert.Equal(t, SignalLivenessRestarts, s.Type)
+	assert.Equal(t, "3", s.Metadata["livenessKillEvents"])
 }
 
 // F-5 variant. A container with a slow startupProbe: the kubelet runs no readiness

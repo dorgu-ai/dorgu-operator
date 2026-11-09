@@ -19,6 +19,7 @@ package detection
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -126,16 +127,10 @@ func (p *PodCollector) checkRestartLoop(
 	delta int32, history restartHistory, book *eventBook,
 ) (Signal, bool) {
 	last := cs.LastTerminationState.Terminated
-	if cs.State.Running == nil || last == nil || last.Reason == string(SignalOOMKilled) || p.staleTermination(cs, last, now) {
-		return Signal{}, false
-	}
-
 	known := history == historyInWindow
 	observedLoop := known && delta >= p.livenessRestarts
-	recentKill := cs.RestartCount >= p.livenessRestarts && !last.FinishedAt.IsZero() &&
-		now.Sub(last.FinishedAt.Time) <= p.livenessWindow
-	if !observedLoop && !recentKill {
-		return Signal{}, false // nothing here is worth a lookup
+	if !p.loopWorthALookup(cs, now, observedLoop) {
+		return Signal{}, false
 	}
 
 	since := now.Add(-p.livenessWindow)
@@ -174,6 +169,23 @@ func (p *PodCollector) checkRestartLoop(
 		Metadata:   meta,
 	}, true
 }
+
+// loopWorthALookup is the cheap test for a restart loop: the container is running,
+// its last exit was not an OOM kill or history, and either the delta says it is
+// looping or it has at least the threshold of restarts and was killed within the
+// window. Only then is the kubelet's evidence read.
+func (p *PodCollector) loopWorthALookup(cs corev1.ContainerStatus, now time.Time, observedLoop bool) bool {
+	last := cs.LastTerminationState.Terminated
+	if cs.State.Running == nil || last == nil || last.Reason == string(SignalOOMKilled) || p.staleTermination(cs, last, now) {
+		return false
+	}
+	recentKill := cs.RestartCount >= p.livenessRestarts && !last.FinishedAt.IsZero() &&
+		now.Sub(last.FinishedAt.Time) <= p.livenessWindow
+	return observedLoop || recentKill
+}
+
+// loopWorthALookup is also asked, before the signals are built, which pods will
+// need their events read: see planEventReads.
 
 // loopMessage words the signal. Counts only: nothing from an event's text.
 func (p *PodCollector) loopMessage(
@@ -227,29 +239,8 @@ func terminationSummary(t *corev1.ContainerStateTerminated) string {
 func (p *PodCollector) checkReadiness(
 	ctx context.Context, pod corev1.Pod, cs corev1.ContainerStatus, now time.Time, book *eventBook,
 ) (Signal, bool) {
-	running := cs.State.Running
-	if pod.Status.Phase != corev1.PodRunning || pod.DeletionTimestamp != nil || running == nil || cs.Ready {
-		return Signal{}, false
-	}
-	if cs.Started != nil && !*cs.Started {
-		return Signal{}, false
-	}
-
-	since := running.StartedAt.Time
-	if delay := readinessInitialDelay(pod, cs.Name); delay > 0 {
-		since = since.Add(delay)
-	}
-	for i := range pod.Status.Conditions {
-		c := &pod.Status.Conditions[i]
-		if c.Type == corev1.ContainersReady && c.Status == corev1.ConditionFalse && c.LastTransitionTime.After(since) {
-			since = c.LastTransitionTime.Time
-		}
-	}
-	if since.IsZero() {
-		return Signal{}, false
-	}
-	notReadyFor := now.Sub(since)
-	if notReadyFor < p.readinessThreshold {
+	since, notReadyFor, ok := p.readinessClock(pod, cs, now)
+	if !ok {
 		return Signal{}, false
 	}
 
@@ -275,6 +266,38 @@ func (p *PodCollector) checkReadiness(
 		DetectedAt: since,
 		Metadata:   meta,
 	}, true
+}
+
+// readinessClock says whether a container has been not Ready for at least the
+// threshold, and since when. It is the whole decision, without the evidence, so
+// the collection can ask it up front which pods will want their events read.
+func (p *PodCollector) readinessClock(pod corev1.Pod, cs corev1.ContainerStatus, now time.Time) (time.Time, time.Duration, bool) {
+	running := cs.State.Running
+	if pod.Status.Phase != corev1.PodRunning || pod.DeletionTimestamp != nil || running == nil || cs.Ready {
+		return time.Time{}, 0, false
+	}
+	if cs.Started != nil && !*cs.Started {
+		return time.Time{}, 0, false
+	}
+
+	since := running.StartedAt.Time
+	if delay := readinessInitialDelay(pod, cs.Name); delay > 0 {
+		since = since.Add(delay)
+	}
+	for i := range pod.Status.Conditions {
+		c := &pod.Status.Conditions[i]
+		if c.Type == corev1.ContainersReady && c.Status == corev1.ConditionFalse && c.LastTransitionTime.After(since) {
+			since = c.LastTransitionTime.Time
+		}
+	}
+	if since.IsZero() {
+		return time.Time{}, 0, false
+	}
+	notReadyFor := now.Sub(since)
+	if notReadyFor < p.readinessThreshold {
+		return time.Time{}, 0, false
+	}
+	return since, notReadyFor, true
 }
 
 // readinessInitialDelay is the readiness probe's initialDelaySeconds for the named
@@ -315,19 +338,107 @@ func (p *PodCollector) staleTermination(cs corev1.ContainerStatus, t *corev1.Con
 }
 
 // eventBook reads the kubelet events of the pods a collection looks at, once per
-// pod and at most maxEventReadsPerCycle pods per collection. Events are supporting
+// pod, and only for the pods planEventReads chose: at most maxEventReadsPerCycle
+// pods per collection. Events are supporting
 // evidence for most signals and the deciding evidence for one, and a node loss
 // leaves hundreds of pods not Ready: the bound keeps that from becoming hundreds
 // of API calls a minute. A pod past the bound has its evidence marked unavailable,
 // exactly as if the read had failed, and keeps its signal.
 type eventBook struct {
-	p     *PodCollector
-	reads int
-	pods  map[string]podEvents
+	p       *PodCollector
+	allowed map[string]bool
+	skipped int
+	pods    map[string]podEvents
 }
 
-func newEventBook(p *PodCollector) *eventBook {
-	return &eventBook{p: p, pods: make(map[string]podEvents)}
+func newEventBook(p *PodCollector, allowed map[string]bool) *eventBook {
+	return &eventBook{p: p, allowed: allowed, pods: make(map[string]podEvents)}
+}
+
+// podKey identifies a pod incarnation for the event reads.
+func podKey(pod corev1.Pod) string {
+	return fmt.Sprintf("%s/%s/%s", pod.Namespace, pod.Name, pod.UID)
+}
+
+// planEventReads decides which pods get their kubelet events read this
+// collection. Reads are bounded, and not every pod that reaches the lookup needs
+// them equally: for a restart loop that exits 0 the events are the ONLY evidence,
+// and for readiness they are only supporting. So the pods that need them go first
+// (a restart-loop candidate), the readiness-only pods take what is left, and each
+// group rotates through a cursor across collections, so that when there are more
+// pods than reads nobody is starved and nothing depends on the order the cache
+// happens to list pods in.
+func (p *PodCollector) planEventReads(pods []corev1.Pod, now time.Time) map[string]bool {
+	var prio, rest []string
+	for i := range pods {
+		pod := pods[i]
+		key := podKey(pod)
+		isPrio, isRest := false, false
+		for _, cs := range pod.Status.ContainerStatuses {
+			if delta, history := p.restarts.peek(restartKey(pod, cs), now, cs.RestartCount); p.loopWorthALookup(
+				cs, now, history == historyInWindow && delta >= p.livenessRestarts) {
+				isPrio = true
+				break
+			}
+			if _, _, ok := p.readinessClock(pod, cs, now); ok {
+				isRest = true
+			}
+		}
+		switch {
+		case isPrio:
+			prio = append(prio, key)
+		case isRest:
+			rest = append(rest, key)
+		}
+	}
+	p.cursorMu.Lock()
+	defer p.cursorMu.Unlock()
+	return chooseReads(prio, rest, maxEventReadsPerCycle, &p.cursors)
+}
+
+// readCursors remember, per group, the last pod served, so the next collection
+// carries on after it.
+type readCursors struct {
+	prio string
+	rest string
+}
+
+// chooseReads picks up to budget pods: the priority ones first, then the rest with
+// what remains. Each group is taken in sort order starting after the last pod it
+// served, wrapping round, and the cursor moves to the last one taken. A cursor that
+// is a key and not an index stays right when pods come and go between collections.
+func chooseReads(prio, rest []string, budget int, cursors *readCursors) map[string]bool {
+	chosen := make(map[string]bool, budget)
+	for _, k := range takeFrom(prio, budget, &cursors.prio) {
+		chosen[k] = true
+	}
+	for _, k := range takeFrom(rest, budget-len(chosen), &cursors.rest) {
+		chosen[k] = true
+	}
+	return chosen
+}
+
+// takeFrom takes up to n keys in sort order, starting after *last and wrapping.
+func takeFrom(keys []string, n int, last *string) []string {
+	if n <= 0 || len(keys) == 0 {
+		return nil
+	}
+	sorted := append([]string(nil), keys...)
+	sort.Strings(sorted)
+	if len(sorted) <= n {
+		*last = ""
+		return sorted
+	}
+	start := sort.SearchStrings(sorted, *last)
+	for start < len(sorted) && sorted[start] <= *last {
+		start++
+	}
+	taken := make([]string, 0, n)
+	for i := range n {
+		taken = append(taken, sorted[(start+i)%len(sorted)])
+	}
+	*last = taken[len(taken)-1]
+	return taken
 }
 
 // podEvents is one pod's events, or the fact that they could not be read.
@@ -345,11 +456,11 @@ func (b *eventBook) forPod(ctx context.Context, pod corev1.Pod) podEvents {
 	result := podEvents{}
 	switch {
 	case b.p.events == nil:
-	case b.reads >= maxEventReadsPerCycle:
-		b.p.logger.V(1).Info("kubelet event lookups for this cycle are used up; the signal stands without them",
+	case !b.allowed[key]:
+		b.skipped++
+		b.p.logger.V(1).Info("this pod's kubelet events are not read this cycle; the signal stands without them",
 			"namespace", pod.Namespace, "pod", pod.Name, "budget", maxEventReadsPerCycle)
 	default:
-		b.reads++
 		var list corev1.EventList
 		if err := b.p.events.List(ctx, &list,
 			client.InNamespace(pod.Namespace),
@@ -511,20 +622,34 @@ const (
 func (t *restartTracker) observe(key string, now time.Time, count int32) (delta int32, history restartHistory) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	delta, history, points := t.evaluate(key, now, count)
+	t.samples[key] = points
+	t.observed[key] = now
+	return delta, history
+}
 
+// peek is observe without recording: what the tracker would say about this count
+// now. The collection uses it to plan its event reads before it builds signals.
+func (t *restartTracker) peek(key string, now time.Time, count int32) (int32, restartHistory) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	delta, history, _ := t.evaluate(key, now, count)
+	return delta, history
+}
+
+// evaluate computes the delta and history for a count, and the points to keep. It
+// changes nothing; the caller holds the lock.
+func (t *restartTracker) evaluate(key string, now time.Time, count int32) (int32, restartHistory, []restartSample) {
+	seed := []restartSample{{at: now, count: count}}
 	points, seen := t.samples[key]
-	reseed := func(h restartHistory) (int32, restartHistory) {
-		t.samples[key] = []restartSample{{at: now, count: count}}
-		t.observed[key] = now
-		return 0, h
-	}
 	switch {
 	case !seen:
-		return reseed(historyFirstSight)
+		return 0, historyFirstSight, seed
 	case now.Sub(t.observed[key]) > t.window, count < points[len(points)-1].count:
-		return reseed(historyNone)
+		return 0, historyNone, seed
 	}
 
+	points = append([]restartSample(nil), points...)
 	if count > points[len(points)-1].count {
 		points = append(points, restartSample{at: now, count: count})
 	}
@@ -539,10 +664,7 @@ func (t *restartTracker) observe(key string, now time.Time, count int32) (delta 
 		}
 		base = i
 	}
-	delta = count - points[base].count
-	t.samples[key] = append([]restartSample(nil), points[base:]...)
-	t.observed[key] = now
-	return delta, historyInWindow
+	return count - points[base].count, historyInWindow, points[base:]
 }
 
 // retain drops every container not in seen.

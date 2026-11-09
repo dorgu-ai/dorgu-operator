@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -72,6 +73,9 @@ type PodCollector struct {
 	events             client.Reader
 	now                func() time.Time
 	restarts           *restartTracker
+
+	cursorMu sync.Mutex
+	cursors  readCursors
 }
 
 // NamespaceFilter says which namespaces detection leaves alone. The operator
@@ -182,10 +186,10 @@ func (p *PodCollector) Collect(ctx context.Context) ([]Signal, error) {
 	now := p.now()
 	var signals []Signal
 	seen := make(map[string]struct{})
-	book := newEventBook(p)
 
 	// Each namespace is asked about once per cycle.
 	skip := make(map[string]bool)
+	included := make([]corev1.Pod, 0, len(podList.Items))
 	for _, pod := range podList.Items {
 		excluded, known := skip[pod.Namespace]
 		if !known {
@@ -195,14 +199,21 @@ func (p *PodCollector) Collect(ctx context.Context) ([]Signal, error) {
 			}
 			skip[pod.Namespace] = excluded
 		}
-		if excluded {
-			continue
+		if !excluded {
+			included = append(included, pod)
 		}
+	}
 
+	book := newEventBook(p, p.planEventReads(included, now))
+	for _, pod := range included {
 		signals = append(signals, p.checkPod(ctx, pod, now, book)...)
 		for _, cs := range pod.Status.ContainerStatuses {
 			seen[restartKey(pod, cs)] = struct{}{}
 		}
+	}
+	if book.skipped > 0 {
+		p.logger.Info("kubelet events were not read for some pods this cycle; their signals stand without them",
+			"pods", book.skipped, "budget", maxEventReadsPerCycle)
 	}
 
 	// Forget containers that are gone, so the restart history stays as small as the

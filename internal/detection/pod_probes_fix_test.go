@@ -313,3 +313,108 @@ func TestEventReads_AreSharedAcrossAPodsContainers(t *testing.T) {
 	assert.Len(t, sigs, 2)
 	assert.EqualValues(t, 1, reader.lists.Load())
 }
+
+// ---- Re-review N-6: who gets the event reads -------------------------------
+
+func keysN(prefix string, n int) []string {
+	out := make([]string, 0, n)
+	for i := range n {
+		out = append(out, fmt.Sprintf("%s-%03d", prefix, i))
+	}
+	return out
+}
+
+func TestChooseReads_PodsThatNeedEventsGoFirst(t *testing.T) {
+	var cursor readCursors
+	prio := []string{"z-live-1", "z-live-2", "z-live-3"}
+	rest := keysN("api", 40)
+
+	chosen := chooseReads(prio, rest, 25, &cursor)
+
+	assert.Len(t, chosen, 25)
+	for _, k := range prio {
+		assert.True(t, chosen[k], "%s is a restart-loop candidate: events are its only evidence", k)
+	}
+}
+
+func TestChooseReads_ReadinessOnlyPodsTakeWhatIsLeft(t *testing.T) {
+	var cursor readCursors
+	chosen := chooseReads(keysN("live", 30), keysN("api", 40), 25, &cursor)
+	assert.Len(t, chosen, 25)
+	for k := range chosen {
+		assert.Contains(t, k, "live", "the budget is spent before any readiness-only pod: %s", k)
+	}
+}
+
+// Rotation: nobody is starved. With 60 pods and 25 reads a cycle, every pod is
+// served within three cycles, and no pod is served a second time before every pod
+// has been served once.
+func TestChooseReads_RotatesFairly(t *testing.T) {
+	var cursor readCursors
+	rest := keysN("api", 60)
+	served := map[string]int{}
+	for round := 1; round <= 3; round++ {
+		for k := range chooseReads(nil, rest, 25, &cursor) {
+			served[k]++
+			if round < 3 {
+				assert.Equal(t, 1, served[k], "%s served twice before everyone was served once (round %d)", k, round)
+			}
+		}
+	}
+	assert.Len(t, served, 60, "every pod is served within three cycles")
+}
+
+func TestChooseReads_PriorityPodsRotateToo(t *testing.T) {
+	var cursor readCursors
+	prio := keysN("live", 40)
+	first := chooseReads(prio, nil, 25, &cursor)
+	second := chooseReads(prio, nil, 25, &cursor)
+	union := map[string]bool{}
+	for k := range first {
+		union[k] = true
+	}
+	for k := range second {
+		union[k] = true
+	}
+	assert.Len(t, union, 40, "40 candidates, 25 reads: two cycles cover them all")
+}
+
+func TestChooseReads_SurvivesAChangingSet(t *testing.T) {
+	var cursor readCursors
+	chooseReads(nil, keysN("api", 60), 25, &cursor)
+	// Pods come and go between cycles; the cursor is a position in the sort order,
+	// not an index, so what comes next is still what is after the last one served.
+	next := chooseReads(nil, append(keysN("api", 10), keysN("api2", 40)...), 25, &cursor)
+	assert.Len(t, next, 25)
+}
+
+func TestChooseReads_EverythingFitsNothingIsDropped(t *testing.T) {
+	var cursor readCursors
+	chosen := chooseReads([]string{"a"}, []string{"b", "c"}, 25, &cursor)
+	assert.Len(t, chosen, 3)
+}
+
+// The same rotation, end to end: 40 readiness-only pods, 25 reads a cycle. Every
+// pod's signal carries real evidence within two cycles, not the same 25 forever.
+func TestEventReads_RotateAcrossCyclesEndToEnd(t *testing.T) {
+	c := newClock()
+	pods := manyNotReadyPods(c, 40)
+	base := fakeWithEventIndex(t)
+	for i := range pods {
+		require.NoError(t, base.Create(ctxBG(), &pods[i]))
+	}
+	p := NewPodCollector(base, testLogger(), withClock(c.now), WithEventReader(base))
+
+	seenEvidence := map[string]bool{}
+	for range 2 {
+		sigs, err := p.Collect(ctxBG())
+		require.NoError(t, err)
+		for _, s := range sigs {
+			if s.Metadata["readinessProbeEvents"] != evidenceUnavailable {
+				seenEvidence[s.Resource.Name] = true
+			}
+		}
+		c.advance(time.Minute)
+	}
+	assert.Len(t, seenEvidence, 40, "no pod is starved of its event read")
+}
