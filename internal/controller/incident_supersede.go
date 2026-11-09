@@ -20,12 +20,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
+	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
 	"github.com/dorgu-ai/dorgu-operator/internal/metrics"
 )
 
@@ -36,6 +38,9 @@ import (
 // worse shape's behind it for as long as it waits (the pending TTL). It is advice for
 // a fault that has since become a worse one, so a Pending proposal is expired with the
 // reason Superseded, and the worse shape is proposed in the same cycle.
+//
+// Only a Pending proposal for a strictly milder shape is superseded, matched by
+// lineage as the gate's dedup is (see overtakenByEscalation).
 //
 // Only Pending is superseded. Approved, Ticketed, Applying and Verifying mean a human
 // or the operator has acted on it; it is not the operator's to withdraw, and the worse
@@ -52,7 +57,10 @@ func (r *HealthCheckReconciler) supersedePending(ctx context.Context, incident *
 	var errs []error
 	for i := range actions.Items {
 		ra := &actions.Items[i]
-		if ra.Spec.IncidentRef.Name != incident.Name || ra.Status.Phase != RemediationPhasePending {
+		if !gate.SameIncidentLineage(ra.Spec.IncidentRef.Name, incident.Name) || ra.Status.Phase != RemediationPhasePending {
+			continue
+		}
+		if !overtakenByEscalation(ra, incident) {
 			continue
 		}
 		if err := r.supersede(ctx, client.ObjectKeyFromObject(ra), from, incident.Spec.Detection.Signal); err != nil {
@@ -60,6 +68,30 @@ func (r *HealthCheckReconciler) supersedePending(ctx context.Context, incident *
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// overtakenByEscalation reports whether a Pending proposal is advice the incident's
+// escalation has overtaken. Only a proposal for a strictly milder shape is.
+//
+//   - It says what it answered (dorgu.io/answers-signal): superseded only if that
+//     shape ranks below the shape the incident has now. One that answers the current
+//     shape or a worse one still fits (an OOM, a readiness, an OOM again must not
+//     expire the standing OOM proposal and mint another), and a signal outside the
+//     progression has no rank to compare, so it is not provably as severe and goes.
+//   - It does not say (made before proposals recorded it): superseded only if the
+//     incident escalated after it was created, which is when it can only have answered
+//     an earlier, milder shape. With no escalated-at, an unreadable one, or one that is
+//     not after the proposal, it is kept: leaving a human's queue alone and letting the
+//     gate defer is the safe direction. The stamp has whole-second resolution, as the
+//     proposal's creation time does, so the same second is not provably after.
+func overtakenByEscalation(ra *dorguv1.RemediationAction, incident *dorguv1.IncidentMemory) bool {
+	if answered := ra.Annotations[gate.AnnotationAnswersSignal]; answered != "" {
+		was, wasRanked := rankOf(answered)
+		now, nowRanked := rankOf(incident.Spec.Detection.Signal)
+		return !(wasRanked && nowRanked && was >= now)
+	}
+	escalated, err := time.Parse(time.RFC3339, incident.Annotations[gate.AnnotationEscalatedAt])
+	return err == nil && escalated.After(ra.CreationTimestamp.Time)
 }
 
 // supersede expires one proposal, re-reading it first: a human may have approved it

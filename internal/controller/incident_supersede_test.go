@@ -32,6 +32,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
+	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
 )
 
 // Re-review N-2: when an incident escalates, the proposal made for the milder shape
@@ -217,4 +218,202 @@ func TestSupersede_AFailureToListIsReportedAndDoesNotPanic(t *testing.T) {
 	require.Error(t, r.supersedePending(context.Background(), &dorguv1.IncidentMemory{
 		ObjectMeta: metav1.ObjectMeta{Name: "im-x", Namespace: recurrenceNS},
 	}, "ReadinessNotReady"))
+}
+
+// ---- Re-review 2: which proposals an escalation supersedes -------------------
+//
+// R2-1: the gate defers by lineage, so a Pending proposal of an EARLIER generation of
+// the same fault is as much in the way as one of the incident itself, and is
+// superseded too.
+//
+// R2-2: only a proposal for a strictly milder shape is advice the escalation has
+// overtaken. One that answers the shape the incident now has, or a worse one, still
+// fits, and superseding it on a flap (OOM, then Readiness, then OOM again) expired the
+// standing proposal and minted another each time until the rate limit ran out, leaving
+// a critical incident with nothing for a human to answer.
+//
+// A proposal that does not say what it answered (made before proposals recorded it)
+// is judged by the incident's escalated-at: it is superseded only if the incident
+// escalated AFTER the proposal was created, which is when it can only have answered an
+// earlier, milder shape. With no escalated-at, or an unreadable one, or one that is
+// not after the proposal, it is kept: the safe direction is to leave a human's queue
+// alone and let the gate defer.
+
+func answering(t *testing.T, e *recurrenceEnv, name, incident, signal string, created time.Time) *dorguv1.RemediationAction {
+	t.Helper()
+	ra := raFor(name, incident, RemediationPhasePending)
+	ra.CreationTimestamp = metav1.NewTime(created)
+	ra.Spec.PersonaRef = dorguv1.PersonaReference{Kind: "ApplicationPersona", Name: recurrencePersona, Namespace: recurrenceNS}
+	if signal != "" {
+		ra.Annotations = map[string]string{gate.AnnotationAnswersSignal: signal}
+	}
+	require.NoError(t, e.c.Create(context.Background(), ra))
+	require.NoError(t, e.c.Status().Update(context.Background(), ra))
+	return ra
+}
+
+func TestSupersede_OnlyAStrictlyMilderProposalIsSuperseded(t *testing.T) {
+	tests := []struct {
+		answers    string
+		superseded bool
+	}{
+		{"ReadinessNotReady", true},
+		{"RestartLoop", true},
+		{"LivenessRestarts", true},
+		{"CrashLoopBackOff", true},
+		{"OOMKilled", false},       // the shape the incident is escalating to: it still fits
+		{"ImagePullBackOff", true}, // not in the progression: rank unknown, so it is not provably as severe
+	}
+	for _, tt := range tests {
+		t.Run(tt.answers, func(t *testing.T) {
+			e := newRecurrenceEnv(t, noiseClient(t, recurrencePersonaObject()))
+			e.setCrashLoop()
+			e.cycle()
+			ra := answering(t, e, "p", e.onlyOpen().Name, tt.answers, time.Now().Add(-time.Minute))
+
+			e.setOOM()
+			e.cycle()
+
+			got := e.actionNamed(ra.Name).Status.Phase
+			if tt.superseded {
+				assert.Equal(t, RemediationPhaseExpired, got)
+			} else {
+				assert.Equal(t, RemediationPhasePending, got, "answers %s, as severe as the incident now is", tt.answers)
+			}
+		})
+	}
+}
+
+// A proposal for a worse shape than the one the incident escalates to also stays.
+func TestSupersede_AProposalForAWorseShapeIsKept(t *testing.T) {
+	e := newRecurrenceEnv(t, noiseClient(t, recurrencePersonaObject()))
+	e.setReadiness()
+	e.cycle()
+	ra := answering(t, e, "worse", e.onlyOpen().Name, "OOMKilled", time.Now().Add(-time.Minute))
+
+	e.setCrashLoop() // escalates, but not as far as the OOM the proposal answers
+	e.cycle()
+
+	assert.Equal(t, RemediationPhasePending, e.actionNamed(ra.Name).Status.Phase)
+}
+
+// Unannotated: the escalation time decides.
+func TestSupersede_AnUnannotatedProposalIsSupersededOnlyIfTheEscalationCameAfterIt(t *testing.T) {
+	t.Run("proposal older than the escalation: superseded", func(t *testing.T) {
+		e := newRecurrenceEnv(t, noiseClient(t, recurrencePersonaObject()))
+		e.setReadiness()
+		e.cycle()
+		ra := answering(t, e, "old", e.onlyOpen().Name, "", time.Now().Add(-time.Hour))
+		e.setOOM()
+		e.cycle()
+		assert.Equal(t, RemediationPhaseExpired, e.actionNamed(ra.Name).Status.Phase)
+	})
+	t.Run("proposal made after the escalation: kept", func(t *testing.T) {
+		// The incident already escalated to CrashLoopBackOff; the proposal is created
+		// after that, so it answers this shape or a later one, and the next escalation
+		// finds the stamp older than the proposal... which it is not: the next
+		// escalation stamps a NEW time. Model it directly: stamp an escalation in the
+		// past and ask supersedePending with the incident as it stands.
+		e := newRecurrenceEnv(t, noiseClient(t, recurrencePersonaObject()))
+		e.setCrashLoop()
+		e.cycle()
+		incident := e.onlyOpen()
+		incident.Annotations = map[string]string{gate.AnnotationEscalatedAt: time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)}
+		ra := answering(t, e, "newer", incident.Name, "", time.Now().Add(-time.Minute))
+
+		require.NoError(t, e.r.supersedePending(context.Background(), &incident, "ReadinessNotReady"))
+
+		assert.Equal(t, RemediationPhasePending, e.actionNamed(ra.Name).Status.Phase,
+			"escalated an hour ago, proposed a minute ago: it cannot have answered the earlier shape")
+	})
+	t.Run("no escalated-at on the incident: kept", func(t *testing.T) {
+		e := newRecurrenceEnv(t, noiseClient(t, recurrencePersonaObject()))
+		e.setCrashLoop()
+		e.cycle()
+		incident := e.onlyOpen()
+		incident.Annotations = nil
+		ra := answering(t, e, "unknown", incident.Name, "", time.Now().Add(-time.Hour))
+		require.NoError(t, e.r.supersedePending(context.Background(), &incident, "ReadinessNotReady"))
+		assert.Equal(t, RemediationPhasePending, e.actionNamed(ra.Name).Status.Phase, "nothing says it is milder")
+	})
+	t.Run("unreadable escalated-at: kept", func(t *testing.T) {
+		e := newRecurrenceEnv(t, noiseClient(t, recurrencePersonaObject()))
+		e.setCrashLoop()
+		e.cycle()
+		incident := e.onlyOpen()
+		incident.Annotations = map[string]string{gate.AnnotationEscalatedAt: "yesterday"}
+		ra := answering(t, e, "garbled", incident.Name, "", time.Now().Add(-time.Hour))
+		require.NoError(t, e.r.supersedePending(context.Background(), &incident, "ReadinessNotReady"))
+		assert.Equal(t, RemediationPhasePending, e.actionNamed(ra.Name).Status.Phase)
+	})
+	t.Run("escalated in the same second: kept", func(t *testing.T) {
+		e := newRecurrenceEnv(t, noiseClient(t, recurrencePersonaObject()))
+		e.setCrashLoop()
+		e.cycle()
+		incident := e.onlyOpen()
+		at := time.Now().Truncate(time.Second)
+		incident.Annotations = map[string]string{gate.AnnotationEscalatedAt: at.UTC().Format(time.RFC3339)}
+		ra := answering(t, e, "same-second", incident.Name, "", at)
+		require.NoError(t, e.r.supersedePending(context.Background(), &incident, "ReadinessNotReady"))
+		assert.Equal(t, RemediationPhasePending, e.actionNamed(ra.Name).Status.Phase, "not provably older")
+	})
+}
+
+// A flapping fault ends with a standing proposal for the worst shape, and a bounded
+// number of RemediationActions: 12 OOM, Readiness alternations at the default rate limit.
+func TestSupersede_AFlappingFaultKeepsAStandingProposalForTheWorstShape(t *testing.T) {
+	e := newRecurrenceEnv(t, noiseClient(t, recurrencePersonaObject()))
+	rec := record.NewFakeRecorder(1000)
+	e.r.Recorder = rec
+	e.container = mainContainer
+
+	for range 12 {
+		e.setOOM()
+		e.cycle()
+		stampCreationNow(t, e)
+		e.setReadiness()
+		e.cycle()
+		stampCreationNow(t, e)
+	}
+	e.setOOM()
+	e.cycle()
+
+	var pending, expired int
+	for _, a := range e.actions() {
+		switch a.Status.Phase {
+		case RemediationPhasePending:
+			pending++
+			assert.Equal(t, "OOMKilled", a.Annotations[gate.AnnotationAnswersSignal], "the one standing is for the worst shape")
+		case RemediationPhaseExpired:
+			expired++
+		}
+	}
+	assert.Equal(t, 1, pending, "a critical incident ends with one proposal for a human to answer")
+	assert.LessOrEqual(t, len(e.actions()), 5, "bounded by the persona rate limit, not by the number of flaps")
+	assert.Zero(t, expired, "nothing the worst shape's own proposal answered was expired")
+	assert.Len(t, e.open(), 1)
+	for _, ev := range drainEvents(rec) {
+		assert.False(t, hasEvent([]string{ev}, "Normal", EventReasonSuperseded), "no churn: %s", ev)
+	}
+}
+
+// R2-1 in its other direction: a milder Pending proposal of an earlier generation is
+// superseded, and an equally severe one is kept.
+func TestSupersede_AnEarlierGenerationsProposalsAreJudgedTheSameWay(t *testing.T) {
+	e := newRecurrenceEnv(t, noiseClient(t, recurrencePersonaObject()))
+	e.setReadiness()
+	e.cycle()
+	gen0 := e.onlyOpen()
+	milder := answering(t, e, "gen0-milder", gen0.Name, "ReadinessNotReady", time.Now().Add(-time.Hour))
+	sameAsNow := answering(t, e, "gen0-oom", gen0.Name, "OOMKilled", time.Now().Add(-time.Hour))
+	e.resolve(gen0.Name)
+
+	e.setReadiness()
+	e.cycle() // generation 1
+	require.NotEqual(t, gen0.Name, e.onlyOpen().Name)
+	e.setOOM()
+	e.cycle()
+
+	assert.Equal(t, RemediationPhaseExpired, e.actionNamed(milder.Name).Status.Phase)
+	assert.Equal(t, RemediationPhasePending, e.actionNamed(sameAsNow.Name).Status.Phase)
 }
