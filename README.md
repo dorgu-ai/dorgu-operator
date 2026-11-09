@@ -195,7 +195,27 @@ helm install dorgu-operator oci://ghcr.io/dorgu-ai/dorgu-operator-charts/dorgu-o
 
 **Public installs:** the image and Helm chart are published to GHCR on release. Set package visibility to **Public** in GitHub package settings so `helm install oci://...` works without login.
 
-### Verify
+### Verify what you install (build provenance)
+
+Releases from **v0.13.1** carry a [build provenance attestation](https://docs.github.com/en/actions/security-guides/using-artifact-attestations-to-establish-provenance-for-builds) for the operator image and for the Helm chart (the OCI artifact and the `.tgz` on the release page), signed by this repository's release workflow. Check them with the [GitHub CLI](https://cli.github.com/) before you install:
+
+```bash
+VERSION=0.13.1
+
+# The image (the manifest list the tag points at)
+gh attestation verify oci://ghcr.io/dorgu-ai/dorgu-operator:${VERSION} --owner dorgu-ai
+
+# The chart, as it sits in the registry
+gh attestation verify oci://ghcr.io/dorgu-ai/dorgu-operator-charts/dorgu-operator:${VERSION} --owner dorgu-ai
+
+# The chart archive from the GitHub release
+gh release download v${VERSION} --repo dorgu-ai/dorgu-operator --pattern 'dorgu-operator-*.tgz'
+gh attestation verify dorgu-operator-${VERSION}.tgz --owner dorgu-ai
+```
+
+A passing check says the artifact was built by `dorgu-ai/dorgu-operator`'s release workflow from a tagged commit; the output names the commit. Releases before v0.13.1 have no attestation (`gh attestation verify` answers 404 for them).
+
+### Check the install
 
 ```bash
 kubectl get pods -n dorgu-system

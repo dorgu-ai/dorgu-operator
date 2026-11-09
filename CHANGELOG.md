@@ -7,6 +7,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.13.1] - Unreleased
+
+Patch release for the findings of the dogfood upgrade to 0.13.0 (D1.1), paired with CLI v0.14.1. No CRD change, no RBAC change, no new flag or Helm value. Upgrade the CLI first, as for 0.13.0.
+
+### Migration notes
+
+1. **A Pending RemediationAction now expires with the reason `IncidentResolved` when its incident resolves.** `Expired` has a fourth reason (after `Superseded`, `ApprovalTimedOut`, `PredatesGate`): a tool that reads the `Expired` condition's reason must handle it. It is terminal, applies nothing, is not a rejection and starts no cooldown. It does count toward the hourly rate limit like any proposal created in the last hour. A proposal a human approved (`Approved`, `Ticketed`, `Applying`, `Verifying`) is never touched.
+2. **A workload that Helm, Argo CD, Flux or kustomize owns gets advice only, including the persona.** No step of its plan is `autoExecutable` any more: the persona-update step is now a `config-change` step that says what to set and where, and the explanation says "all advisory". **Approving such an action records the decision as `Acknowledged` and changes nothing in the cluster, not the persona and not the workload.** What 0.13.0 did: it issued a ticket and patched the ApplicationPersona (the Deployment was never written by the operator, and the CLI refused to patch it). **Pending actions that 0.13.0 proposed for owned workloads keep their old plan on the object** (the spec is not rewritten): approving one now acknowledges it the same way, and a ticket already issued for one is refused at apply. Unknown or unresolved ownership is unchanged: with no evidence of a deployer, the persona proposal stands.
+3. **A plan the gate refuses at `Validate/step-command` no longer loses the whole proposal.** Only the advisory steps whose command is not a single plain kubectl invocation are dropped, the rest goes through the full gate again, and the refused command's text is removed from every field that is kept (a proposal fails closed if any of it is left). The refusal of the first plan is recorded once (condition, `DorguValidateRefused` Event, `dorgu_gate_decisions_total{stage="Validate",result="refuse",reason="step-command"}`). A remainder with no steps is refused as before.
+4. **New gate reasons, pre-registered at zero:** `dorgu_gate_decisions_total{stage="Ownership",reason="owner-auto-step"}` (a final proposal still carrying an auto-executable step on an owned workload: refused, a producer bug) and the verdict `owner-advisory` on `status.gate` of an approval acknowledged for an owned workload.
+5. **The AI planner's empty plan is now an unusable reply.** A reply with `steps: []` is asked once more, counted in `dorgu_llm_invalid_output_total{purpose="planning"}` (which now also counts a planner reply that does not parse), and remembered for the 5 minute failure TTL instead of being cached as a success for `--llm-cache-ttl`. The prompt now asks for at least one step.
+
+### Added
+
+- **Build provenance attestation (D1.1 finding 9).** The release workflow attests the operator image (the pushed manifest list), the Helm chart in the registry (the OCI artifact) and the chart archive on the release page with `actions/attest-build-provenance`. Verify them with `gh attestation verify` (commands in the README, "Verify what you install"). Releases before this one have no attestation. The workflow change is exercised by the first tag that includes it.
+
+### Fixed
+
+- **Stale Pending proposals silenced the persona (D1.1 finding 1).** A `Pending` RemediationAction whose incident has `Resolved`, by the application recovering by itself or by the health cycle, expires with reason `IncidentResolved` at the start of the next cycle, before anything is proposed. In D1.1, 25 proposals were deferred behind four stale ones. If the same fault comes back (the same incident lineage), the normal proposal path runs in that cycle. The metric is the existing `dorgu_remediation_transitions_total{from="Pending",to="Expired"}`; the Event is `DorguExpired`.
+- **Owned workloads (D1.1 finding 5).** See migration note 2. The explanation no longer says "1 applied on approval" for them. The gate's Ownership stage enforces it at approval (the plan is neutralised, the decision is allowed with no ticket, the pipeline stops early) and refuses a final proposal that still has an auto step; the completeness check treats an advisory plan for an owned workload as the considered outcome.
+- **step-command refusal (D1.1 finding 3).** See migration note 3.
+- **No step reads "placeholder" (D1.1 finding 6).** A description or rationale that is only the word is filled from the plan summary, a step that cannot be filled is dropped and the rest renumbered, and the same repair runs where the object is written, whichever producer built the plan.
+- **AI planner empty plan (D1.1 finding 7).** See migration note 5. The operator logs no model reply, so the cause of an empty reply (a model that answers "nothing to do" to a schema that asks for steps) could not be confirmed from the cluster; the reply is now handled and counted, and the prompt asks for a manual step instead of nothing.
+
+### Documented, not changed
+
+- **A recurrence or an escalation keeps the name of the incident it continues (D1.1 finding 8).** An OOM that recurs on a crash-looping pod is `im-...-crashloopbackoff-...-r1`. The name is the lineage, and the gate's dedup, the rejection cooldown and every RemediationAction's `incidentRef` are keyed on it (the name without `-rN`). An escalating incident is the same object, which cannot be renamed, and a recurrence named after its own signal would be a different lineage from the fault it recurs, so a human's rejection would stop holding. What the incident is now is in the `Signal` column of `kubectl get incidentmemories` and the `dorgu.io/signal` label (`kubectl get incidentmemories -l dorgu.io/signal=OOMKilled`), both of which follow the current signal. A test pins both.
+
 ## [0.13.0] - 2026-11-09
 
 The operator half of the Dorgu CP1 release, paired with CLI v0.14.0 (the harness: a gate every proposal and approval passes through, an apply ticket, verification and rollback that hold, and a KPI report).

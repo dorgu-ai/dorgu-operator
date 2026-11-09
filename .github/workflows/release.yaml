@@ -8,6 +8,10 @@ on:
 permissions:
   contents: write
   packages: write
+  # Build provenance (actions/attest-build-provenance): the attestation is signed with the
+  # workflow's OIDC identity and stored in GitHub's attestation store.
+  id-token: write
+  attestations: write
 
 env:
   REGISTRY: ghcr.io
@@ -52,6 +56,7 @@ jobs:
             type=sha
 
       - name: Build and push
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -62,6 +67,16 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+      # Provenance for the image: the digest of the manifest list that was pushed, so
+      # `gh attestation verify oci://ghcr.io/dorgu-ai/dorgu-operator:<version> --owner dorgu-ai`
+      # checks what the tag resolves to.
+      - name: Attest image build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
 
   helm:
     name: Package & Publish Helm Chart
@@ -99,6 +114,12 @@ jobs:
       - name: Package chart
         run: helm package charts/dorgu-operator -d dist/
 
+      # Provenance for the chart archive that is attached to the GitHub release.
+      - name: Attest chart archive build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: dist/dorgu-operator-*.tgz
+
       - name: Log in to GHCR (Helm OCI)
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io \
@@ -106,9 +127,23 @@ jobs:
             --password-stdin
 
       - name: Push chart to GHCR OCI
+        id: push
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          helm push dist/dorgu-operator-${VERSION}.tgz oci://ghcr.io/${{ github.repository_owner }}/dorgu-operator-charts
+          helm push dist/dorgu-operator-${VERSION}.tgz oci://ghcr.io/${{ github.repository_owner }}/dorgu-operator-charts 2>&1 | tee push.log
+          # helm prints "Digest: sha256:..." for the pushed OCI artifact.
+          DIGEST="$(awk '/^Digest:/ {print $2}' push.log)"
+          test -n "${DIGEST}" || { echo "helm push printed no digest" >&2; exit 1; }
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+
+      # Provenance for the chart as it sits in the registry, so
+      # `gh attestation verify oci://ghcr.io/dorgu-ai/dorgu-operator-charts/dorgu-operator:<version> --owner dorgu-ai` works.
+      - name: Attest chart (OCI) build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: ghcr.io/${{ github.repository_owner }}/dorgu-operator-charts/dorgu-operator
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
 
       - name: Upload chart artifact
         uses: actions/upload-artifact@v4
