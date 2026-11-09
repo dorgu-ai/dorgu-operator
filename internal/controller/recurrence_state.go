@@ -29,6 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
+	"github.com/dorgu-ai/dorgu-operator/internal/detection"
 	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
 	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
 	"github.com/dorgu-ai/dorgu-operator/internal/metrics"
@@ -65,31 +66,56 @@ func isResolvedIncident(im *dorguv1.IncidentMemory) bool {
 	return im.Status.Phase == PhaseResolved
 }
 
-// resolvedPredecessors lists the Resolved incidents of the same fault as a
-// diagnosis about a subject: same persona, category, signal and attribution.
+// resolvedPredecessors lists the Resolved incidents of the same fault as a diagnosis
+// about a subject.
+//
+// A fault is the application, the container and the family, so a signal in the
+// family (see incident_family.go) looks at every Resolved incident of the application
+// in the family that is about the same container, whatever shape it was in: the
+// recurrence cap, the generation number and the lineage are per fault, not per
+// signal, or a fault that flapped and changed shape each time would have a budget per
+// shape. Any other signal keeps looking for its own: same persona, category, signal
+// and attribution.
 func (r *HealthCheckReconciler) resolvedPredecessors(
 	ctx context.Context,
 	subject incidentSubject,
 	diag *diagnosis.Diagnosis,
 ) ([]dorguv1.IncidentMemory, error) {
-	opts := []client.ListOption{client.MatchingLabelsSelector{Selector: labels.SelectorFromSet(labels.Set{
-		LabelPersonaKind: subject.personaRef.Kind,
-		LabelPersonaName: subject.personaRef.Name,
-		LabelCategory:    diag.Category,
-		LabelSignal:      string(primarySignalType(diag)),
-	})}}
-	if subject.namespace != "" {
-		opts = append(opts, client.InNamespace(subject.namespace))
-	}
+	signal := primarySignalType(diag)
+	_, family := detection.FaultRank(signal)
 
-	var list dorguv1.IncidentMemoryList
-	if err := r.Client.List(ctx, &list, opts...); err != nil {
-		return nil, fmt.Errorf("listing earlier IncidentMemories: %w", err)
+	var candidates []dorguv1.IncidentMemory
+	if family {
+		all, err := r.applicationIncidents(ctx, subject)
+		if err != nil {
+			return nil, err
+		}
+		containers := containersOf(diag)
+		for i := range all {
+			if _, in := rankOf(all[i].Spec.Detection.Signal); in && containersOverlap(incidentContainers(&all[i]), containers) {
+				candidates = append(candidates, all[i])
+			}
+		}
+	} else {
+		opts := []client.ListOption{client.MatchingLabelsSelector{Selector: labels.SelectorFromSet(labels.Set{
+			LabelPersonaKind: subject.personaRef.Kind,
+			LabelPersonaName: subject.personaRef.Name,
+			LabelCategory:    diag.Category,
+			LabelSignal:      string(signal),
+		})}}
+		if subject.namespace != "" {
+			opts = append(opts, client.InNamespace(subject.namespace))
+		}
+		var list dorguv1.IncidentMemoryList
+		if err := r.Client.List(ctx, &list, opts...); err != nil {
+			return nil, fmt.Errorf("listing earlier IncidentMemories: %w", err)
+		}
+		candidates = list.Items
 	}
 
 	var resolved []dorguv1.IncidentMemory
-	for i := range list.Items {
-		if im := &list.Items[i]; isResolvedIncident(im) && subject.matchesIncident(im) {
+	for i := range candidates {
+		if im := &candidates[i]; isResolvedIncident(im) && subject.matchesIncident(im) {
 			resolved = append(resolved, *im)
 		}
 	}
@@ -170,13 +196,20 @@ func (r *HealthCheckReconciler) reopenLatest(
 	folded := 0
 	err := r.writeIncident(ctx, latest, diag, now, incidentEdit{
 		spec: func(fresh *dorguv1.IncidentMemory) {
-			applyDiagnosisToSpec(fresh, subject, diag, now)
-			fresh.Spec.Resolution = nil
-			fresh.Labels[LabelPhase] = PhaseDetected
-			folded = foldedCount(fresh) + 1
+			// It takes the shape the fault has now, whatever it was when it resolved.
+			reshapeSpec(fresh, subject, diag, now, true)
 			if fresh.Annotations == nil {
 				fresh.Annotations = map[string]string{}
 			}
+			if res := fresh.Spec.Resolution; res != nil {
+				// spec.resolution is the record of an incident that closed; an open
+				// one carries none. Keep what it said, so the fix that did not hold is
+				// not lost.
+				fresh.Annotations[AnnotationLastResolution] = fmt.Sprintf("%s: %s", res.Outcome, res.Action)
+			}
+			fresh.Spec.Resolution = nil
+			fresh.Labels[LabelPhase] = PhaseDetected
+			folded = foldedCount(fresh) + 1
 			fresh.Annotations[AnnotationRecurrencesFolded] = strconv.Itoa(folded)
 		},
 		status: func(fresh *dorguv1.IncidentMemory) { fresh.Status.Phase = PhaseDetected },

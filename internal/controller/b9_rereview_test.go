@@ -64,11 +64,17 @@ func TestRereview_A_AMergedIncidentKeepsTheDeadFaultsLabelWhileOnlyTheMilderOneR
 	}
 	e.cycle()
 
-	// Only the sidecar fault remains, for longer than the resolution grace.
+	// Only the sidecar fault remains, for longer than the resolution grace. The two
+	// containers' faults are two incidents (re-review N-1), so the app's, whose
+	// signal has gone, is the one aged here; the test as adopted called onlyOpen().
 	e.count.signals = e.count.signals[1:]
-	im := e.onlyOpen()
-	im.Spec.Detection.LastSeen = metav1.NewTime(time.Now().Add(-time.Hour))
-	require.NoError(t, e.c.Update(context.Background(), &im))
+	require.Len(t, e.open(), 2, "one incident per container: %v", incidentSignals(e.incidents()))
+	for _, im := range e.open() {
+		if im.Spec.Detection.Signal == "OOMKilled" {
+			im.Spec.Detection.LastSeen = metav1.NewTime(time.Now().Add(-time.Hour))
+			require.NoError(t, e.c.Update(context.Background(), &im))
+		}
+	}
 	e.cycle()
 
 	open := e.open()
@@ -80,9 +86,10 @@ func TestRereview_A_AMergedIncidentKeepsTheDeadFaultsLabelWhileOnlyTheMilderOneR
 
 // (a) A fault on a rolled pod. The open incident names pod api-abc (crash loop).
 // A rollout replaces it with api-def, which is first just not Ready. No pod in
-// common, so it is a second incident for what an operator would call one fault.
-// Characterization (PLAUSIBLE, low): it lasts until the first incident resolves.
-func TestRereview_A_ARolledPodOpensASecondIncident_Characterization(t *testing.T) {
+// common, but the same container of the same application and the old pod's fault
+// has ended, so it is the one fault: one incident. (Adopted as a characterization
+// of two incidents, "PLAUSIBLE, low"; N-1 turns it into the intended behaviour.)
+func TestRereview_A_ARolledPodMergesIntoTheFaultItReplaces(t *testing.T) {
 	e := newRecurrenceEnv(t, noiseClient(t, recurrencePersonaObject()))
 	e.setCrashLoop()
 	e.cycle()
@@ -94,7 +101,7 @@ func TestRereview_A_ARolledPodOpensASecondIncident_Characterization(t *testing.T
 	}
 	e.cycle()
 
-	assert.Len(t, e.open(), 2, "one crash-looping app, two open incidents: %v", incidentSignals(e.incidents()))
+	assert.Len(t, e.open(), 1, "one crash-looping app, one incident: %v", incidentSignals(e.incidents()))
 }
 
 // (b) An advisory proposal made for the milder shape is Pending. The incident

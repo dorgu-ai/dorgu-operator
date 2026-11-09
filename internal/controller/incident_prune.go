@@ -85,6 +85,7 @@ func (r *HealthCheckReconciler) pruneResolved(ctx context.Context, now time.Time
 
 	cutoff := now.Add(-r.ResolvedRetention)
 	var errs []error
+	var liveReferenced map[string]bool // read once, and only if something is to be deleted
 	for i := range resolved {
 		im := &resolved[i]
 		if newest[incidentKey(im)] || !lastSighting(im).Before(cutoff) {
@@ -94,26 +95,83 @@ func (r *HealthCheckReconciler) pruneResolved(ctx context.Context, now time.Time
 			metrics.RecordIncidentPrune(metrics.PruneKeptReferenced)
 			continue
 		}
-		uid := im.UID
-		err := r.Client.Delete(ctx, im, client.Preconditions{UID: &uid})
-		switch {
-		case err == nil || apierrors.IsNotFound(err):
-			metrics.RecordIncidentPrune(metrics.PruneDeleted)
-			r.Logger.V(1).Info("pruned a Resolved incident past the retention",
-				"incident", im.Name, "lastSeen", lastSighting(im), "retention", r.ResolvedRetention)
-		default:
+		if liveReferenced == nil {
+			if liveReferenced, err = r.incidentsNamedByActiveRemediationsLive(ctx); err != nil {
+				return errors.Join(append(errs, err)...)
+			}
+		}
+		if err := r.deleteIfStillPrunable(ctx, im, cutoff, liveReferenced); err != nil {
 			metrics.RecordIncidentPrune(metrics.PruneError)
-			errs = append(errs, fmt.Errorf("deleting IncidentMemory %s/%s: %w", im.Namespace, im.Name, err))
+			errs = append(errs, err)
 		}
 	}
 	return errors.Join(errs...)
 }
 
+// deleteIfStillPrunable deletes a cached candidate once the API server agrees it is
+// one. The decision to prune was made on the manager's cache, which can lag a write
+// the API server has already accepted: an incident reopened since (the recurrence
+// cap does exactly that) would still read Resolved there. So the incident is read
+// live, and is deleted only if it is the same object, still Resolved, still past the
+// retention and named by no non-terminal RemediationAction, with the live
+// resourceVersion as the delete's precondition: if it changed in between, the delete
+// fails instead of removing an open incident.
+func (r *HealthCheckReconciler) deleteIfStillPrunable(
+	ctx context.Context, cached *dorguv1.IncidentMemory, cutoff time.Time, referenced map[string]bool,
+) error {
+	var live dorguv1.IncidentMemory
+	if err := r.liveReader().Get(ctx, client.ObjectKeyFromObject(cached), &live); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("reading IncidentMemory %s/%s live before deleting it: %w", cached.Namespace, cached.Name, err)
+	}
+	if live.UID != cached.UID || !isResolvedIncident(&live) || !lastSighting(&live).Before(cutoff) {
+		r.Logger.V(1).Info("not pruning: the incident is no longer a Resolved one past the retention",
+			"incident", live.Name)
+		return nil
+	}
+	if referenced[incidentKey(&live)] {
+		metrics.RecordIncidentPrune(metrics.PruneKeptReferenced)
+		return nil
+	}
+
+	uid, version := live.UID, live.ResourceVersion
+	err := r.Client.Delete(ctx, &live, client.Preconditions{UID: &uid, ResourceVersion: &version})
+	switch {
+	case err == nil || apierrors.IsNotFound(err):
+		metrics.RecordIncidentPrune(metrics.PruneDeleted)
+		r.Logger.V(1).Info("pruned a Resolved incident past the retention",
+			"incident", live.Name, "lastSeen", lastSighting(&live), "retention", r.ResolvedRetention)
+		return nil
+	default:
+		return fmt.Errorf("deleting IncidentMemory %s/%s: %w", live.Namespace, live.Name, err)
+	}
+}
+
+// liveReader reads the API server, not the cache, when it is given the means to.
+func (r *HealthCheckReconciler) liveReader() client.Reader {
+	if r.APIReader != nil {
+		return r.APIReader
+	}
+	return r.Client
+}
+
 // incidentsNamedByActiveRemediations returns the incidents that a RemediationAction
 // which is not yet terminal names.
 func (r *HealthCheckReconciler) incidentsNamedByActiveRemediations(ctx context.Context) (map[string]bool, error) {
+	return namedByActiveRemediations(ctx, r.Client)
+}
+
+// incidentsNamedByActiveRemediationsLive is the same question asked of the API
+// server, which is what a delete is decided on.
+func (r *HealthCheckReconciler) incidentsNamedByActiveRemediationsLive(ctx context.Context) (map[string]bool, error) {
+	return namedByActiveRemediations(ctx, r.liveReader())
+}
+
+func namedByActiveRemediations(ctx context.Context, reader client.Reader) (map[string]bool, error) {
 	var actions dorguv1.RemediationActionList
-	if err := r.Client.List(ctx, &actions); err != nil {
+	if err := reader.List(ctx, &actions); err != nil {
 		return nil, fmt.Errorf("listing RemediationActions to see which incidents are still referenced: %w", err)
 	}
 	referenced := make(map[string]bool)

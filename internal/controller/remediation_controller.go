@@ -87,6 +87,10 @@ const (
 	// ReasonApprovalTimedOut is the ConditionExpired reason.
 	ReasonApprovalTimedOut = "ApprovalTimedOut"
 
+	// ReasonSuperseded is the other ConditionExpired reason: the incident the
+	// proposal answered escalated to a worse shape, so the advice no longer fits.
+	ReasonSuperseded = "Superseded"
+
 	// ConditionWorkloadDiverged reports what a rollback could NOT reach.
 	//
 	// The operator restores the ApplicationPersona and has no write verbs on
@@ -187,6 +191,10 @@ func (r *RemediationController) Reconcile(ctx context.Context, req ctrl.Request)
 func (r *RemediationController) dispatch(
 	ctx context.Context, logger logr.Logger, action *dorguv1.RemediationAction,
 ) (ctrl.Result, error) {
+	if restored, err := r.reassertSuperseded(ctx, action); restored {
+		return ctrl.Result{}, err
+	}
+
 	switch action.Status.Phase {
 	case RemediationPhasePending:
 		return r.handlePending(ctx, logger, action)

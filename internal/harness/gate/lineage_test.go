@@ -235,3 +235,37 @@ func TestRejectionCooldownStillExpires(t *testing.T) {
 	cand.Facts.Incident.Spec.Detection.Signal = "ReadinessNotReady"
 	assert.Empty(t, s.rejectionReason(cand, []dorguv1.RemediationAction{ra}))
 }
+
+// A rejection that does not say which shape it answered (made before proposals
+// recorded it, or by hand) is judged by the incident's escalation time: a no that
+// predates the last escalation was a no to an earlier, milder shape.
+func TestAnUnannotatedRejectionBeforeTheEscalationDoesNotHoldForTheWorseShape(t *testing.T) {
+	g := &Gate{now: func() time.Time { return fixedNow }}
+	s := dedupCooldownStage{g: g}
+	rejection := func() dorguv1.RemediationAction {
+		ra := raFor("ra-1", baseIncident, phaseRejected)
+		ra.Status.Conditions = []metav1.Condition{{
+			Type: ConditionRejected, Status: metav1.ConditionTrue, LastTransitionTime: metav1.NewTime(fixedNow.Add(-10 * time.Minute)),
+		}}
+		return ra
+	}
+	candidate := func(escalatedAt string) *Candidate {
+		cand := lineageCandidate(baseIncident)
+		cand.Facts.PrimarySignal = "OOMKilled"
+		cand.Facts.Incident.Spec.Detection.Signal = "OOMKilled"
+		if escalatedAt != "" {
+			cand.Facts.Incident.Annotations = map[string]string{AnnotationEscalatedAt: escalatedAt}
+		}
+		return cand
+	}
+	stamp := func(d time.Duration) string { return fixedNow.Add(d).Format(time.RFC3339) }
+
+	assert.Empty(t, s.rejectionReason(candidate(stamp(-time.Minute)), []dorguv1.RemediationAction{rejection()}),
+		"escalated a minute ago, rejected ten minutes ago: the no was to the earlier shape")
+	assert.NotEmpty(t, s.rejectionReason(candidate(stamp(-30*time.Minute)), []dorguv1.RemediationAction{rejection()}),
+		"rejected after the escalation: it was to this shape")
+	assert.NotEmpty(t, s.rejectionReason(candidate(""), []dorguv1.RemediationAction{rejection()}),
+		"an incident that never escalated: as before")
+	assert.NotEmpty(t, s.rejectionReason(candidate("garbage"), []dorguv1.RemediationAction{rejection()}),
+		"an unreadable stamp changes nothing")
+}

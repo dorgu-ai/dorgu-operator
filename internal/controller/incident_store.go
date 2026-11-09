@@ -335,6 +335,12 @@ func newIncident(
 			AnnotationRecurrenceCount: strconv.Itoa(max(generation, 1)),
 		}
 	}
+	if containers := containersOf(diag); len(containers) > 0 {
+		if im.Annotations == nil {
+			im.Annotations = map[string]string{}
+		}
+		im.Annotations[AnnotationContainers] = strings.Join(containers, ",")
+	}
 	return im
 }
 
@@ -489,6 +495,16 @@ func applyDiagnosisToSpec(
 	}
 
 	im.Spec.Detection.AffectedResources = toResourceRefs(diag.AffectedResources)
+
+	// The same signal seen on another container is the same incident, as it always
+	// was (the rules aggregate one signal's sightings into one diagnosis), but the
+	// incident must name every container it is about.
+	if containers := unionContainers(incidentContainers(im), containersOf(diag)); len(containers) > 0 {
+		if im.Annotations == nil {
+			im.Annotations = map[string]string{}
+		}
+		im.Annotations[AnnotationContainers] = strings.Join(containers, ",")
+	}
 }
 
 // annotateUnattributed adds, to the field a user actually reads, the reason an

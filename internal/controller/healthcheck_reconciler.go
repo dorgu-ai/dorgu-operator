@@ -88,6 +88,18 @@ const (
 	// was escalated to its current one (see incident_family.go).
 	AnnotationEscalatedFrom = "dorgu.io/escalated-from"
 
+	// AnnotationLastResolution keeps the resolution of an incident that was reopened
+	// (spec.resolution is cleared on an open incident).
+	AnnotationLastResolution = "dorgu.io/last-resolution"
+
+	// AnnotationContainers lists the containers an incident is about, the second
+	// part of the identity of a fault (application, container, family).
+	AnnotationContainers = "dorgu.io/containers"
+
+	// maxEscalationTrail bounds the escalated-from annotation: a fault that
+	// flickers between shapes keeps the most recent entries.
+	maxEscalationTrail = 16
+
 	// AnnotationRecurrencesFolded counts the recurrences that were folded into an
 	// incident (and reopened it) because the recurrence cap was reached.
 	AnnotationRecurrencesFolded = "dorgu.io/recurrences-folded"
@@ -164,6 +176,11 @@ type HealthCheckReconciler struct {
 	// ResolvedRetention is how long a Resolved incident is kept. Zero keeps them
 	// forever.
 	ResolvedRetention time.Duration
+
+	// APIReader reads straight from the API server, bypassing the cache. Pruning
+	// decides from the cache but confirms against this before it deletes. Nil reads
+	// through Client.
+	APIReader client.Reader
 }
 
 // Start begins the health check reconciliation loop. Blocks until ctx is cancelled.
@@ -280,6 +297,10 @@ func (r *HealthCheckReconciler) processGroup(
 			"group", group.Key, "signals", len(group.Signals))
 		return 0, 0
 	}
+
+	// What this application's signals say right now, for the merge of one fault's
+	// shapes into one incident (incident_family.go).
+	ctx = withFamilyView(ctx, newFamilyView(group.Signals))
 
 	// An unattributed incident is reported but never remediated (see
 	// processDiagnosis), so an AI explanation of it would be paid for and used by

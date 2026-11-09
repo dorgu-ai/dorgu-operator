@@ -310,6 +310,7 @@ func main() {
 			Logger:            setupLog.WithName("health-check"),
 			ReconcileInterval: cfg.healthCheckInterval,
 
+			APIReader:         mgr.GetAPIReader(),
 			RecurrenceCap:     cfg.recurrenceCap,
 			RecurrenceWindow:  cfg.recurrenceWindow,
 			ResolvedRetention: cfg.resolvedRetention,

@@ -194,3 +194,67 @@ func TestCap_TheWindowDefaultsWhenOnlyTheCapIsSet(t *testing.T) {
 }
 
 var _ client.Object = (*dorguv1.IncidentMemory)(nil)
+
+// Re-review N-4: the cap counts per fault, and a fault is the application, the
+// container and the family, not one signal. A flapper that changes shape each time
+// it comes back has one budget.
+func TestCap_ShapesOfOneFaultShareOneBudgetAndOneLineage(t *testing.T) {
+	e, _ := cappedEnv(t, 3)
+	e.container = "main"
+	shapes := []func(){e.setReadiness, e.setLiveness, e.setCrashLoop, e.setOOM}
+
+	shapes[0]()
+	e.cycle()
+	first := e.onlyOpen()
+	for i := 1; i <= 30; i++ {
+		e.resolve(e.onlyOpen().Name)
+		shapes[i%len(shapes)]()
+		e.cycle()
+	}
+
+	all := e.incidents()
+	assert.LessOrEqual(t, len(all), 1+3, "one fault, one cap: %v", incidentSignals(all))
+	for _, im := range all {
+		assert.True(t, gateSameLineage(first.Name, im.Name), "%s left the lineage of %s", im.Name, first.Name)
+	}
+}
+
+// The same signal on another container is the same incident, as it always was (one
+// signal's sightings are one diagnosis), but the incident names both containers.
+func TestFamily_TheSameSignalOnAnotherContainerIsNamedOnTheIncident(t *testing.T) {
+	e := newRecurrenceEnv(t, noiseClient(t, recurrencePersonaObject()))
+	e.container = "app"
+	e.setCrashLoop()
+	e.cycle()
+	e.container = "sidecar"
+	e.setCrashLoop()
+	e.cycle()
+
+	im := e.onlyOpen()
+	assert.Equal(t, "app,sidecar", im.Annotations[AnnotationContainers], "nothing hides: the incident names both")
+	assert.Len(t, e.incidents(), 1)
+}
+
+// At the cap the reopened incident takes the shape the fault has now, and keeps
+// the record of the resolution it replaces.
+func TestCap_TheReopenedIncidentFollowsTheCurrentShapeAndKeepsItsHistory(t *testing.T) {
+	e, _ := cappedEnv(t, 1)
+	e.container = "main"
+	e.setCrashLoop()
+	e.cycle()
+	e.resolve(e.onlyOpen().Name)
+	e.setCrashLoop()
+	e.cycle() // the one recurrence the cap allows
+	latest := e.onlyOpen()
+	e.resolve(latest.Name)
+
+	e.setReadiness() // capped, and a milder shape
+	e.cycle()
+
+	im := e.onlyOpen()
+	assert.Equal(t, latest.Name, im.Name)
+	assert.Equal(t, "ReadinessNotReady", im.Spec.Detection.Signal)
+	assert.Equal(t, "ReadinessNotReady", im.Labels[LabelSignal])
+	assert.Contains(t, im.Annotations[AnnotationEscalatedFrom], "CrashLoopBackOff")
+	assert.Contains(t, im.Annotations[AnnotationLastResolution], "resolved", "the fix that did not hold is not lost with the resolution field")
+}

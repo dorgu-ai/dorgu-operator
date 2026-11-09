@@ -49,6 +49,8 @@ const (
 
 func gateGeneration(name string) int { return gate.IncidentGeneration(name) }
 
+func gateSameLineage(a, b string) bool { return gate.SameIncidentLineage(a, b) }
+
 func mustAtoi(t *testing.T, s string) int {
 	t.Helper()
 	n, err := strconv.Atoi(s)
@@ -285,3 +287,60 @@ func TestPrune_ListFailureIsReported(t *testing.T) {
 }
 
 var _ = detection.SignalOOMKilled
+
+// Re-review N-5: the list is read from the cache, so before a delete the incident
+// is read live, and the delete carries the live resourceVersion. A proposal that
+// names it, seen live and not in the cache, keeps it.
+func TestPrune_ChecksLiveStateBeforeDeleting(t *testing.T) {
+	stale := noiseClient(t, resolvedAt(pruneBase, "OOMKilled", 60*day), resolvedAt(pruneBase+"-r1", "OOMKilled", 40*day))
+	live := noiseClient(t, resolvedAt(pruneBase, "OOMKilled", 60*day), resolvedAt(pruneBase+"-r1", "OOMKilled", 40*day),
+		raFor("appeared-since", pruneBase, RemediationPhasePending))
+	r := newNoiseReconciler(stale)
+	r.APIReader = live
+	r.ResolvedRetention = retention30
+
+	require.NoError(t, r.pruneResolved(context.Background(), time.Now()))
+
+	assert.True(t, exists(t, stale, pruneBase), "the live RemediationAction list names it")
+}
+
+func TestPrune_DeletesWithTheLiveResourceVersion(t *testing.T) {
+	base := fake.NewClientBuilder().WithScheme(noiseScheme(t)).
+		WithObjects(resolvedAt(pruneBase, "OOMKilled", 60*day), resolvedAt(pruneBase+"-r1", "OOMKilled", 40*day)).
+		WithStatusSubresource(&dorguv1.IncidentMemory{}, &dorguv1.RemediationAction{}).Build()
+	var gotRV *string
+	c := interceptor.NewClient(base, interceptor.Funcs{
+		Delete: func(ctx context.Context, inner client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+			o := &client.DeleteOptions{}
+			o.ApplyOptions(opts)
+			if o.Preconditions != nil {
+				gotRV = o.Preconditions.ResourceVersion
+			}
+			return inner.Delete(ctx, obj, opts...)
+		},
+	})
+	r := newNoiseReconciler(c)
+	r.ResolvedRetention = retention30
+
+	require.NoError(t, r.pruneResolved(context.Background(), time.Now()))
+
+	require.NotNil(t, gotRV, "the delete must carry a resourceVersion precondition")
+	assert.NotEmpty(t, *gotRV, "the live one, which is what makes a stale decision fail instead of deleting")
+}
+
+func TestPrune_ALiveReadThatFailsDeletesNothing(t *testing.T) {
+	base := fake.NewClientBuilder().WithScheme(noiseScheme(t)).
+		WithObjects(resolvedAt(pruneBase, "OOMKilled", 60*day), resolvedAt(pruneBase+"-r1", "OOMKilled", 40*day)).
+		WithStatusSubresource(&dorguv1.IncidentMemory{}, &dorguv1.RemediationAction{}).Build()
+	failing := interceptor.NewClient(base, interceptor.Funcs{
+		Get: func(context.Context, client.WithWatch, client.ObjectKey, client.Object, ...client.GetOption) error {
+			return errors.New("the API server is unavailable")
+		},
+	})
+	r := newNoiseReconciler(base)
+	r.APIReader = failing
+	r.ResolvedRetention = retention30
+
+	require.Error(t, r.pruneResolved(context.Background(), time.Now()))
+	assert.True(t, exists(t, base, pruneBase), "an incident that cannot be read live is not deleted on a cached read")
+}

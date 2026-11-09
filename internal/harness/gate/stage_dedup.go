@@ -159,6 +159,9 @@ func (s dedupCooldownStage) rejectionReason(cand *Candidate, siblings []dorguv1.
 		}
 
 		rejectedAt, stamped := rejectionTime(ra)
+		if stamped && rejectedBeforeEscalation(ra, incident, rejectedAt) {
+			continue
+		}
 		if !stamped {
 			// The CLI rejects by patching status.phase alone; the operator stamps the
 			// timestamp on its next pass. Until it does there is nothing to measure a
@@ -181,6 +184,18 @@ func strictlyWorseShape(signal, answered string) bool {
 	now, nowOK := detection.FaultRank(detection.SignalType(signal))
 	was, wasOK := detection.FaultRank(detection.SignalType(answered))
 	return nowOK && wasOK && now > was
+}
+
+// rejectedBeforeEscalation reports whether a rejection that does not say what it
+// answered (made before proposals recorded it, or by hand) was made before the
+// incident last escalated: then it was a no to an earlier, milder shape. A rejection
+// that does say what it answered is judged by that alone.
+func rejectedBeforeEscalation(ra *dorguv1.RemediationAction, incident *dorguv1.IncidentMemory, rejectedAt time.Time) bool {
+	if ra.Annotations[AnnotationAnswersSignal] != "" {
+		return false
+	}
+	escalated, err := time.Parse(time.RFC3339, incident.Annotations[AnnotationEscalatedAt])
+	return err == nil && rejectedAt.Before(escalated)
 }
 
 // rejectionTime returns when the rejection was recorded, and whether a timestamp

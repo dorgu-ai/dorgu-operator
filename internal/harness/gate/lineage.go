@@ -55,6 +55,11 @@ const (
 // no to THAT shape of a fault and not to every shape (see rejectionReason).
 const AnnotationAnswersSignal = "dorgu.io/answers-signal"
 
+// AnnotationEscalatedAt is the annotation an incident carries with the time (RFC
+// 3339) it last escalated to a worse shape. A rejection that predates it was a no to
+// an earlier shape (see rejectionReason).
+const AnnotationEscalatedAt = "dorgu.io/escalated-at"
+
 var generationSuffix = regexp.MustCompile(`-r([0-9]+)$`)
 
 // withoutGeneration removes a trailing recurrence suffix. A base name always ends

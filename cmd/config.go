@@ -247,6 +247,11 @@ func (c operatorConfig) validate() error {
 			"must not be negative (use 0 to disable the cap or the pruning), got %d, %s, %s",
 			c.recurrenceCap, c.recurrenceWindow, c.resolvedRetention)
 	}
+	if c.resolvedRetention > 0 && c.recurrenceCap > 0 && c.resolvedRetention < c.recurrenceWindow {
+		return fmt.Errorf("--resolved-incident-retention=%s is shorter than --incident-recurrence-window=%s: "+
+			"pruning would delete the incidents the recurrence cap counts. Use at least %s, or 0 to keep them",
+			c.resolvedRetention, c.recurrenceWindow, c.recurrenceWindow)
+	}
 	if err := c.validateLivenessWindow(); err != nil {
 		return err
 	}

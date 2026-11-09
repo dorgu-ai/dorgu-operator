@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -43,15 +44,7 @@ import (
 // The merge keeps the incident's name, firstSeen and count, and records the path.
 
 func (e *recurrenceEnv) setSignal(typ detection.SignalType, category detection.Category, severity detection.Severity) {
-	e.count.signals = []detection.Signal{{
-		Type: typ, Severity: severity, Category: category, Source: "stub",
-		Message:  "container api: " + string(typ),
-		Resource: e.pod,
-		PersonaRef: &dorguv1.PersonaReference{
-			Kind: "ApplicationPersona", Name: recurrencePersona, Namespace: recurrenceNS,
-		},
-		DetectedAt: time.Now(),
-	}}
+	e.count.signals = []detection.Signal{e.signalFor(typ, category, severity, e.pod, e.container)}
 }
 
 func (e *recurrenceEnv) setReadiness() {
@@ -103,22 +96,69 @@ func TestFamily_AFaultThatWorsensIsOneIncident(t *testing.T) {
 	assert.Equal(t, opened, recurrenceCount(t), "an escalation is not a recurrence")
 }
 
-func TestFamily_EscalationNeverLowersSeverityOrOpensASecondIncident(t *testing.T) {
+// When the dominant signal clears and a milder one in the same container persists,
+// the incident follows the current state down (re-review N-1). It stays one incident
+// and its history is kept.
+func TestFamily_DeEscalatesWhenTheDominantSignalClears(t *testing.T) {
 	e := newRecurrenceEnv(t, noiseClient(t, recurrencePersonaObject()))
-	e.setCrashLoop()
+	e.container = "main"
+	e.setOOM()
 	e.cycle()
-	require.Equal(t, string(detection.SeverityCritical), e.onlyOpen().Spec.Severity)
+	first := e.onlyOpen()
+	require.Equal(t, "OOMKilled", first.Spec.Detection.Signal)
 
-	// The container recovers to Running and not Ready: a lower rung of the same
-	// fault. It does not open an incident and does not demote the open one.
-	e.setReadiness()
+	e.setReadiness() // the OOM signal is gone; the container is just not Ready
 	e.cycle()
 
 	im := e.onlyOpen()
 	require.Len(t, e.incidents(), 1, "got %s", incidentSignals(e.incidents()))
-	assert.Equal(t, "CrashLoopBackOff", im.Spec.Detection.Signal)
+	assert.Equal(t, first.Name, im.Name)
+	assert.Equal(t, "ReadinessNotReady", im.Spec.Detection.Signal, "the signal follows the current state")
+	assert.Equal(t, "health", im.Spec.Category)
+	assert.Equal(t, string(detection.SeverityWarning), im.Spec.Severity, "and so does the severity")
+	assert.Equal(t, "ReadinessNotReady", im.Labels[LabelSignal])
+	assert.Equal(t, "OOMKilled", im.Annotations[AnnotationEscalatedFrom], "history is kept")
+	assert.True(t, im.Spec.Detection.FirstSeen.Equal(&first.Spec.Detection.FirstSeen))
+	assert.EqualValues(t, 2, im.Status.OccurrenceCount)
+
+	e.setOOM() // and it comes back
+	e.cycle()
+	back := e.onlyOpen()
+	assert.Equal(t, "OOMKilled", back.Spec.Detection.Signal)
+	assert.Equal(t, "OOMKilled,ReadinessNotReady", back.Annotations[AnnotationEscalatedFrom])
+	assert.Len(t, e.incidents(), 1)
+}
+
+// While the worse signal is still being seen for the container, a milder one is a
+// rung of the same fault and is folded in: the incident does not flip.
+func TestFamily_AMilderSignalIsFoldedWhileTheWorseOneIsLive(t *testing.T) {
+	e := newRecurrenceEnv(t, noiseClient(t, recurrencePersonaObject()))
+	e.count.signals = []detection.Signal{
+		e.signalFor(detection.SignalReadinessNotReady, detection.CategoryHealth, detection.SeverityWarning, e.pod, "main"),
+		e.signalFor(detection.SignalOOMKilled, detection.CategoryResource, detection.SeverityCritical, e.pod, "main"),
+	}
+	for range 3 {
+		e.cycle()
+	}
+	im := e.onlyOpen()
+	assert.Len(t, e.incidents(), 1, "got %s", incidentSignals(e.incidents()))
+	assert.Equal(t, "OOMKilled", im.Spec.Detection.Signal)
 	assert.Equal(t, string(detection.SeverityCritical), im.Spec.Severity)
-	assert.EqualValues(t, 2, im.Status.OccurrenceCount, "the sighting still counts")
+}
+
+func TestFamily_TheTrailOfAFlickeringFaultIsBounded(t *testing.T) {
+	e := newRecurrenceEnv(t, noiseClient(t, recurrencePersonaObject()))
+	e.container = "main"
+	for range 40 {
+		e.setOOM()
+		e.cycle()
+		e.setReadiness()
+		e.cycle()
+	}
+	im := e.onlyOpen()
+	trail := strings.Split(im.Annotations[AnnotationEscalatedFrom], ",")
+	assert.LessOrEqual(t, len(trail), maxEscalationTrail, "the annotation must stay small however long it flickers")
+	assert.Len(t, e.incidents(), 1)
 }
 
 // While any signal of the family is being seen, the incident is still active: a
@@ -190,16 +230,61 @@ func TestFamily_PreviousOccurrencesIncludesTheEscalatedIncident(t *testing.T) {
 
 // An application's pods are not one fault. Two pods failing in different ways are
 // two incidents; the merge is for ONE pod's fault as it worsens.
-func TestFamily_DifferentPodsAreDifferentFaults(t *testing.T) {
+func TestFamily_DifferentPodsAtTheSameTimeAreDifferentFaults(t *testing.T) {
 	e := newRecurrenceEnv(t, noiseClient(t, recurrencePersonaObject()))
+	other := dorguv1.ResourceReference{Kind: "Pod", Name: "api-other", Namespace: recurrenceNS}
+	e.count.signals = []detection.Signal{
+		e.signalFor(detection.SignalCrashLoopBackOff, detection.CategoryHealth, detection.SeverityCritical, e.pod, "main"),
+		e.signalFor(detection.SignalReadinessNotReady, detection.CategoryHealth, detection.SeverityWarning, other, "main"),
+	}
+	for range 3 {
+		e.cycle()
+	}
+	assert.Len(t, e.open(), 2, "got %s", incidentSignals(e.incidents()))
+}
+
+// Different containers are different faults, sidecars included, whichever pod
+// they share (re-review N-1).
+func TestFamily_DifferentContainersAreDifferentFaults(t *testing.T) {
+	e := newRecurrenceEnv(t, noiseClient(t, recurrencePersonaObject()))
+	e.count.signals = []detection.Signal{
+		e.signalFor(detection.SignalCrashLoopBackOff, detection.CategoryHealth, detection.SeverityCritical, e.pod, "app"),
+		e.signalFor(detection.SignalRestartLoop, detection.CategoryHealth, detection.SeverityWarning, e.pod, "sidecar"),
+	}
+	for range 3 {
+		e.cycle()
+	}
+	open := e.open()
+	require.Len(t, open, 2, "got %s", incidentSignals(e.incidents()))
+	containers := map[string]string{}
+	for _, im := range open {
+		containers[im.Annotations[AnnotationContainers]] = im.Spec.Detection.Signal
+	}
+	assert.Equal(t, map[string]string{"app": "CrashLoopBackOff", "sidecar": "RestartLoop"}, containers,
+		"each incident records the container it is about")
+}
+
+// The same container's fault changes shape on a pod that was rolled: no pod in
+// common, but the old pod's fault has ended, so it is one incident.
+func TestFamily_ARolledPodMergesWhenTheOldOnesFaultHasEnded(t *testing.T) {
+	e := newRecurrenceEnv(t, noiseClient(t, recurrencePersonaObject()))
+	e.container = "main"
 	e.setCrashLoop()
 	e.cycle()
-
-	e.pod = dorguv1.ResourceReference{Kind: "Pod", Name: "api-other", Namespace: recurrenceNS}
+	e.pod = dorguv1.ResourceReference{Kind: "Pod", Name: "api-def", Namespace: recurrenceNS}
 	e.setReadiness()
 	e.cycle()
+	assert.Len(t, e.open(), 1, "got %s", incidentSignals(e.incidents()))
+}
 
-	assert.Len(t, e.incidents(), 2, "got %s", incidentSignals(e.incidents()))
+// The container a fault is about is written on the incident, and survives a merge
+// of a fault from another container only as its own incident.
+func TestFamily_TheContainerIsRecordedOnTheIncident(t *testing.T) {
+	e := newRecurrenceEnv(t, noiseClient(t, recurrencePersonaObject()))
+	e.container = "main"
+	e.setReadiness()
+	e.cycle()
+	assert.Equal(t, "main", e.onlyOpen().Annotations[AnnotationContainers])
 }
 
 func TestFamily_ThePodSurvivesAcrossTheShapes(t *testing.T) {

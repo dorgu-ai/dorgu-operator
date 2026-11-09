@@ -49,11 +49,12 @@ const (
 )
 
 type recurrenceEnv struct {
-	t     *testing.T
-	c     client.Client
-	r     *HealthCheckReconciler
-	pod   dorguv1.ResourceReference
-	count *stubCollector
+	t         *testing.T
+	c         client.Client
+	r         *HealthCheckReconciler
+	pod       dorguv1.ResourceReference
+	count     *stubCollector
+	container string
 }
 
 func newRecurrenceEnv(t *testing.T, c client.Client) *recurrenceEnv {

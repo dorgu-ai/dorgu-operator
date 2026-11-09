@@ -117,14 +117,21 @@ func (p *RuleBasedProvider) Diagnose(_ context.Context, signals []detection.Sign
 	return diagnoses, nil
 }
 
-// deduplicationKey creates a key from diagnosis category, suggested action, and affected resources.
+// deduplicationKey creates a key from diagnosis category, suggested action, primary signal and affected resources.
 func deduplicationKey(d *Diagnosis) string {
 	resources := make([]string, 0, len(d.AffectedResources))
 	for _, r := range d.AffectedResources {
 		resources = append(resources, fmt.Sprintf("%s/%s/%s", r.Kind, r.Namespace, r.Name))
 	}
 	sort.Strings(resources)
-	return fmt.Sprintf("%s:%s:%s", d.Category, d.SuggestedAction, strings.Join(resources, ","))
+	// The primary signal is part of the key: two different shapes of a fault on one
+	// pod (a restart loop and a crash loop, in different containers) share a category,
+	// an action and a pod, and collapsing them hid the milder one's fault entirely.
+	primary := ""
+	if len(d.Contributing) > 0 {
+		primary = string(d.Contributing[0].Signal.Type)
+	}
+	return fmt.Sprintf("%s:%s:%s:%s", d.Category, d.SuggestedAction, primary, strings.Join(resources, ","))
 }
 
 // ============================================================================
