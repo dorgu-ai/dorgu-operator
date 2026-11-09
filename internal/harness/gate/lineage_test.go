@@ -29,6 +29,8 @@ import (
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 )
 
+const sigOOM = "OOMKilled"
+
 const baseIncident = "im-shop-web-oomkilled-a476546e10c8"
 
 func TestIncidentLineage(t *testing.T) {
@@ -206,12 +208,12 @@ func TestRejectionCooldownIsForTheShapeThatWasRejected(t *testing.T) {
 		now      string
 		held     bool
 	}{
-		{"a no to readiness does not silence an OOM", "ReadinessNotReady", "OOMKilled", false},
+		{"a no to readiness does not silence an OOM", "ReadinessNotReady", sigOOM, false},
 		{"a no to readiness does not silence a crash loop", "ReadinessNotReady", "CrashLoopBackOff", false},
 		{"a no to a restart loop does not silence the liveness finding", "RestartLoop", "LivenessRestarts", false},
-		{"a no to the OOM still holds when it is only readiness again", "OOMKilled", "ReadinessNotReady", true},
+		{"a no to the OOM still holds when it is only readiness again", sigOOM, "ReadinessNotReady", true},
 		{"a no to the same shape holds", "ReadinessNotReady", "ReadinessNotReady", true},
-		{"a rejection that does not say what it answered holds, as before", "", "OOMKilled", true},
+		{"a rejection that does not say what it answered holds, as before", "", sigOOM, true},
 		{"a signal outside the progression is compared as before", "ImagePullBackOff", "ImagePullBackOff", true},
 	}
 	for _, tt := range tests {
@@ -226,7 +228,7 @@ func TestRejectionCooldownStillExpires(t *testing.T) {
 	g := &Gate{now: func() time.Time { return fixedNow }}
 	s := dedupCooldownStage{g: g}
 	ra := raFor("ra-1", baseIncident, phaseRejected)
-	ra.Annotations = map[string]string{AnnotationAnswersSignal: "OOMKilled"}
+	ra.Annotations = map[string]string{AnnotationAnswersSignal: sigOOM}
 	ra.Status.Conditions = []metav1.Condition{{
 		Type: ConditionRejected, Status: metav1.ConditionTrue, LastTransitionTime: metav1.NewTime(fixedNow.Add(-2 * time.Hour)),
 	}}
@@ -251,8 +253,8 @@ func TestAnUnannotatedRejectionBeforeTheEscalationDoesNotHoldForTheWorseShape(t 
 	}
 	candidate := func(escalatedAt string) *Candidate {
 		cand := lineageCandidate(baseIncident)
-		cand.Facts.PrimarySignal = "OOMKilled"
-		cand.Facts.Incident.Spec.Detection.Signal = "OOMKilled"
+		cand.Facts.PrimarySignal = sigOOM
+		cand.Facts.Incident.Spec.Detection.Signal = sigOOM
 		if escalatedAt != "" {
 			cand.Facts.Incident.Annotations = map[string]string{AnnotationEscalatedAt: escalatedAt}
 		}

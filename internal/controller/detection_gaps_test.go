@@ -37,6 +37,8 @@ import (
 // B9 regression coverage that spans detection, diagnosis, the incident store and
 // the model: F-13 for the signal types B9 adds, and the stale terminated state.
 
+const mainContainer = "main"
+
 // attributingCollector wraps the real pod collector and files every signal
 // against the persona "api" in its namespace, as the persona correlator would.
 // Attributed groups are the ones that may reach the model, which is what these
@@ -101,10 +103,10 @@ func probePersona(ns string) *dorguv1.ApplicationPersona {
 func failingPods(ns string) map[string]*corev1.Pod {
 	now := time.Now()
 	mk := func(name string, cs corev1.ContainerStatus, conds ...corev1.PodCondition) *corev1.Pod {
-		cs.Name = "main"
+		cs.Name = mainContainer
 		return &corev1.Pod{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
-			Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "main"}}},
+			Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: mainContainer}}},
 			Status:     corev1.PodStatus{Phase: corev1.PodRunning, ContainerStatuses: []corev1.ContainerStatus{cs}, Conditions: conds},
 		}
 	}
@@ -193,14 +195,14 @@ func TestStaleOOMKilled_StopsRaisingSignalsAndModelCalls(t *testing.T) {
 	now := time.Now()
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: "api-0", Namespace: "shop"},
-		Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "main"}}},
+		Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: mainContainer}}},
 		Status: corev1.PodStatus{
 			Phase: corev1.PodRunning,
 			Conditions: []corev1.PodCondition{
 				{Type: corev1.PodReady, Status: corev1.ConditionTrue, LastTransitionTime: metav1.NewTime(now.Add(-15 * time.Minute))},
 			},
 			ContainerStatuses: []corev1.ContainerStatus{{
-				Name: "main", Ready: true, RestartCount: 1,
+				Name: mainContainer, Ready: true, RestartCount: 1,
 				State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{StartedAt: metav1.NewTime(now.Add(-15 * time.Minute))}},
 				LastTerminationState: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
 					Reason: "OOMKilled", ExitCode: 137, FinishedAt: metav1.NewTime(now.Add(-16 * time.Minute)),
@@ -232,7 +234,7 @@ func TestStaleOOMKilled_JustRestartedIsStillDetectedThenGoesQuiet(t *testing.T) 
 				{Type: corev1.PodReady, Status: corev1.ConditionTrue, LastTransitionTime: metav1.NewTime(now.Add(-startedAgo))},
 			},
 			ContainerStatuses: []corev1.ContainerStatus{{
-				Name: "main", Ready: true, RestartCount: 1,
+				Name: mainContainer, Ready: true, RestartCount: 1,
 				State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{StartedAt: metav1.NewTime(now.Add(-startedAgo))}},
 				LastTerminationState: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
 					Reason: "OOMKilled", ExitCode: 137, FinishedAt: metav1.NewTime(now.Add(-killedAgo)),
@@ -242,7 +244,7 @@ func TestStaleOOMKilled_JustRestartedIsStillDetectedThenGoesQuiet(t *testing.T) 
 	}
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: "api-0", Namespace: "shop"},
-		Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "main"}}},
+		Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: mainContainer}}},
 		Status:     status(20*time.Second, 25*time.Second),
 	}
 	c := noiseClient(t, probePersona("shop"), pod)

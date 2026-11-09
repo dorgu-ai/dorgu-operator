@@ -388,6 +388,28 @@ func TestChooseReads_SurvivesAChangingSet(t *testing.T) {
 	assert.Len(t, next, 25)
 }
 
+func TestChooseReads_ASmallBudgetIsRespected(t *testing.T) {
+	var cursor readCursors
+	chosen := chooseReads(keysN("live", 2), keysN("api", 10), 5, &cursor)
+	assert.Len(t, chosen, 5)
+	assert.True(t, chosen["live-000"] && chosen["live-001"])
+}
+
+func TestFaultRank_OrdersTheProgression(t *testing.T) {
+	order := []SignalType{SignalReadinessNotReady, SignalRestartLoop, SignalLivenessRestarts, SignalCrashLoopBackOff, SignalOOMKilled}
+	last := 0
+	for _, typ := range order {
+		rank, ok := FaultRank(typ)
+		require.True(t, ok, typ)
+		assert.Greater(t, rank, last, "%s must rank above the one before it", typ)
+		last = rank
+	}
+	for _, typ := range []SignalType{SignalImagePullBackOff, SignalProbeFailure, SignalContainerRestart, SignalNodeNotReady} {
+		_, ok := FaultRank(typ)
+		assert.False(t, ok, "%s is not part of the progression", typ)
+	}
+}
+
 func TestChooseReads_EverythingFitsNothingIsDropped(t *testing.T) {
 	var cursor readCursors
 	chosen := chooseReads([]string{"a"}, []string{"b", "c"}, 25, &cursor)

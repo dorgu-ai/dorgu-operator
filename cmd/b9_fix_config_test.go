@@ -121,16 +121,20 @@ func TestDefaultFlagsPassValidation(t *testing.T) {
 
 // Re-review nit: pruning must not delete the records the cap counts.
 func TestValidate_RejectsRetentionShorterThanTheRecurrenceWindow(t *testing.T) {
+	const day = 24 * time.Hour
+	cfg := func(cap int, retention time.Duration) operatorConfig {
+		return operatorConfig{recurrenceCap: cap, recurrenceWindow: day, resolvedRetention: retention}
+	}
 	tests := []struct {
 		name    string
 		cfg     operatorConfig
 		wantErr bool
 	}{
-		{"defaults", operatorConfig{recurrenceCap: 3, recurrenceWindow: 24 * time.Hour, resolvedRetention: 720 * time.Hour}, false},
-		{"equal", operatorConfig{recurrenceCap: 3, recurrenceWindow: 24 * time.Hour, resolvedRetention: 24 * time.Hour}, false},
-		{"shorter", operatorConfig{recurrenceCap: 3, recurrenceWindow: 24 * time.Hour, resolvedRetention: 12 * time.Hour}, true},
-		{"no cap, so nothing is counted", operatorConfig{recurrenceCap: 0, recurrenceWindow: 24 * time.Hour, resolvedRetention: time.Hour}, false},
-		{"keep forever", operatorConfig{recurrenceCap: 3, recurrenceWindow: 24 * time.Hour, resolvedRetention: 0}, false},
+		{"defaults", cfg(3, 30*day), false},
+		{"equal", cfg(3, day), false},
+		{"shorter", cfg(3, day/2), true},
+		{"no cap, so nothing is counted", cfg(0, time.Hour), false},
+		{"keep forever", cfg(3, 0), false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

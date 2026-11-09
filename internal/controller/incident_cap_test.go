@@ -200,7 +200,7 @@ var _ client.Object = (*dorguv1.IncidentMemory)(nil)
 // it comes back has one budget.
 func TestCap_ShapesOfOneFaultShareOneBudgetAndOneLineage(t *testing.T) {
 	e, _ := cappedEnv(t, 3)
-	e.container = "main"
+	e.container = mainContainer
 	shapes := []func(){e.setReadiness, e.setLiveness, e.setCrashLoop, e.setOOM}
 
 	shapes[0]()
@@ -239,7 +239,7 @@ func TestFamily_TheSameSignalOnAnotherContainerIsNamedOnTheIncident(t *testing.T
 // the record of the resolution it replaces.
 func TestCap_TheReopenedIncidentFollowsTheCurrentShapeAndKeepsItsHistory(t *testing.T) {
 	e, _ := cappedEnv(t, 1)
-	e.container = "main"
+	e.container = mainContainer
 	e.setCrashLoop()
 	e.cycle()
 	e.resolve(e.onlyOpen().Name)

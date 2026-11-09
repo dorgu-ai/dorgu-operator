@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -27,6 +28,8 @@ import (
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 )
@@ -188,4 +191,30 @@ func TestSupersede_AnOrdinaryExpiryIsNotReasserted(t *testing.T) {
 	_, err := rc.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(ra)})
 	require.NoError(t, err)
 	assert.Equal(t, RemediationPhaseExpired, e.actionNamed(ra.Name).Status.Phase)
+}
+
+// A human who approves between the list and the write wins: a proposal that is no
+// longer Pending is left alone.
+func TestSupersede_ALateApprovalWins(t *testing.T) {
+	e := newRecurrenceEnv(t, noiseClient(t, recurrencePersonaObject()))
+	e.setReadiness()
+	e.cycle()
+	approved := advisoryFor(t, e, e.onlyOpen().Name, RemediationPhaseApproved)
+
+	require.NoError(t, e.r.supersede(context.Background(), client.ObjectKeyFromObject(approved), "ReadinessNotReady", "OOMKilled"))
+
+	assert.Equal(t, RemediationPhaseApproved, e.actionNamed(approved.Name).Status.Phase)
+}
+
+func TestSupersede_AFailureToListIsReportedAndDoesNotPanic(t *testing.T) {
+	base := fake.NewClientBuilder().WithScheme(noiseScheme(t)).Build()
+	c := interceptor.NewClient(base, interceptor.Funcs{
+		List: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error {
+			return errors.New("the API server is unavailable")
+		},
+	})
+	r := newNoiseReconciler(c)
+	require.Error(t, r.supersedePending(context.Background(), &dorguv1.IncidentMemory{
+		ObjectMeta: metav1.ObjectMeta{Name: "im-x", Namespace: recurrenceNS},
+	}, "ReadinessNotReady"))
 }

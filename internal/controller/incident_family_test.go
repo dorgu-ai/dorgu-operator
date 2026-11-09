@@ -101,7 +101,7 @@ func TestFamily_AFaultThatWorsensIsOneIncident(t *testing.T) {
 // and its history is kept.
 func TestFamily_DeEscalatesWhenTheDominantSignalClears(t *testing.T) {
 	e := newRecurrenceEnv(t, noiseClient(t, recurrencePersonaObject()))
-	e.container = "main"
+	e.container = mainContainer
 	e.setOOM()
 	e.cycle()
 	first := e.onlyOpen()
@@ -134,8 +134,8 @@ func TestFamily_DeEscalatesWhenTheDominantSignalClears(t *testing.T) {
 func TestFamily_AMilderSignalIsFoldedWhileTheWorseOneIsLive(t *testing.T) {
 	e := newRecurrenceEnv(t, noiseClient(t, recurrencePersonaObject()))
 	e.count.signals = []detection.Signal{
-		e.signalFor(detection.SignalReadinessNotReady, detection.CategoryHealth, detection.SeverityWarning, e.pod, "main"),
-		e.signalFor(detection.SignalOOMKilled, detection.CategoryResource, detection.SeverityCritical, e.pod, "main"),
+		e.signalFor(detection.SignalReadinessNotReady, detection.CategoryHealth, detection.SeverityWarning, e.pod, mainContainer),
+		e.signalFor(detection.SignalOOMKilled, detection.CategoryResource, detection.SeverityCritical, e.pod, mainContainer),
 	}
 	for range 3 {
 		e.cycle()
@@ -148,7 +148,7 @@ func TestFamily_AMilderSignalIsFoldedWhileTheWorseOneIsLive(t *testing.T) {
 
 func TestFamily_TheTrailOfAFlickeringFaultIsBounded(t *testing.T) {
 	e := newRecurrenceEnv(t, noiseClient(t, recurrencePersonaObject()))
-	e.container = "main"
+	e.container = mainContainer
 	for range 40 {
 		e.setOOM()
 		e.cycle()
@@ -234,8 +234,8 @@ func TestFamily_DifferentPodsAtTheSameTimeAreDifferentFaults(t *testing.T) {
 	e := newRecurrenceEnv(t, noiseClient(t, recurrencePersonaObject()))
 	other := dorguv1.ResourceReference{Kind: "Pod", Name: "api-other", Namespace: recurrenceNS}
 	e.count.signals = []detection.Signal{
-		e.signalFor(detection.SignalCrashLoopBackOff, detection.CategoryHealth, detection.SeverityCritical, e.pod, "main"),
-		e.signalFor(detection.SignalReadinessNotReady, detection.CategoryHealth, detection.SeverityWarning, other, "main"),
+		e.signalFor(detection.SignalCrashLoopBackOff, detection.CategoryHealth, detection.SeverityCritical, e.pod, mainContainer),
+		e.signalFor(detection.SignalReadinessNotReady, detection.CategoryHealth, detection.SeverityWarning, other, mainContainer),
 	}
 	for range 3 {
 		e.cycle()
@@ -268,7 +268,7 @@ func TestFamily_DifferentContainersAreDifferentFaults(t *testing.T) {
 // common, but the old pod's fault has ended, so it is one incident.
 func TestFamily_ARolledPodMergesWhenTheOldOnesFaultHasEnded(t *testing.T) {
 	e := newRecurrenceEnv(t, noiseClient(t, recurrencePersonaObject()))
-	e.container = "main"
+	e.container = mainContainer
 	e.setCrashLoop()
 	e.cycle()
 	e.pod = dorguv1.ResourceReference{Kind: "Pod", Name: "api-def", Namespace: recurrenceNS}
@@ -281,10 +281,10 @@ func TestFamily_ARolledPodMergesWhenTheOldOnesFaultHasEnded(t *testing.T) {
 // of a fault from another container only as its own incident.
 func TestFamily_TheContainerIsRecordedOnTheIncident(t *testing.T) {
 	e := newRecurrenceEnv(t, noiseClient(t, recurrencePersonaObject()))
-	e.container = "main"
+	e.container = mainContainer
 	e.setReadiness()
 	e.cycle()
-	assert.Equal(t, "main", e.onlyOpen().Annotations[AnnotationContainers])
+	assert.Equal(t, mainContainer, e.onlyOpen().Annotations[AnnotationContainers])
 }
 
 func TestFamily_ThePodSurvivesAcrossTheShapes(t *testing.T) {
