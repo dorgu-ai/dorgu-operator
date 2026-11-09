@@ -97,6 +97,7 @@ var refusalCatalog = []refusalSite{
 	{Stage: StageGround, Guardrail: GuardrailLiveWorkload, approvalOnly: true},
 
 	{Stage: StageOwnership, Guardrail: GuardrailOwnerCommands},
+	{Stage: StageOwnership, Guardrail: GuardrailOwnerAutoStep, proposalOnly: true},
 
 	{Stage: StageGuardrails, Guardrail: GuardrailNothingLeft, approvalOnly: true},
 	{Stage: StageGuardrails, Guardrail: GuardrailNoPlan, approvalOnly: true},
@@ -180,7 +181,7 @@ func allGuardrails() []string {
 	all := []string{
 		GuardrailTarget, GuardrailStepType, GuardrailAutoExecutable, GuardrailFieldAllowlist, GuardrailVerdictsReset,
 		GuardrailVerifyBounds, GuardrailLiveWorkload, GuardrailPersona, GuardrailOwnership, GuardrailOwnerCommands,
-		GuardrailDenyList, GuardrailRateLimit, GuardrailConcurrent, GuardrailFailedCooldown, GuardrailBlastRadius,
+		GuardrailOwnerAutoStep, GuardrailOwnerAdvisory, GuardrailDenyList, GuardrailRateLimit, GuardrailConcurrent, GuardrailFailedCooldown, GuardrailBlastRadius,
 		GuardrailAbsentField, GuardrailNothingLeft, GuardrailNothingApplies, GuardrailSelfHealingMode,
 		GuardrailActiveAction, GuardrailRejection, GuardrailWorkloadGone, GuardrailWorkloadAmbiguous,
 		GuardrailNoBaseline, GuardrailPatchShape, GuardrailStepCommand, GuardrailOperatorNamespace,
@@ -267,7 +268,7 @@ func hasAutoApplicableChange(cand *Candidate) bool {
 // left no persona patch to issue, was not cleared for anything. An advisory plan
 // (it asked for no change) stays allowed and carries no ticket.
 func sealApproval(cand *Candidate, d *Decision) {
-	if !d.Allowed() || !hasAutoApplicableChange(cand) {
+	if !d.Allowed() || d.ownerAdvisory || !hasAutoApplicableChange(cand) {
 		return
 	}
 	if _, err := d.Ticket(); err != nil {

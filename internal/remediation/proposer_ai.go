@@ -19,8 +19,8 @@ package remediation
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
+	"slices"
 
 	appsv1 "k8s.io/api/apps/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -74,16 +74,34 @@ func (p *Proposer) proposeWithPlanner(
 	}
 
 	steps := mapPlannedSteps(plan, rc.AppPersona)
-	return p.gateAndPersistPlan(ctx, diag, incident, plan, steps, rc, workloadRef, true, nil)
+	if len(steps) == 0 {
+		return nil, errOnlyPlaceholders
+	}
+	return p.gateAndPersistPlan(ctx, diag, incident, plan, steps, rc, workloadRef, planFallbacks{actionClass: true, stepCommand: true}, nil, nil)
+}
+
+// planFallbacks says which narrowing of a refused AI plan is still available. Each is
+// used at most once on the way to a proposal.
+type planFallbacks struct {
+	// actionClass: the gate refused the plan at Validate/ActionClass.
+	actionClass bool
+	// stepCommand: the gate refused the plan at Validate/step-command.
+	stepCommand bool
 }
 
 // gateAndPersistPlan puts a plan's steps through the gate and persists what it
-// allows. advisoryFallback is true on the first pass only: if the gate refuses the
-// plan at Validate/ActionClass (a persona-update the rules did not authorise, which
+// allows. fb says which fallbacks remain. If the gate refuses the plan at
+// Validate/ActionClass (a persona-update the rules did not authorise, which
 // is what the planner writes for a crash loop, a not-Ready container or a liveness
 // kill), the persona-update steps are dropped and the advisory steps that remain
 // are proposed through this same path, without asking the model again. A plan with
 // nothing advisory in it stays refused, as before. (EKS QA 2026-11-09 F-5.)
+//
+// If it refuses at Validate/step-command (an advisory step whose command is not a
+// single plain kubectl invocation), only the steps with such a command are dropped
+// and the remainder goes through the full gate again; the refused command text is
+// removed from everything that is kept. A remainder with no steps stays refused.
+// (D1.1 finding 3, B10 c.) Either way the refusal of the first plan is recorded once.
 func (p *Proposer) gateAndPersistPlan(
 	ctx context.Context,
 	diag diagnosis.Diagnosis,
@@ -92,8 +110,9 @@ func (p *Proposer) gateAndPersistPlan(
 	steps []dorguv1.RemediationStep,
 	rc *planner.RemediationContext,
 	workloadRef *dorguv1.WorkloadRef,
-	advisoryFallback bool,
+	fb planFallbacks,
 	dropped []refusedValue,
+	droppedCommands []string,
 ) (*ProposalResult, error) {
 	action := p.buildPlanAction(diag, incident, plan, steps, workloadRef)
 
@@ -106,23 +125,20 @@ func (p *Proposer) gateAndPersistPlan(
 	}
 	if !dec.Allowed() {
 		refusal := skipped(dec)
-		if advisoryFallback && refusal.Stage == gate.StageValidate && refusal.Reason == gate.GuardrailActionClass {
+		if fb.actionClass && refusal.Stage == gate.StageValidate && refusal.Reason == gate.GuardrailActionClass {
 			if advisory := advisorySteps(steps); len(advisory) > 0 {
 				p.logger.Info("the gate refused the AI plan's persona change; proposing its advisory steps instead",
 					"incident", incident.Name, "advisorySteps", len(advisory))
-				result, err := p.gateAndPersistPlan(ctx, diag, incident, plan, advisory, rc, workloadRef, false,
-					droppedPersonaValues(steps))
-				switch {
-				case err != nil && !errors.Is(err, errPersistFailed):
-					// The advisory pass failed. The first refusal is still the answer, so it is
-					// recorded on the incident like any refusal (review L-6); the failure is a log line.
-					p.logger.Info("could not propose the AI plan's advisory steps; the refusal of its persona change stands",
-						"incident", incident.Name, "error", err.Error())
-					return refusal, nil
-				case err == nil && result != nil && result.Proposed:
-					result.PlanRefusal = refusal
-				}
-				return result, err
+				return p.proposeNarrowed(ctx, diag, incident, plan, advisory, rc, workloadRef,
+					planFallbacks{stepCommand: fb.stepCommand}, append(slices.Clone(dropped), droppedPersonaValues(steps)...), droppedCommands, refusal)
+			}
+		}
+		if fb.stepCommand && refusal.Stage == gate.StageValidate && refusal.Reason == gate.GuardrailStepCommand {
+			if kept, refused, ok := dropRefusedCommandSteps(steps); ok {
+				p.logger.Info("the gate refused an advisory step's command; proposing the plan without those steps",
+					"incident", incident.Name, "dropped", len(steps)-len(kept), "kept", len(kept))
+				return p.proposeNarrowed(ctx, diag, incident, plan, kept, rc, workloadRef,
+					planFallbacks{actionClass: fb.actionClass}, dropped, append(slices.Clone(droppedCommands), refused...), refusal)
 			}
 		}
 		return refusal, nil
@@ -165,6 +181,11 @@ func (p *Proposer) gateAndPersistPlan(
 	// "the headline still advertised the rejected value" one screen further down.
 	applyOwnershipShaping(action, workloadRef)
 
+	// A workload that Helm, Argo CD, Flux or kustomize owns gets advice only, the
+	// persona-update step included (B10 b). The gate has already measured that step
+	// against the live workload, so the values it quotes are the permitted ones.
+	adviseForOwner(action, workloadRef)
+
 	// The explanation's auto/advisory split is only true once the gate has run and
 	// the plan has been shaped.
 	//
@@ -178,6 +199,16 @@ func (p *Proposer) gateAndPersistPlan(
 	if len(dropped) > 0 {
 		if scrubbed := scrubDroppedChange(action, dropped); scrubbed > 0 {
 			p.logger.Info("removed text about the dropped persona change from the advisory plan",
+				"action", action.Name, "surfaces", scrubbed)
+		}
+	}
+
+	// The command steps the gate refused were dropped. The model's prose for the steps that
+	// stayed can still quote them, and the reader would paste what the gate refused: take
+	// the text out and say that steps were not proposed.
+	if len(droppedCommands) > 0 {
+		if scrubbed := scrubDroppedCommands(action, droppedCommands, len(dropped) > 0); scrubbed > 0 {
+			p.logger.Info("removed the text of refused commands from the remaining steps",
 				"action", action.Name, "surfaces", scrubbed)
 		}
 	}
@@ -214,6 +245,11 @@ func (p *Proposer) gateAndPersistPlan(
 		metrics.RecordModelClaimsStripped(metrics.ClaimFabricatedClamp, scrubbed)
 		p.logger.Info("removed guardrail claims no recorded verdict supports",
 			"action", action.Name, "surfaces", scrubbed)
+	}
+
+	// Fail closed: whatever else was done, a refused command's text is not written.
+	if mentionsAnyCommand(action, droppedCommands) {
+		return nil, fmt.Errorf("a refused command's text is still in the plan after it was removed; not proposing it")
 	}
 
 	// The seal: the gate rules once more on the object that is about to be
@@ -317,7 +353,7 @@ func mapPlannedSteps(
 
 		steps = append(steps, step)
 	}
-	return steps
+	return repairPlaceholderSteps(steps, plan.RootCause)
 }
 
 // observedDeployment unwraps the live Deployment from an observation, tolerating

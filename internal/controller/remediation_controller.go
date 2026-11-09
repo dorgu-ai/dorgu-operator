@@ -93,6 +93,12 @@ const (
 	// again.
 	ReasonPredatesGate = "PredatesGate"
 
+	// ReasonIncidentResolved is the fourth ConditionExpired reason: the incident the
+	// proposal answered resolved (the application recovered, or the health cycle saw
+	// it healthy) before anyone decided, so the advice is stale. Terminal, nothing
+	// applied, not a rejection, no cooldown.
+	ReasonIncidentResolved = "IncidentResolved"
+
 	// ReasonSuperseded is the other ConditionExpired reason: the incident the
 	// proposal answered escalated to a worse shape, so the advice no longer fits.
 	ReasonSuperseded = "Superseded"
@@ -391,6 +397,16 @@ func (r *RemediationController) handleApproved(ctx context.Context, logger logr.
 	}
 	if !decision.Allowed() {
 		return ctrl.Result{}, r.refuseAtApproval(ctx, logger, action, decision)
+	}
+
+	if decision.AdvisoryByOwnership() {
+		// A deployer (Helm, Argo CD, Flux, kustomize) owns the workload: the plan is advice
+		// there. The human decision is recorded as acknowledged, as an advisory plan's is,
+		// and nothing is written, not the persona and not the workload (B10 b).
+		action.Status.Gate = decision.Status()
+		logger.Info("approved plan is advice for an owned workload; recording the approval without applying anything",
+			"managedBy", decision.Ownership.ManagedBy)
+		return ctrl.Result{}, r.transitionToAcknowledged(ctx, action)
 	}
 
 	ticket, err := decision.Ticket()

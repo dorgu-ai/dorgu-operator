@@ -352,8 +352,11 @@ func TestRecurrence_GetsANewProposalThroughTheGate(t *testing.T) {
 		{"prior proposal expired unanswered", func(ra *dorguv1.RemediationAction) {
 			ra.Status.Phase = "Expired"
 		}, 2, true},
-		{"prior proposal still pending: outstanding, not duplicated", func(ra *dorguv1.RemediationAction) {
+		{"prior proposal still pending: stale, expires with its incident, proposed for again", func(ra *dorguv1.RemediationAction) {
 			ra.Status.Phase = RemediationPhasePending
+		}, 2, true},
+		{"prior proposal approved and in flight: outstanding, not duplicated", func(ra *dorguv1.RemediationAction) {
+			ra.Status.Phase = RemediationPhaseApproved
 		}, 1, false},
 		{"prior proposal rejected 10 minutes ago: rejection cooldown holds", func(ra *dorguv1.RemediationAction) {
 			ra.Status.Phase = RemediationPhaseRejected
@@ -430,6 +433,7 @@ func TestRecurrence_RateLimitWithRealCreationTimestamps(t *testing.T) {
 	t.Run("an outstanding proposal of the same fault defers, it is not another remediation", func(t *testing.T) {
 		e := newRecurrenceEnv(t, noiseClient(t, recurrencePersonaObject(), limitOneClusterPersona()))
 		e.cycle()
+		approveAll(t, e) // in flight: a Pending one would expire when its incident resolves (B10 a)
 		e.resolve(e.onlyOpen().Name)
 		stampCreationNow(t, e)
 		before := proposalsDeferred()

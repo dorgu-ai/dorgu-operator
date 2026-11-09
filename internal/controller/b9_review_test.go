@@ -44,7 +44,10 @@ func TestReview_RecurrenceWithOutstandingProposalIsDeferredNotRefusedByRateLimit
 	e.cycle()
 	require.Len(t, e.actions(), 1, "first incident gets its proposal")
 	first := e.onlyOpen()
-	e.resolve(first.Name)  // proposal stays Pending (nobody answered)
+	// A human approved the proposal and it is in flight (a Pending one would expire when its
+	// incident resolves, B10 a), so it is the fault's outstanding proposal.
+	approveAll(t, e)
+	e.resolve(first.Name)
 	stampCreationNow(t, e) // the fake API server does not set creationTimestamp; a real one does
 
 	e.cycle()
@@ -57,6 +60,16 @@ func TestReview_RecurrenceWithOutstandingProposalIsDeferredNotRefusedByRateLimit
 				"an outstanding proposal is a deferral, not a refusal; got ProposalRefused=%s reason=%s msg=%q",
 				cond.Status, cond.Reason, cond.Message)
 		}
+	}
+}
+
+// approveAll puts every RemediationAction into Approved, the phase of a proposal a human
+// has acted on, which a resolving incident does not withdraw.
+func approveAll(t *testing.T, e *recurrenceEnv) {
+	t.Helper()
+	for _, ra := range e.actions() {
+		ra.Status.Phase = RemediationPhaseApproved
+		require.NoError(t, e.c.Status().Update(context.Background(), &ra))
 	}
 }
 

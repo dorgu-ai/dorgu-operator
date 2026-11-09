@@ -321,7 +321,7 @@ func boundVerification(cand *Candidate, d *Decision) {
 func validateStepCommands(d *Decision) bool {
 	for i := range d.Steps {
 		step := &d.Steps[i]
-		if step.Command == "" || IsPlainKubectlCommand(step.Command) {
+		if !stepCommandRefused(step) {
 			continue
 		}
 		// The command is model-supplied and may be hostile, so it is not echoed.
@@ -331,6 +331,26 @@ func validateStepCommands(d *Decision) bool {
 		return false
 	}
 	return true
+}
+
+// stepCommandRefused is the one definition of a step command the gate refuses: present
+// and not a single plain kubectl invocation.
+func stepCommandRefused(step *dorguv1.RemediationStep) bool {
+	return step.Command != "" && !IsPlainKubectlCommand(step.Command)
+}
+
+// StepsWithRefusedCommand returns the indexes of the steps whose command Validate refuses
+// (Validate/step-command). It is the gate's own predicate, exported so a caller that
+// narrows a plan after that refusal drops exactly the steps the gate objected to, and
+// the narrowed plan is then ruled on in full again.
+func StepsWithRefusedCommand(steps []dorguv1.RemediationStep) []int {
+	var out []int
+	for i := range steps {
+		if stepCommandRefused(&steps[i]) {
+			out = append(out, i)
+		}
+	}
+	return out
 }
 
 // validatePatchShapes refuses a persona patch that is not a JSON object, or that

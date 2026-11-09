@@ -129,6 +129,7 @@ func TestCap_TheReopenedIncidentStillGetsItsProposalThroughTheGate(t *testing.T)
 	e, _ := cappedEnv(t, 1)
 	e.cycle() // r0 + its proposal
 	first := e.onlyOpen()
+	approveAll(t, e) // a Pending proposal would expire with its incident (B10 a); an approved one is outstanding
 	e.resolve(first.Name)
 	e.cycle() // r1 (cap not yet reached: zero recurrences so far); r0's proposal is outstanding, so it defers
 	r1 := e.onlyOpen()

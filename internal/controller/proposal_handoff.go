@@ -58,8 +58,10 @@ func (r *HealthCheckReconciler) proposeRemediation(
 		// The gate refused the AI plan's persona change and its advisory steps were
 		// proposed instead: the refusal of the first plan is still recorded (KPI I3),
 		// and the proposal answers it.
-		if refused := result.PlanRefusal; refused != nil && gate.IsStage(refused.Stage) {
-			r.recordProposalRefusal(ctx, incident, refused)
+		for _, refused := range planRefusalsOf(result) {
+			if gate.IsStage(refused.Stage) {
+				r.recordProposalRefusal(ctx, incident, refused)
+			}
 		}
 		r.clearProposalRefusal(ctx, incident, dorguv1.ReasonProposalMade, "a RemediationAction was proposed for this incident")
 	case result.SkipReason != "":
@@ -77,6 +79,18 @@ func (r *HealthCheckReconciler) proposeRemediation(
 				"an earlier proposal for this incident is outstanding or cooling down")
 		}
 	}
+}
+
+// planRefusalsOf is every refusal a narrowed proposal answers, in order (L-5): a chain of
+// narrowings records each one. A proposer that only sets PlanRefusal has one.
+func planRefusalsOf(result *remediation.ProposalResult) []*remediation.ProposalResult {
+	if len(result.PlanRefusals) > 0 {
+		return result.PlanRefusals
+	}
+	if result.PlanRefusal != nil {
+		return []*remediation.ProposalResult{result.PlanRefusal}
+	}
+	return nil
 }
 
 // proposalOutcome classifies a Propose call for dorgu_proposals_total.

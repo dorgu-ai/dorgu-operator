@@ -264,6 +264,15 @@ const (
 	// The message is a sentence for a person and is never parsed.
 	ConditionProposalRefused = "ProposalRefused"
 
+	// ConditionProposalRefusalRecorded is the durable record that the gate refused a
+	// proposal for this incident (B10). ProposalRefused is the live state and is
+	// rewritten to False when the incident resolves or a later proposal answers it, so
+	// a refusal that happened could not be counted afterwards. This one is set with it
+	// and never cleared: status True, the same "<Stage>_<Reason>" enum as its reason,
+	// and the time of the latest such refusal. An incident carries at most one, for its
+	// latest distinct reason. Deferrals are not refusals and are not recorded.
+	ConditionProposalRefusalRecorded = "ProposalRefusalRecorded"
+
 	// ReasonProposalMade is the ConditionProposalRefused reason (status False) once a
 	// RemediationAction was proposed.
 	ReasonProposalMade = "ProposalMade"

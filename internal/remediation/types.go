@@ -92,6 +92,12 @@ type ProposalResult struct {
 	// refusal of the first plan, so the caller records it (a condition and an Event
 	// on the incident, as for any refusal) while still reporting the proposal.
 	PlanRefusal *ProposalResult
+
+	// PlanRefusals is every refusal a narrowing answered, in the order they happened: a plan
+	// refused at Validate/ActionClass and then, once its persona change was dropped, at
+	// Validate/step-command has both. PlanRefusal is the first of them. The caller records
+	// each (an Event and the incident's conditions), so a chain loses none.
+	PlanRefusals []*ProposalResult
 }
 
 // RemediationProposer generates RemediationAction CRDs from diagnoses.

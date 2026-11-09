@@ -90,16 +90,23 @@ const (
 
 // Guardrail names, as recorded on verdicts.
 const (
-	GuardrailTarget          = "target"
-	GuardrailStepType        = "step-type"
-	GuardrailAutoExecutable  = "auto-executable"
-	GuardrailFieldAllowlist  = "field-allowlist"
-	GuardrailVerdictsReset   = "verdicts-recomputed"
-	GuardrailVerifyBounds    = "verify-bounds"
-	GuardrailLiveWorkload    = "live-workload"
-	GuardrailPersona         = "persona"
-	GuardrailOwnership       = "ownership"
-	GuardrailOwnerCommands   = "owner-commands"
+	GuardrailTarget         = "target"
+	GuardrailStepType       = "step-type"
+	GuardrailAutoExecutable = "auto-executable"
+	GuardrailFieldAllowlist = "field-allowlist"
+	GuardrailVerdictsReset  = "verdicts-recomputed"
+	GuardrailVerifyBounds   = "verify-bounds"
+	GuardrailLiveWorkload   = "live-workload"
+	GuardrailPersona        = "persona"
+	GuardrailOwnership      = "ownership"
+	GuardrailOwnerCommands  = "owner-commands"
+	// GuardrailOwnerAutoStep: a plan for a workload a deployer owns still carries a step
+	// the operator would apply (B10 b). Refused at proposal: the proposer shapes an owned
+	// workload's plan as advice before the gate rules on it.
+	GuardrailOwnerAutoStep = "owner-auto-step"
+	// GuardrailOwnerAdvisory: at approval, an owned workload's plan had its
+	// auto-executable steps taken out, so approving it acknowledges and applies nothing.
+	GuardrailOwnerAdvisory   = "owner-advisory"
 	GuardrailDenyList        = RuleDenyList
 	GuardrailRateLimit       = RuleRateLimit
 	GuardrailConcurrent      = RuleConcurrent
@@ -334,7 +341,17 @@ type Decision struct {
 
 	// refusing is the first refusing verdict.
 	refusing *dorguv1.GateVerdict
+
+	// ownerAdvisory is set by the Ownership stage at approval when the workload is
+	// owned by a deployer and the plan still carried an auto-executable step.
+	ownerAdvisory bool
 }
+
+// AdvisoryByOwnership reports whether the plan, as approved, applies nothing because a
+// declarative deployer (Helm, Argo CD, Flux, kustomize) owns the workload: the gate took
+// every auto-executable step out of it. The decision is allowed and carries no ticket;
+// the caller records the approval as acknowledged and writes nothing (B10 b).
+func (d *Decision) AdvisoryByOwnership() bool { return d.ownerAdvisory }
 
 // Allowed reports whether the plan may proceed, possibly narrowed. Only an
 // explicit Pass or Clamp allows: the zero Decision, and any result the gate does

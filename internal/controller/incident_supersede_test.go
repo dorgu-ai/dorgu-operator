@@ -397,9 +397,11 @@ func TestSupersede_AFlappingFaultKeepsAStandingProposalForTheWorstShape(t *testi
 	}
 }
 
-// R2-1 in its other direction: a milder Pending proposal of an earlier generation is
-// superseded, and an equally severe one is kept.
-func TestSupersede_AnEarlierGenerationsProposalsAreJudgedTheSameWay(t *testing.T) {
+// R2-1 in its other direction: a Pending proposal of an earlier generation (whose incident
+// resolved) is expired as stale, milder or not, before escalation is even judged. Since B10 (a)
+// the sweep at the start of the cycle settles it, so no earlier generation's Pending proposal
+// can reach the supersede rule, and none defers the new generation's proposals.
+func TestSupersede_AnEarlierGenerationsPendingProposalsExpireWithTheirIncident(t *testing.T) {
 	e := newRecurrenceEnv(t, noiseClient(t, recurrencePersonaObject()))
 	e.setReadiness()
 	e.cycle()
@@ -415,5 +417,7 @@ func TestSupersede_AnEarlierGenerationsProposalsAreJudgedTheSameWay(t *testing.T
 	e.cycle()
 
 	assert.Equal(t, RemediationPhaseExpired, e.actionNamed(milder.Name).Status.Phase)
-	assert.Equal(t, RemediationPhasePending, e.actionNamed(sameAsNow.Name).Status.Phase)
+	assert.Equal(t, ReasonIncidentResolved, expiredReason(e.actionNamed(milder.Name)))
+	assert.Equal(t, RemediationPhaseExpired, e.actionNamed(sameAsNow.Name).Status.Phase)
+	assert.Equal(t, ReasonIncidentResolved, expiredReason(e.actionNamed(sameAsNow.Name)))
 }
