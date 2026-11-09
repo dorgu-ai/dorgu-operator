@@ -7,7 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
-## [0.13.1] - Unreleased
+## [0.13.1] - 2026-11-09
 
 Patch release for the findings of the dogfood upgrade to 0.13.0 (D1.1), paired with CLI v0.14.1. No CRD change, no RBAC change, no new flag or Helm value. Upgrade the CLI first, as for 0.13.0.
 
