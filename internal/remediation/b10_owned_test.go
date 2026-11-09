@@ -18,11 +18,13 @@ package remediation
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
@@ -80,11 +82,11 @@ func TestB10Owned_AIPlanHasNoAutoExecutableStep(t *testing.T) {
 			assertAdviceOnly(t, action)
 			assert.Contains(t, action.Spec.Explanation, "advisory")
 			// The value the persona step carried is not lost: the reader is told what to set, and where.
-			var described string
+			var described strings.Builder
 			for _, step := range action.Spec.Steps {
-				described += step.Description + "\n"
+				described.WriteString(step.Description + "\n")
 			}
-			assert.Contains(t, described, "resources.limits.memory: 64Mi")
+			assert.Contains(t, described.String(), "resources.limits.memory: 64Mi")
 		})
 	}
 }
@@ -135,4 +137,41 @@ func TestB10Owned_TheGateRefusesAnAutoStepOnAnOwnedWorkloadAtProposal(t *testing
 func proposeAgainstUnshaped(t *testing.T) *dorguv1.RemediationAction {
 	t.Helper()
 	return proposeRuleBased(t, dorguv1.ManagedByUnmanaged)
+}
+
+func TestB10Owned_TheAdviceNoteNamesTheOwner(t *testing.T) {
+	for _, tc := range []struct {
+		ref  dorguv1.WorkloadRef
+		want string
+	}{
+		{dorguv1.WorkloadRef{ManagedBy: dorguv1.ManagedByHelm}, "A Helm release owns"},
+		{dorguv1.WorkloadRef{ManagedBy: dorguv1.ManagedByArgoCD}, "An ArgoCD application owns"},
+		{dorguv1.WorkloadRef{ManagedBy: dorguv1.ManagedByFlux}, "A Flux controller owns"},
+		{dorguv1.WorkloadRef{ManagedBy: dorguv1.ManagedByKustomize}, "A kustomize overlay owns"},
+		{dorguv1.WorkloadRef{ManagedBy: dorguv1.ManagedByHelm, ManagedByDetail: `Helm release "web"`}, `Helm release "web" owns`},
+	} {
+		note := ownerAdviceNote(&tc.ref)
+		assert.Contains(t, note, tc.want)
+		assert.Contains(t, note, "will not change its persona or the Deployment")
+	}
+}
+
+func TestB10Owned_ChangesOfAPatchIsEmptyForNoPatch(t *testing.T) {
+	assert.Nil(t, changesOfPatch(nil))
+	assert.Nil(t, changesOfPatch(&apiextensionsv1.JSON{}))
+}
+
+func TestB10Owned_UnknownOrUnresolvedOwnershipIsNotShaped(t *testing.T) {
+	for _, ref := range []*dorguv1.WorkloadRef{nil, {ManagedBy: dorguv1.ManagedByUnknown}, {ManagedBy: dorguv1.ManagedByUnmanaged}} {
+		action := &dorguv1.RemediationAction{Spec: dorguv1.RemediationActionSpec{Steps: []dorguv1.RemediationStep{
+			{Order: 1, ID: "step-1", Type: dorguv1.StepTypePersonaUpdate, AutoExecutable: true, Patch: memPatchJSON("64Mi")},
+		}}}
+		assert.Zero(t, adviseForOwner(action, ref))
+		assert.True(t, action.Spec.Steps[0].AutoExecutable)
+	}
+	assert.Zero(t, adviseForOwner(nil, &dorguv1.WorkloadRef{ManagedBy: dorguv1.ManagedByHelm}))
+}
+
+func memPatchJSON(v string) *apiextensionsv1.JSON {
+	return &apiextensionsv1.JSON{Raw: []byte(`{"spec":{"resources":{"limits":{"memory":"` + v + `"}}}}`)}
 }

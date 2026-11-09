@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -25,6 +26,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 )
@@ -191,4 +193,95 @@ func TestPendingResolved_AnApprovalThatLandsFirstWins(t *testing.T) {
 	e.cycle()
 
 	assert.Equal(t, RemediationPhaseApproved, e.actionNamed(ra.Name).Status.Phase)
+}
+
+// --- error and race paths ------------------------------------------------------------
+
+func sweepFixture(t *testing.T, funcs interceptor.Funcs, objs ...client.Object) *HealthCheckReconciler {
+	t.Helper()
+	return newNoiseReconciler(interceptor.NewClient(noiseClient(t, objs...).(client.WithWatch), funcs))
+}
+
+func resolvedIncidentWithPending(t *testing.T) (*dorguv1.IncidentMemory, *dorguv1.RemediationAction) {
+	t.Helper()
+	im := &dorguv1.IncidentMemory{
+		ObjectMeta: metav1.ObjectMeta{Name: "im-shop-api-oomkilled-0123456789ab", Namespace: recurrenceNS},
+		Status:     dorguv1.IncidentMemoryStatus{Phase: PhaseResolved},
+	}
+	return im, raFor("stale", im.Name, RemediationPhasePending)
+}
+
+func TestPendingResolved_AnIncidentThatIsGoneSaysNothing(t *testing.T) {
+	ra := raFor("orphan", "im-shop-api-oomkilled-0123456789ab", RemediationPhasePending)
+	r := sweepFixture(t, interceptor.Funcs{}, ra)
+
+	require.NoError(t, r.expireResolvedPending(context.Background()))
+
+	var got dorguv1.RemediationAction
+	require.NoError(t, r.Client.Get(context.Background(), client.ObjectKeyFromObject(ra), &got))
+	assert.Equal(t, RemediationPhasePending, got.Status.Phase, "a pruned incident is left to the pending TTL")
+}
+
+func TestPendingResolved_AProposalThatNamesNoIncidentIsSkipped(t *testing.T) {
+	ra := raFor("nameless", "", RemediationPhasePending)
+	r := sweepFixture(t, interceptor.Funcs{}, ra)
+
+	require.NoError(t, r.expireResolvedPending(context.Background()))
+}
+
+func TestPendingResolved_UnreadableStateIsAnErrorAndChangesNothing(t *testing.T) {
+	im, ra := resolvedIncidentWithPending(t)
+	boom := errors.New("the API server is unavailable")
+
+	t.Run("listing proposals", func(t *testing.T) {
+		r := sweepFixture(t, interceptor.Funcs{List: func(ctx context.Context, c client.WithWatch, l client.ObjectList, o ...client.ListOption) error {
+			if _, ok := l.(*dorguv1.RemediationActionList); ok {
+				return boom
+			}
+			return c.List(ctx, l, o...)
+		}}, im.DeepCopy(), ra.DeepCopy())
+		require.ErrorIs(t, r.expireResolvedPending(context.Background()), boom)
+	})
+	t.Run("reading the incident", func(t *testing.T) {
+		r := sweepFixture(t, interceptor.Funcs{Get: func(ctx context.Context, c client.WithWatch, k client.ObjectKey, o client.Object, opts ...client.GetOption) error {
+			if _, ok := o.(*dorguv1.IncidentMemory); ok {
+				return boom
+			}
+			return c.Get(ctx, k, o, opts...)
+		}}, im.DeepCopy(), ra.DeepCopy())
+		require.ErrorIs(t, r.expireResolvedPending(context.Background()), boom)
+		var got dorguv1.RemediationAction
+		require.NoError(t, r.Client.Get(context.Background(), client.ObjectKeyFromObject(ra), &got))
+		assert.Equal(t, RemediationPhasePending, got.Status.Phase)
+	})
+	t.Run("writing the expiry", func(t *testing.T) {
+		r := sweepFixture(t, interceptor.Funcs{SubResourceUpdate: func(context.Context, client.Client, string, client.Object, ...client.SubResourceUpdateOption) error {
+			return boom
+		}}, im.DeepCopy(), ra.DeepCopy())
+		require.ErrorIs(t, r.expireResolvedPending(context.Background()), boom)
+	})
+}
+
+// The list was taken before a human approved: the re-read wins and nothing is written.
+func TestPendingResolved_AStaleListDoesNotOverwriteAnApproval(t *testing.T) {
+	im, ra := resolvedIncidentWithPending(t)
+	ra.Status.Phase = RemediationPhaseApproved
+	r := sweepFixture(t, interceptor.Funcs{List: func(ctx context.Context, c client.WithWatch, l client.ObjectList, o ...client.ListOption) error {
+		if err := c.List(ctx, l, o...); err != nil {
+			return err
+		}
+		if actions, ok := l.(*dorguv1.RemediationActionList); ok {
+			for i := range actions.Items {
+				actions.Items[i].Status.Phase = RemediationPhasePending // what the cache said a moment ago
+			}
+		}
+		return nil
+	}}, im.DeepCopy(), ra.DeepCopy())
+
+	require.NoError(t, r.expireResolvedPending(context.Background()))
+
+	var got dorguv1.RemediationAction
+	require.NoError(t, r.Client.Get(context.Background(), client.ObjectKeyFromObject(ra), &got))
+	assert.Equal(t, RemediationPhaseApproved, got.Status.Phase)
+	assert.Empty(t, expiredReason(got))
 }

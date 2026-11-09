@@ -19,12 +19,15 @@ package remediation
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
@@ -186,4 +189,27 @@ func TestStepCommandRefusal_RemovesWhitespaceVariantsOfTheCommand(t *testing.T) 
 	assert.True(t, changed)
 	assert.NotContains(t, out, "jsonpath")
 	_ = spaced
+}
+
+// If the narrowed plan cannot be gated (the cluster is unreadable), the first refusal stands and
+// is returned to be recorded; it is not turned into an error that hides it.
+func TestStepCommandRefusal_ANarrowedPlanThatCannotBeGatedLeavesTheFirstRefusal(t *testing.T) {
+	boom := errors.New("the API server is unavailable")
+	base := fake.NewClientBuilder().WithScheme(newTestScheme()).
+		WithRuntimeObjects(newTestPersona(defaultNamespace, "my-app")).
+		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+	c := interceptor.NewClient(base, interceptor.Funcs{List: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error {
+		return boom
+	}})
+	p := NewProposer(c, gate.New(c, testLogger()), testLogger())
+	refusal := &ProposalResult{Stage: gate.StageValidate, Reason: gate.GuardrailStepCommand}
+	diag := newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical)
+	diag.SuggestedAction = "deployment-fix"
+	steps := []dorguv1.RemediationStep{{Order: 1, ID: "step-1", Type: dorguv1.StepTypeManual, Description: "look", Risk: "low"}}
+
+	result, err := p.proposeNarrowed(context.Background(), diag, newTestIncident(defaultNamespace, "image", "my-app", "ImagePullBackOff"),
+		&planner.RemediationPlan{}, steps, &planner.RemediationContext{}, nil, planFallbacks{}, nil, nil, refusal)
+
+	require.NoError(t, err)
+	assert.Same(t, refusal, result)
 }

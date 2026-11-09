@@ -121,3 +121,46 @@ func TestPlaceholder_ThePersistChokepointNeverWritesOne(t *testing.T) {
 	assert.Equal(t, "the real summary", repaired.Spec.Steps[0].Description)
 	assertNoPlaceholder(t, repaired)
 }
+
+func TestPlaceholder_PersistRepairEdgeCases(t *testing.T) {
+	c := fake.NewClientBuilder().WithScheme(newTestScheme()).Build()
+	p := NewProposer(c, gate.New(c, testLogger()), testLogger())
+
+	// A plan with no steps passes through (a legacy single-action plan).
+	same, err := p.repairBeforePersist(&dorguv1.RemediationAction{})
+	require.NoError(t, err)
+	assert.Empty(t, same.Spec.Steps)
+
+	// Nothing to fill a placeholder with, and nothing else in the plan: there is nothing to propose.
+	_, err = p.repairBeforePersist(&dorguv1.RemediationAction{Spec: dorguv1.RemediationActionSpec{
+		Steps: []dorguv1.RemediationStep{{Order: 1, ID: "step-1", Type: dorguv1.StepTypeManual, Description: "placeholder"}},
+	}})
+	assert.ErrorIs(t, err, errOnlyPlaceholders)
+
+	// A step that carries the persona patch is the change itself: it gets Dorgu's own words, not a drop.
+	repaired := repairPlaceholderSteps([]dorguv1.RemediationStep{{
+		Order: 1, ID: "step-1", Type: dorguv1.StepTypePersonaUpdate, Description: "placeholder", Patch: memPatchJSON("64Mi"),
+	}}, "")
+	require.Len(t, repaired, 1)
+	assert.Equal(t, fallbackStepDescription, repaired[0].Description)
+}
+
+// The AI path with a plan of nothing but placeholders and no summary falls back to the rules.
+func TestPlaceholder_AnAIPlanOfOnlyPlaceholdersFallsBackToTheRules(t *testing.T) {
+	c := fake.NewClientBuilder().WithScheme(newTestScheme()).
+		WithRuntimeObjects(newTestPersona(defaultNamespace, "my-app")).
+		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+	plan := &planner.RemediationPlan{Confidence: 0.5, Steps: []planner.PlannedStep{
+		{Order: 1, Type: dorguv1.StepTypeManual, Description: "placeholder", Rationale: "placeholder", Risk: "low"},
+	}}
+	p := NewProposer(c, gate.New(c, testLogger()), testLogger(), WithPlanner(&planCounter{plan: plan}))
+
+	result, err := p.Propose(context.Background(),
+		newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical),
+		newTestIncident(defaultNamespace, "oom", "my-app", "OOMKilled"))
+
+	require.NoError(t, err)
+	require.True(t, result.Proposed)
+	assert.Equal(t, dorguv1.PlanSourceRuleBased, result.Action.Spec.PlanSource, "the rule engine's plan, not an empty AI one")
+	assertNoPlaceholder(t, result.Action)
+}
