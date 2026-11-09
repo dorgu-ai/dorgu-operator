@@ -62,3 +62,28 @@ func TestHelmChartRBACIncludesLifecycleCRDs(t *testing.T) {
 		}
 	}
 }
+
+// B9 review F-3: pruning Resolved incidents needs delete on incidentmemories, and
+// only there. The published promise is that the operator never writes a workload,
+// so the same ClusterRole must still grant no write verb on any of them.
+func TestHelmChartRBACGrantsIncidentDeleteAndNoWorkloadWrite(t *testing.T) {
+	grants := clusterRoleGrants(t, helmTemplate(t))
+
+	if !grants[grant{"dorgu.io", "incidentmemories", "delete"}] {
+		t.Error("the operator prunes Resolved incidents and needs delete on incidentmemories")
+	}
+	for _, workload := range []string{"deployments", "statefulsets", "daemonsets", "replicasets", "pods"} {
+		for _, verb := range []string{"create", "update", "patch", "delete", "deletecollection"} {
+			group := "apps"
+			if workload == "pods" {
+				group = ""
+			}
+			if grants[grant{group, workload, verb}] {
+				t.Errorf("the operator must never write workloads, but the chart grants %s on %s", verb, workload)
+			}
+		}
+	}
+	if grants[grant{"dorgu.io", "incidentmemories/status", "delete"}] {
+		t.Error("delete is for the incident, not its status subresource")
+	}
+}

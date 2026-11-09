@@ -248,7 +248,8 @@ func main() {
 		// 2. Create detection collectors. The pod collector skips the namespaces the
 		// gate would refuse (F-13), so platform namespaces raise no incidents.
 		nodeCollector := detection.NewNodeCollector(mgr.GetClient(), setupLog)
-		podCollector := newPodCollector(mgr.GetClient(), pipeline.Gate, setupLog)
+		podCollector := newPodCollector(mgr.GetClient(), pipeline.Gate, setupLog,
+			podCollectorOptions(cfg, mgr.GetAPIReader())...)
 		resourceCollector := detection.NewResourceCollector(mgr.GetClient(), setupLog)
 		controlPlaneCollector := detection.NewControlPlaneCollector(
 			mgr.GetClient(), clientset.CoreV1().RESTClient(), setupLog,
@@ -308,6 +309,11 @@ func main() {
 			Recorder:          recorder,
 			Logger:            setupLog.WithName("health-check"),
 			ReconcileInterval: cfg.healthCheckInterval,
+
+			APIReader:         mgr.GetAPIReader(),
+			RecurrenceCap:     cfg.recurrenceCap,
+			RecurrenceWindow:  cfg.recurrenceWindow,
+			ResolvedRetention: cfg.resolvedRetention,
 		}
 		if err := mgr.Add(healthReconciler); err != nil {
 			setupLog.Error(err, "unable to start health check reconciler")

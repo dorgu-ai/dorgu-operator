@@ -48,6 +48,9 @@ func TestEveryHarnessFamilyIsPreRegisteredAtZero(t *testing.T) {
 	got := gathered(t)
 	for _, name := range []string{
 		"dorgu_incidents_total",
+		"dorgu_incident_recurrences_total",
+		"dorgu_incident_recurrences_capped_total",
+		"dorgu_incident_prune_total",
 		"dorgu_incidents_resolved_total",
 		"dorgu_incident_time_to_detect_seconds",
 		"dorgu_proposals_total",

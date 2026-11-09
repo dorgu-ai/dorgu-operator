@@ -35,6 +35,7 @@ const (
 	ConditionDetected  = "Detected"
 	ConditionResolved  = "Resolved"
 	ConditionRecurring = "Recurring"
+	ConditionFlapping  = "Flapping"
 )
 
 // IncidentController watches IncidentMemory CRDs and manages their lifecycle:
@@ -180,7 +181,8 @@ func (r *IncidentController) updateConditions(im *dorguv1.IncidentMemory) {
 	}
 	setCondition(&im.Status.Conditions, ConditionResolved, resolvedStatus, resolvedReason, resolvedMsg)
 
-	// Recurring condition: True when occurrenceCount > 1.
+	// Recurring condition: True when occurrenceCount > 1, or when this incident is a
+	// recurrence of a resolved one.
 	recurringStatus := metav1.ConditionFalse
 	recurringReason := "FirstOccurrence"
 	recurringMsg := "This is the first occurrence"
@@ -189,7 +191,23 @@ func (r *IncidentController) updateConditions(im *dorguv1.IncidentMemory) {
 		recurringReason = "MultipleOccurrences"
 		recurringMsg = fmt.Sprintf("Incident has occurred %d times", im.Status.OccurrenceCount)
 	}
+	// A recurrence is recurring from its first sighting: the fault is back after an
+	// earlier incident of it resolved.
+	if prior := im.Annotations[AnnotationRecurrenceOf]; prior != "" {
+		recurringStatus = metav1.ConditionTrue
+		recurringReason = "RecurrenceOfResolvedIncident"
+		recurringMsg = fmt.Sprintf("This fault is back after incident %s resolved (earlier incidents of it: %s); this incident has occurred %d time(s)",
+			prior, im.Annotations[AnnotationRecurrenceCount], im.Status.OccurrenceCount)
+	}
 	setCondition(&im.Status.Conditions, ConditionRecurring, recurringStatus, recurringReason, recurringMsg)
+
+	// Flapping condition: present once the recurrence cap folded recurrences into
+	// this incident. An ordinary incident does not carry it at all.
+	if folded := foldedCount(im); folded > 0 {
+		setCondition(&im.Status.Conditions, ConditionFlapping, metav1.ConditionTrue, "RecurrenceCapReached", fmt.Sprintf(
+			"%d recurrence(s) of this fault were folded into this incident because it kept coming back; it was reopened each time",
+			folded))
+	}
 }
 
 // syncPersonaStatus counts active incidents for the referenced persona

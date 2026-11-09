@@ -230,7 +230,7 @@ kubectl get clusterpersona           # dorgu-cluster, auto-created
 | `operator.clusterPersonaEnsureInterval` | How often to re-ensure that persona exists (clamped to 30s minimum) | `2m` |
 | `validation.requeueInterval` | ApplicationPersona validation requeue interval | `60s` |
 | `leaderElection.enabled` | Leader election for the controller manager | `true` |
-| `metrics.enabled` / `metrics.bindAddress` / `metrics.secure` | Controller metrics endpoint: controller-runtime defaults plus the `dorgu_*` harness series (gate decisions and stage durations, tickets, heal credit, verification, rollbacks, stage durations, LLM usage; all pre-registered at zero, see CHANGELOG) including `dorgu_incidents_total{class,scope}`, `dorgu_proposals_total{source,action_type,result}` and `dorgu_remediation_transitions_total{from,to}` | `true` / `:8443` / `true` |
+| `metrics.enabled` / `metrics.bindAddress` / `metrics.secure` | Controller metrics endpoint: controller-runtime defaults plus the `dorgu_*` harness series (gate decisions and stage durations, tickets, heal credit, verification, rollbacks, stage durations, LLM usage; all pre-registered at zero, see CHANGELOG) including `dorgu_incidents_total{class,scope}`, `dorgu_incident_recurrences_total{class,scope}`, `dorgu_incident_recurrences_capped_total{class,scope}`, `dorgu_incident_prune_total{result}`, `dorgu_proposals_total{source,action_type,result}` and `dorgu_remediation_transitions_total{from,to}` | `true` / `:8443` / `true` |
 | `healthProbe.bindAddress` | Liveness/readiness probe address | `:8081` |
 | `resources` | Manager container requests and limits | 10m/64Mi → 500m/128Mi |
 

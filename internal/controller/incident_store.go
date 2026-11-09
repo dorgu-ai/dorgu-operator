@@ -31,6 +31,7 @@ import (
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
 	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
+	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
 	"github.com/dorgu-ai/dorgu-operator/internal/metrics"
 )
 
@@ -108,12 +109,34 @@ func (r *HealthCheckReconciler) updateExistingIncident(
 	diag *diagnosis.Diagnosis,
 	now metav1.Time,
 ) error {
+	return r.writeIncident(ctx, im, diag, now, incidentEdit{
+		spec: func(fresh *dorguv1.IncidentMemory) { applyDiagnosisToSpec(fresh, subject, diag, now) },
+	})
+}
+
+// incidentEdit says how to change an incident: what to do to its spec, and
+// optionally to its status after the occurrence count and last occurrence are
+// recorded. Both run against a freshly fetched object on every retry.
+type incidentEdit struct {
+	spec   func(*dorguv1.IncidentMemory)
+	status func(*dorguv1.IncidentMemory)
+}
+
+// writeIncident applies an edit to an incident and counts the occurrence, with the
+// retries updateExistingIncident documents. im is refreshed in place.
+func (r *HealthCheckReconciler) writeIncident(
+	ctx context.Context,
+	im *dorguv1.IncidentMemory,
+	diag *diagnosis.Diagnosis,
+	now metav1.Time,
+	edit incidentEdit,
+) error {
 	specErr := retryIncidentWrite(func(int) error {
 		var fresh dorguv1.IncidentMemory
 		if err := r.Client.Get(ctx, client.ObjectKeyFromObject(im), &fresh); err != nil {
 			return err
 		}
-		applyDiagnosisToSpec(&fresh, subject, diag, now)
+		edit.spec(&fresh)
 		if err := r.Client.Update(ctx, &fresh); err != nil {
 			return err
 		}
@@ -133,6 +156,9 @@ func (r *HealthCheckReconciler) updateExistingIncident(
 		}
 		im.Status.OccurrenceCount++
 		im.Status.LastOccurrence = &now
+		if edit.status != nil {
+			edit.status(im)
+		}
 		return r.Client.Status().Update(ctx, im)
 	})
 	if err != nil {
@@ -147,7 +173,15 @@ func (r *HealthCheckReconciler) updateExistingIncident(
 	return nil
 }
 
+// maxRecurrenceAttempts bounds how many generations createIncident will step
+// past when a stale cache keeps hiding the Resolved incidents it collides with.
+const maxRecurrenceAttempts = 8
+
 // createIncident creates a new IncidentMemory CRD from a diagnosis.
+//
+// When the same fault has an earlier incident that is Resolved, this is a
+// recurrence and gets a record of its own (see recurrence_state.go): never a
+// fold into the Resolved one, which is what the stable name used to do.
 func (r *HealthCheckReconciler) createIncident(
 	ctx context.Context,
 	subject incidentSubject,
@@ -155,53 +189,28 @@ func (r *HealthCheckReconciler) createIncident(
 	now metav1.Time,
 ) error {
 	primarySignal := primarySignalType(diag)
-	namespace := subject.namespace
-	if namespace == "" {
-		namespace = "default"
+
+	generation, previous, resolved, err := r.nextGeneration(ctx, subject, diag)
+	if err != nil {
+		return err
+	}
+	if previous != nil && r.recurrenceCapReached(resolved, now.Time) {
+		return r.reopenLatest(ctx, subject, diag, previous, now)
 	}
 
-	im := &dorguv1.IncidentMemory{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      generateIncidentName(namespace, subject.incidentNameKey(), string(primarySignal)),
-			Namespace: namespace,
-			Labels: map[string]string{
-				LabelPersonaKind:      subject.personaRef.Kind,
-				LabelPersonaName:      subject.personaRef.Name,
-				LabelPersonaNamespace: namespace,
-				LabelCategory:         diag.Category,
-				LabelSeverity:         string(diag.Severity),
-				LabelSignal:           string(primarySignal),
-				LabelPhase:            PhaseDetected,
-				LabelAttribution:      subject.attribution(),
-			},
-		},
-		Spec: dorguv1.IncidentMemorySpec{
-			PersonaRef:  subject.personaRef,
-			Attribution: subject.attribution(),
-			Category:    diag.Category,
-			Severity:    string(diag.Severity),
-			Detection: dorguv1.DetectionInfo{
-				Signal:            string(primarySignal),
-				Source:            diag.Provider,
-				FirstSeen:         now,
-				LastSeen:          now,
-				AffectedResources: toResourceRefs(diag.AffectedResources),
-			},
-			RootCause: annotateUnattributed(buildRootCause(diag), subject),
-		},
-	}
-
-	switch createErr := r.Client.Create(ctx, im); {
-	case createErr == nil:
-		metrics.RecordIncident(diag.Category, subject.attribution())
-		if first, ok := earliestSignal(diag); ok {
-			metrics.RecordTimeToDetect(now.Sub(first))
+	var im *dorguv1.IncidentMemory
+	for attempt := 0; ; attempt++ {
+		im = newIncident(subject, diag, now, generation, previous)
+		createErr := r.Client.Create(ctx, im)
+		if createErr == nil {
+			r.recordOpened(diag, subject, now, previous != nil)
+			break
 		}
-	case apierrors.IsAlreadyExists(createErr):
-		// The incident is already there and our cached List did not see it yet.
-		// Fold this diagnosis into the object that really exists rather than
-		// treating a stale read as a reason to throw away a paid-for analysis
-		// (F-05).
+		if !apierrors.IsAlreadyExists(createErr) {
+			return fmt.Errorf("creating IncidentMemory: %w", createErr)
+		}
+
+		// The name is taken and our cached List did not show it (F-05).
 		var existing dorguv1.IncidentMemory
 		getErr := retryIncidentWrite(func(int) error {
 			return r.Client.Get(ctx, client.ObjectKeyFromObject(im), &existing)
@@ -210,10 +219,22 @@ func (r *HealthCheckReconciler) createIncident(
 			return r.reportDiscardedDiagnosis(ctx, im, diag,
 				"adopting the incident that already existed", getErr)
 		}
+		if isResolvedIncident(&existing) {
+			// It is the Resolved incident of this same fault, not an open one this
+			// diagnosis belongs to: step past it instead of folding into history.
+			if attempt+1 >= maxRecurrenceAttempts {
+				return fmt.Errorf("creating IncidentMemory: every one of %d recurrence names is taken by a Resolved incident",
+					maxRecurrenceAttempts)
+			}
+			generation = max(generation, gate.IncidentGeneration(existing.Name)) + 1
+			previous = existing.DeepCopy()
+			continue
+		}
+
+		// Fold this diagnosis into the open object that really exists rather than
+		// treating a stale read as a reason to throw away a paid-for analysis.
 		r.Logger.V(1).Info("adopted an incident the cache had not caught up with", "name", im.Name)
 		return r.updateExistingIncident(ctx, &existing, subject, diag, now)
-	default:
-		return fmt.Errorf("creating IncidentMemory: %w", createErr)
 	}
 
 	// Set the initial status, retrying on Conflict and on NotFound. The first
@@ -248,6 +269,7 @@ func (r *HealthCheckReconciler) createIncident(
 		"severity", diag.Severity,
 		"signal", primarySignal,
 		"attribution", subject.attribution(),
+		"recurrenceOf", im.Annotations[AnnotationRecurrenceOf],
 	)
 
 	// Store contributing signals as DorguEvents.
@@ -259,6 +281,97 @@ func (r *HealthCheckReconciler) createIncident(
 	}
 
 	return nil
+}
+
+// newIncident builds the IncidentMemory for a diagnosis. generation 0 is the
+// first occurrence of a fault; N >= 1 is its Nth recurrence, named
+// gate.RecurrenceName and annotated with the incident it recurs.
+func newIncident(
+	subject incidentSubject,
+	diag *diagnosis.Diagnosis,
+	now metav1.Time,
+	generation int,
+	previous *dorguv1.IncidentMemory,
+) *dorguv1.IncidentMemory {
+	primarySignal := primarySignalType(diag)
+	namespace := subject.namespace
+	if namespace == "" {
+		namespace = "default"
+	}
+
+	im := &dorguv1.IncidentMemory{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      incidentName(namespace, subject, primarySignal, generation, previous),
+			Namespace: namespace,
+			Labels: map[string]string{
+				LabelPersonaKind:      subject.personaRef.Kind,
+				LabelPersonaName:      subject.personaRef.Name,
+				LabelPersonaNamespace: namespace,
+				LabelCategory:         diag.Category,
+				LabelSeverity:         string(diag.Severity),
+				LabelSignal:           string(primarySignal),
+				LabelPhase:            PhaseDetected,
+				LabelAttribution:      subject.attribution(),
+			},
+		},
+		Spec: dorguv1.IncidentMemorySpec{
+			PersonaRef:  subject.personaRef,
+			Attribution: subject.attribution(),
+			Category:    diag.Category,
+			Severity:    string(diag.Severity),
+			Detection: dorguv1.DetectionInfo{
+				Signal:            string(primarySignal),
+				Source:            diag.Provider,
+				FirstSeen:         now,
+				LastSeen:          now,
+				AffectedResources: toResourceRefs(diag.AffectedResources),
+			},
+			RootCause: annotateUnattributed(buildRootCause(diag), subject),
+		},
+	}
+	if previous != nil {
+		im.Annotations = map[string]string{
+			AnnotationRecurrenceOf:    previous.Name,
+			AnnotationRecurrenceCount: strconv.Itoa(max(generation, 1)),
+		}
+	}
+	if containers := containersOf(diag); len(containers) > 0 {
+		if im.Annotations == nil {
+			im.Annotations = map[string]string{}
+		}
+		im.Annotations[AnnotationContainers] = strings.Join(containers, ",")
+	}
+	return im
+}
+
+// incidentName names an incident. The first occurrence is the stable hash of
+// namespace, persona and signal. A recurrence is named from the incident it
+// recurs, not from its own signal: an incident that was escalated (see
+// incident_family.go) carries the name of the signal it started as, and the
+// recurrence has to stay in that lineage or the cooldowns keyed on it would not
+// follow.
+func incidentName(
+	namespace string, subject incidentSubject, signal detection.SignalType, generation int, previous *dorguv1.IncidentMemory,
+) string {
+	if previous != nil && generation > 0 {
+		return gate.RecurrenceName(previous.Name, generation)
+	}
+	return generateIncidentName(namespace, subject.incidentNameKey(), string(signal))
+}
+
+// recordOpened counts a newly created incident, and a recurrence apart as well.
+// The time to detect is measured from the signal behind THIS incident, so a
+// recurrence has its own.
+func (r *HealthCheckReconciler) recordOpened(
+	diag *diagnosis.Diagnosis, subject incidentSubject, now metav1.Time, recurrence bool,
+) {
+	metrics.RecordIncident(diag.Category, subject.attribution())
+	if recurrence {
+		metrics.RecordIncidentRecurrence(diag.Category, subject.attribution())
+	}
+	if first, ok := earliestSignal(diag); ok {
+		metrics.RecordTimeToDetect(now.Sub(first))
+	}
 }
 
 // signalKey creates a unique key for a diagnosis to track active signals. It is
@@ -382,6 +495,16 @@ func applyDiagnosisToSpec(
 	}
 
 	im.Spec.Detection.AffectedResources = toResourceRefs(diag.AffectedResources)
+
+	// The same signal seen on another container is the same incident, as it always
+	// was (the rules aggregate one signal's sightings into one diagnosis), but the
+	// incident must name every container it is about.
+	if containers := unionContainers(incidentContainers(im), containersOf(diag)); len(containers) > 0 {
+		if im.Annotations == nil {
+			im.Annotations = map[string]string{}
+		}
+		im.Annotations[AnnotationContainers] = strings.Join(containers, ",")
+	}
 }
 
 // annotateUnattributed adds, to the field a user actually reads, the reason an

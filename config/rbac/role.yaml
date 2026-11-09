@@ -54,6 +54,7 @@ rules:
   resources:
   - applicationpersonas
   - clusterpersonas
+  - incidentmemories
   verbs:
   - create
   - delete
@@ -93,7 +94,6 @@ rules:
 - apiGroups:
   - dorgu.io
   resources:
-  - incidentmemories
   - remediationactions
   verbs:
   - create

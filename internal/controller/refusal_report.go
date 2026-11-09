@@ -35,6 +35,10 @@ const (
 	// window, or was approved after it.
 	EventReasonExpired = "DorguExpired"
 
+	// EventReasonSuperseded is the Event reason when a Pending proposal was expired
+	// because its incident escalated to a worse shape.
+	EventReasonSuperseded = "DorguSuperseded"
+
 	// maxEventMessage bounds an Event message; the apiserver allows 1024.
 	maxEventMessage = 512
 )

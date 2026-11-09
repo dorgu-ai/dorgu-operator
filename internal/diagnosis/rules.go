@@ -63,6 +63,9 @@ func NewRuleBasedProvider(logger logr.Logger) *RuleBasedProvider {
 	p.rules = []Rule{
 		{Name: "oom-root-cause", Match: matchOOM, Diagnose: diagnoseOOM},
 		{Name: "crashloop-root-cause", Match: matchCrashLoop, Diagnose: diagnoseCrashLoop},
+		{Name: "liveness-restarts", Match: matchLivenessRestarts, Diagnose: diagnoseLivenessRestarts},
+		{Name: "restart-loop", Match: matchRestartLoop, Diagnose: diagnoseRestartLoop},
+		{Name: "readiness-not-ready", Match: matchReadinessNotReady, Diagnose: diagnoseReadinessNotReady},
 		{Name: "node-pressure", Match: matchNodePressure, Diagnose: diagnoseNodePressure},
 		{Name: "node-down", Match: matchNodeDown, Diagnose: diagnoseNodeDown},
 		{Name: "resource-saturation", Match: matchResourceSaturation, Diagnose: diagnoseResourceSaturation},
@@ -114,14 +117,21 @@ func (p *RuleBasedProvider) Diagnose(_ context.Context, signals []detection.Sign
 	return diagnoses, nil
 }
 
-// deduplicationKey creates a key from diagnosis category, suggested action, and affected resources.
+// deduplicationKey creates a key from diagnosis category, suggested action, primary signal and affected resources.
 func deduplicationKey(d *Diagnosis) string {
 	resources := make([]string, 0, len(d.AffectedResources))
 	for _, r := range d.AffectedResources {
 		resources = append(resources, fmt.Sprintf("%s/%s/%s", r.Kind, r.Namespace, r.Name))
 	}
 	sort.Strings(resources)
-	return fmt.Sprintf("%s:%s:%s", d.Category, d.SuggestedAction, strings.Join(resources, ","))
+	// The primary signal is part of the key: two different shapes of a fault on one
+	// pod (a restart loop and a crash loop, in different containers) share a category,
+	// an action and a pod, and collapsing them hid the milder one's fault entirely.
+	primary := ""
+	if len(d.Contributing) > 0 {
+		primary = string(d.Contributing[0].Signal.Type)
+	}
+	return fmt.Sprintf("%s:%s:%s:%s", d.Category, d.SuggestedAction, primary, strings.Join(resources, ","))
 }
 
 // ============================================================================
@@ -401,6 +411,84 @@ func unexplainedByOOM(crashLoops, all []detection.Signal) []detection.Signal {
 		}
 	}
 	return rest
+}
+
+// ============================================================================
+// Rule 2b: Probe failures (liveness restarts, readiness not Ready)
+// ============================================================================
+//
+// The detector only raises these for a container that is not already in
+// CrashLoopBackOff or OOMKilled, so by the time a signal reaches here it is the
+// whole story for its container. The rules cannot tell which probe is wrong
+// (a bad path, a too-tight timeout, an app that never came up), so the action is
+// advice: investigate. That also keeps both inside the gate unchanged: there is
+// no patch for the proposer to size and no target path to deduplicate.
+
+func matchLivenessRestarts(signals []detection.Signal) bool {
+	return hasSignalType(signals, detection.SignalLivenessRestarts)
+}
+
+func diagnoseLivenessRestarts(signals []detection.Signal) *Diagnosis {
+	live := signalsOfType(signals, detection.SignalLivenessRestarts)
+	if len(live) == 0 {
+		return nil
+	}
+	return &Diagnosis{
+		Summary: "The kubelet is killing this container repeatedly for failing its liveness probe, " +
+			"without it reaching CrashLoopBackOff. Check the probe's path, port and timeout, and the container's last logs.",
+		Confidence:        buildConfidence(0.70, live),
+		Category:          string(detection.CategoryHealth),
+		Severity:          detection.SeverityWarning,
+		PersonaRef:        firstPersonaRef(live),
+		AffectedResources: collectAffectedResources(live),
+		Contributing:      buildContributing(live, "Container keeps restarting with an error or SIGKILL"),
+		SuggestedAction:   actionInvestigate,
+	}
+}
+
+func matchRestartLoop(signals []detection.Signal) bool {
+	return hasSignalType(signals, detection.SignalRestartLoop)
+}
+
+func diagnoseRestartLoop(signals []detection.Signal) *Diagnosis {
+	loops := signalsOfType(signals, detection.SignalRestartLoop)
+	if len(loops) == 0 {
+		return nil
+	}
+	return &Diagnosis{
+		Summary: "Container keeps restarting with an error without reaching CrashLoopBackOff, and no kubelet event " +
+			"blames a probe, so the cause is not known: it may be an application that crashes quickly or exits on " +
+			"its own. Check the container's last logs and exit code.",
+		Confidence:        buildConfidence(0.60, loops),
+		Category:          string(detection.CategoryHealth),
+		Severity:          detection.SeverityWarning,
+		PersonaRef:        firstPersonaRef(loops),
+		AffectedResources: collectAffectedResources(loops),
+		Contributing:      buildContributing(loops, "Container restarted repeatedly with an error or SIGKILL"),
+		SuggestedAction:   actionInvestigate,
+	}
+}
+
+func matchReadinessNotReady(signals []detection.Signal) bool {
+	return hasSignalType(signals, detection.SignalReadinessNotReady)
+}
+
+func diagnoseReadinessNotReady(signals []detection.Signal) *Diagnosis {
+	notReady := signalsOfType(signals, detection.SignalReadinessNotReady)
+	if len(notReady) == 0 {
+		return nil
+	}
+	return &Diagnosis{
+		Summary: "Container is running but has not been Ready beyond the threshold, so it is not receiving traffic. " +
+			"Its readiness probe is failing or the application never started serving. Check the probe and the application's logs.",
+		Confidence:        buildConfidence(0.60, notReady),
+		Category:          string(detection.CategoryHealth),
+		Severity:          detection.SeverityWarning,
+		PersonaRef:        firstPersonaRef(notReady),
+		AffectedResources: collectAffectedResources(notReady),
+		Contributing:      buildContributing(notReady, "Container has been not Ready past the threshold"),
+		SuggestedAction:   actionInvestigate,
+	}
 }
 
 // ============================================================================

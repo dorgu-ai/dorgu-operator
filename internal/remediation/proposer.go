@@ -332,6 +332,7 @@ func (p *Proposer) proposeResourceAdjustment(
 				"dorgu.io/persona-name":      diag.PersonaRef.Name,
 				"dorgu.io/persona-namespace": namespace,
 			},
+			Annotations: answersSignal(diag),
 		},
 		Spec: dorguv1.RemediationActionSpec{
 			IncidentRef: dorguv1.IncidentReference{
@@ -706,6 +707,12 @@ func generateActionName(incident *dorguv1.IncidentMemory, actionType string) str
 	action = truncateStr(action, maxSegmentLen)
 
 	return fmt.Sprintf("ra-%s-%s-%s", persona, action, hashStr)
+}
+
+// answersSignal is the annotation that records which signal a proposal answers, so
+// a later rejection of it can be read as a no to that shape of the fault only.
+func answersSignal(diag diagnosis.Diagnosis) map[string]string {
+	return map[string]string{gate.AnnotationAnswersSignal: string(primarySignalType(diag))}
 }
 
 // primarySignalType returns the primary signal type from a diagnosis.

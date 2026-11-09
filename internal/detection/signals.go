@@ -96,6 +96,23 @@ const (
 	SignalPodPendingLong   SignalType = "PodPendingLong"
 	SignalProbeFailure     SignalType = "ProbeFailure"
 	SignalContainerRestart SignalType = "ContainerHighRestarts"
+
+	// SignalReadinessNotReady is a running container that has stayed not Ready past
+	// the readiness threshold: the readiness probe keeps failing, or the app never
+	// starts serving. It does not need a restart, which is why the restart-based
+	// signals above never saw it.
+	SignalReadinessNotReady SignalType = "ReadinessNotReady"
+
+	// SignalLivenessRestarts is a container the kubelet keeps restarting (liveness
+	// kills) before it ever reaches CrashLoopBackOff: restarts within a window,
+	// last terminated as Error or SIGKILL (137).
+	SignalLivenessRestarts SignalType = "LivenessRestarts"
+
+	// SignalRestartLoop is a container restarted repeatedly within the window whose
+	// last exit was an Error or a SIGKILL, with no kubelet event saying a liveness
+	// probe killed it. It is a restart loop of unknown cause, not a liveness
+	// failure: an application that crashes quickly looks exactly like this.
+	SignalRestartLoop SignalType = "RestartLoop"
 )
 
 // Resource signals.
@@ -154,4 +171,27 @@ func SeverityRank(s Severity) int {
 	default:
 		return -1
 	}
+}
+
+// faultRank orders the signals of the progression of one container's fault, by how
+// far along it is. A readiness failure is the mildest; the kubelet restarting the
+// container for an unknown reason, then for a liveness probe, is worse; then
+// CrashLoopBackOff; and an OOM kill is the worst, the one with a cause to fix.
+// Liveness, with the kubelet's own event behind it, outranks a restart loop of
+// unknown cause.
+var faultRank = map[SignalType]int{
+	SignalReadinessNotReady: 1,
+	SignalRestartLoop:       2,
+	SignalLivenessRestarts:  3,
+	SignalCrashLoopBackOff:  4,
+	SignalOOMKilled:         5,
+}
+
+// FaultRank returns a signal's rank in the progression of one container's fault,
+// and whether it is part of it at all. Everything that treats the progression as
+// one fault (merging incidents, the recurrence cap, the rejection cooldown) asks
+// here, so there is one ordering.
+func FaultRank(t SignalType) (int, bool) {
+	rank, ok := faultRank[t]
+	return rank, ok
 }

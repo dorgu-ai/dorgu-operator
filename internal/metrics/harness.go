@@ -59,6 +59,24 @@ var (
 		Help: "IncidentMemory records opened, by diagnosis category (class) and attribution (scope).",
 	}, []string{"class", "scope"})
 
+	incidentRecurrencesTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "dorgu_incident_recurrences_total",
+		Help: "Incidents opened because a fault came back after an earlier incident of it resolved, by diagnosis " +
+			"category (class) and attribution (scope). Each is also counted in dorgu_incidents_total.",
+	}, []string{"class", "scope"})
+
+	incidentRecurrencesCappedTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "dorgu_incident_recurrences_capped_total",
+		Help: "Recurrences that reopened the latest incident instead of opening a new one, because the recurrence cap " +
+			"was reached, by diagnosis category (class) and attribution (scope).",
+	}, []string{"class", "scope"})
+
+	incidentPruneTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "dorgu_incident_prune_total",
+		Help: "Resolved IncidentMemories considered for pruning past the retention, by result " +
+			"(deleted, kept_referenced by a non-terminal RemediationAction, error).",
+	}, []string{"result"})
+
 	proposalsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "dorgu_proposals_total",
 		Help: "Remediation proposal attempts, by producer (source), suggested action and result " +
@@ -129,7 +147,8 @@ var (
 )
 
 func init() {
-	ctrlmetrics.Registry.MustRegister(incidentsTotal, proposalsTotal, transitionsTotal,
+	ctrlmetrics.Registry.MustRegister(incidentsTotal, incidentRecurrencesTotal, incidentRecurrencesCappedTotal,
+		incidentPruneTotal, proposalsTotal, transitionsTotal,
 		llmRequestsTotal, llmTokensTotal, llmInvalidOutputTotal, llmCacheTotal)
 }
 
@@ -161,6 +180,34 @@ func RecordLLMCache(purpose, result string) {
 // RecordIncident counts a newly opened incident.
 func RecordIncident(class, scope string) {
 	incidentsTotal.WithLabelValues(class, scope).Inc()
+}
+
+// RecordIncidentRecurrence counts a newly opened incident that is a recurrence of
+// a resolved one.
+func RecordIncidentRecurrence(class, scope string) {
+	incidentRecurrencesTotal.WithLabelValues(class, scope).Inc()
+}
+
+// Pruning results, the values of the result label on dorgu_incident_prune_total.
+const (
+	// PruneDeleted means a Resolved incident past the retention was deleted.
+	PruneDeleted = "deleted"
+	// PruneKeptReferenced means it was past the retention but a non-terminal
+	// RemediationAction names it, so it was kept.
+	PruneKeptReferenced = "kept_referenced"
+	// PruneError means the delete failed.
+	PruneError = "error"
+)
+
+// RecordIncidentRecurrenceCapped counts a recurrence that reopened the latest
+// incident because the cap was reached.
+func RecordIncidentRecurrenceCapped(class, scope string) {
+	incidentRecurrencesCappedTotal.WithLabelValues(class, scope).Inc()
+}
+
+// RecordIncidentPrune counts one pruning outcome.
+func RecordIncidentPrune(result string) {
+	incidentPruneTotal.WithLabelValues(result).Inc()
 }
 
 // RecordProposal counts one proposal attempt.
