@@ -73,7 +73,26 @@ func (p *Proposer) proposeWithPlanner(
 	}
 
 	steps := mapPlannedSteps(plan, rc.AppPersona)
+	return p.gateAndPersistPlan(ctx, diag, incident, plan, steps, rc, workloadRef, true)
+}
 
+// gateAndPersistPlan puts a plan's steps through the gate and persists what it
+// allows. advisoryFallback is true on the first pass only: if the gate refuses the
+// plan at Validate/ActionClass (a persona-update the rules did not authorise, which
+// is what the planner writes for a crash loop, a not-Ready container or a liveness
+// kill), the persona-update steps are dropped and the advisory steps that remain
+// are proposed through this same path, without asking the model again. A plan with
+// nothing advisory in it stays refused, as before. (EKS QA 2026-11-09 F-5.)
+func (p *Proposer) gateAndPersistPlan(
+	ctx context.Context,
+	diag diagnosis.Diagnosis,
+	incident *dorguv1.IncidentMemory,
+	plan *planner.RemediationPlan,
+	steps []dorguv1.RemediationStep,
+	rc *planner.RemediationContext,
+	workloadRef *dorguv1.WorkloadRef,
+	advisoryFallback bool,
+) (*ProposalResult, error) {
 	action := p.buildPlanAction(diag, incident, plan, steps, workloadRef)
 
 	// The gate rules on the steps. Blast-radius and absent-field refusals strip the
@@ -84,7 +103,19 @@ func (p *Proposer) proposeWithPlanner(
 		return nil, fmt.Errorf("gate: %w", err)
 	}
 	if !dec.Allowed() {
-		return skipped(dec), nil
+		refusal := skipped(dec)
+		if advisoryFallback && refusal.Stage == gate.StageValidate && refusal.Reason == gate.GuardrailActionClass {
+			if advisory := advisorySteps(steps); len(advisory) > 0 {
+				p.logger.Info("the gate refused the AI plan's persona change; proposing its advisory steps instead",
+					"incident", incident.Name, "advisorySteps", len(advisory))
+				result, err := p.gateAndPersistPlan(ctx, diag, incident, plan, advisory, rc, workloadRef, false)
+				if err == nil && result != nil && result.Proposed {
+					result.PlanRefusal = refusal
+				}
+				return result, err
+			}
+		}
+		return refusal, nil
 	}
 	installDecision(action, dec)
 
@@ -178,6 +209,22 @@ func (p *Proposer) proposeWithPlanner(
 	// status.gate is the seal's decision: the first run ruled on a draft of this
 	// plan, and the seal on the object about to be written (R7).
 	return p.persist(ctx, action, sealed)
+}
+
+// advisorySteps returns the plan's steps without its persona-updates, renumbered
+// from 1: what is left to propose when the rules did not authorise a persona change.
+func advisorySteps(steps []dorguv1.RemediationStep) []dorguv1.RemediationStep {
+	out := make([]dorguv1.RemediationStep, 0, len(steps))
+	for i := range steps {
+		if steps[i].Type == dorguv1.StepTypePersonaUpdate {
+			continue
+		}
+		step := steps[i].DeepCopy()
+		step.Order = int32(len(out) + 1)
+		step.ID = fmt.Sprintf("step-%d", step.Order)
+		out = append(out, *step)
+	}
+	return out
 }
 
 // seal runs the gate on the final shape of a plan. It returns the sealing decision,
