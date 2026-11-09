@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -239,9 +240,28 @@ func TestRereview_C_ACappedFlapperMakesNoEventOrProposalStorm_Characterization(t
 		e.resolve(e.onlyOpen().Name)
 		e.cycle()
 	}
+	// Since B10 (a) each episode of the flapping fault gets its own proposal, and the previous
+	// one, now stale, expires as IncidentResolved (a Normal DorguExpired Event per proposal).
+	// What stays bounded is the noise that is not that: the Warnings, and the proposals standing
+	// at once. The hourly rate limit bounds how many proposals a real cluster creates (it counts
+	// expired ones too); the fake API server sets no creationTimestamp, so here it cannot.
 	events := drainEvents(rec)
-	assert.LessOrEqual(t, len(events), 8, "events: %v", events)
-	assert.LessOrEqual(t, len(e.actions()), 4, "one RemediationAction per incident at most")
+	warnings := 0
+	for _, ev := range events {
+		if strings.HasPrefix(ev, "Warning ") {
+			warnings++
+		}
+	}
+	assert.LessOrEqual(t, warnings, 8, "warning events: %v", events)
+	pending := 0
+	for _, a := range e.actions() {
+		if a.Status.Phase == RemediationPhasePending {
+			pending++
+		} else {
+			assert.Equal(t, ReasonIncidentResolved, expiredReason(a), "every proposal but the standing one is stale")
+		}
+	}
+	assert.LessOrEqual(t, pending, 1, "one proposal stands at a time")
 }
 
 // (a/F-1 follow-on) An incident that escalated Readiness -> CrashLoopBackOff keeps

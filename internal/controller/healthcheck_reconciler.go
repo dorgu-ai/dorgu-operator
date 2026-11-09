@@ -226,6 +226,13 @@ func timeCycle(cycle func()) {
 func (r *HealthCheckReconciler) runCycle(ctx context.Context) {
 	r.Logger.V(1).Info("starting reconciliation cycle")
 
+	// 0. A Pending proposal whose incident has Resolved is stale advice and would
+	// defer the next proposal for the same fault. Settle those first, so a
+	// recurrence noticed below is proposed for in this cycle (B10 a).
+	if err := r.expireResolvedPending(ctx); err != nil {
+		logFailure(r.Logger, err, "failed to expire proposals for resolved incidents")
+	}
+
 	// 1. Collect all signals from detection engine. A partial failure still
 	// yields the signals the working collectors saw, and those are recorded as
 	// usual. What a partial cycle cannot do is conclude anything from silence:

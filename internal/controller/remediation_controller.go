@@ -93,6 +93,12 @@ const (
 	// again.
 	ReasonPredatesGate = "PredatesGate"
 
+	// ReasonIncidentResolved is the fourth ConditionExpired reason: the incident the
+	// proposal answered resolved (the application recovered, or the health cycle saw
+	// it healthy) before anyone decided, so the advice is stale. Terminal, nothing
+	// applied, not a rejection, no cooldown.
+	ReasonIncidentResolved = "IncidentResolved"
+
 	// ReasonSuperseded is the other ConditionExpired reason: the incident the
 	// proposal answered escalated to a worse shape, so the advice no longer fits.
 	ReasonSuperseded = "Superseded"
