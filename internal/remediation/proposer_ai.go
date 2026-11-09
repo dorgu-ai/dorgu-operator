@@ -74,6 +74,9 @@ func (p *Proposer) proposeWithPlanner(
 	}
 
 	steps := mapPlannedSteps(plan, rc.AppPersona)
+	if len(steps) == 0 {
+		return nil, errOnlyPlaceholders
+	}
 	return p.gateAndPersistPlan(ctx, diag, incident, plan, steps, rc, workloadRef, planFallbacks{actionClass: true, stepCommand: true}, nil, nil)
 }
 
@@ -350,7 +353,7 @@ func mapPlannedSteps(
 
 		steps = append(steps, step)
 	}
-	return steps
+	return repairPlaceholderSteps(steps, plan.RootCause)
 }
 
 // observedDeployment unwraps the live Deployment from an observation, tolerating

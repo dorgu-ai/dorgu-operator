@@ -435,6 +435,11 @@ var errPersistFailed = errors.New("recording the remediation failed")
 // action is deleted and the error returned, so the caller reports a failure
 // instead of a proposal that does not exist.
 func (p *Proposer) persist(ctx context.Context, action *dorguv1.RemediationAction, dec *gate.Decision) (*ProposalResult, error) {
+	// No step is written with the text "placeholder" (B10 d).
+	action, repairErr := p.repairBeforePersist(action)
+	if repairErr != nil {
+		return nil, repairErr
+	}
 	// spec.action is a notification and nothing more (F7). It used to carry the
 	// merged persona patch for one release of back-compat. Dropping it does not stop
 	// a CLI from before tickets: it reads steps[] first and patches without asking
