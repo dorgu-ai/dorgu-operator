@@ -126,7 +126,7 @@ func (p *PodCollector) checkRestartLoop(
 	ctx context.Context, pod corev1.Pod, cs corev1.ContainerStatus, now time.Time,
 	delta int32, history restartHistory, book *eventBook,
 ) (Signal, bool) {
-	last := cs.LastTerminationState.Terminated
+	last := latestExit(cs)
 	known := history == historyInWindow
 	observedLoop := known && delta >= p.livenessRestarts
 	if !p.loopWorthALookup(cs, now, observedLoop) {
@@ -175,13 +175,26 @@ func (p *PodCollector) checkRestartLoop(
 // looping or it has at least the threshold of restarts and was killed within the
 // window. Only then is the kubelet's evidence read.
 func (p *PodCollector) loopWorthALookup(cs corev1.ContainerStatus, now time.Time, observedLoop bool) bool {
-	last := cs.LastTerminationState.Terminated
-	if cs.State.Running == nil || last == nil || last.Reason == string(SignalOOMKilled) || p.staleTermination(cs, last, now) {
+	last := latestExit(cs)
+	if (cs.State.Running == nil && cs.State.Terminated == nil) || last == nil || last.Reason == string(SignalOOMKilled) || p.staleTermination(cs, last, now) {
 		return false
 	}
 	recentKill := cs.RestartCount >= p.livenessRestarts && !last.FinishedAt.IsZero() &&
 		now.Sub(last.FinishedAt.Time) <= p.livenessWindow
 	return observedLoop || recentKill
+}
+
+// latestExit is the termination that ended the container's most recent run. While
+// the container runs, that is its last state. Between runs, in state Terminated,
+// it is the current state: a container that exits a few seconds after it starts
+// is Running for only those few seconds of each back-off cycle and sits in
+// Terminated the rest of the time, so a test that insisted on Running never saw it
+// (EKS QA 2026-11-09 F-4, five minutes to detect an exit-1-after-5s container).
+func latestExit(cs corev1.ContainerStatus) *corev1.ContainerStateTerminated {
+	if cs.State.Terminated != nil {
+		return cs.State.Terminated
+	}
+	return cs.LastTerminationState.Terminated
 }
 
 // loopWorthALookup is also asked, before the signals are built, which pods will

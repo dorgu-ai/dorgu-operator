@@ -432,6 +432,21 @@ func (r *HealthCheckReconciler) processDiagnosis(
 		return fmt.Errorf("finding matching incident: %w", err)
 	}
 
+	// A pod Pending only because its image cannot be pulled already has an incident
+	// (see incident_image_error.go).
+	if existing == nil {
+		covering, err := r.imageErrorCovering(ctx, subject, diag)
+		if err != nil {
+			return fmt.Errorf("finding the image error that explains this pending pod: %w", err)
+		}
+		if covering != nil {
+			return r.foldIntoImageError(ctx, diag, covering, activeSignalKeys, now)
+		}
+		// And a proposal for the same pod's earlier PodPendingLong incident is advice
+		// the image error has overtaken.
+		r.supersedePendingLongProposals(ctx, subject, diag)
+	}
+
 	// No incident for this signal: the fault may be one the application already has
 	// an incident for in another shape (see incident_family.go).
 	if existing == nil {
