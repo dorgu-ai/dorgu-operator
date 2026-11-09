@@ -143,18 +143,29 @@ jobs:
 
       - name: Push chart to GHCR OCI
         id: push
+        # Explicit, because the default step shell is `bash -e` without pipefail: `shell: bash`
+        # runs `bash -eo pipefail`, so a failing `helm push` fails this step even though its
+        # output goes through `tee`.
+        shell: bash
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           helm push dist/dorgu-operator-${VERSION}.tgz oci://ghcr.io/${{ github.repository_owner }}/dorgu-operator-charts 2>&1 | tee push.log
-          # helm prints "Digest: sha256:..." for the pushed OCI artifact.
+          # helm prints "Digest: sha256:..." for the pushed OCI artifact. Only the push can fail
+          # this step: a missing digest must not, because attestation never blocks a release. With
+          # no digest the output stays empty, the attest step below is skipped, and the final
+          # attestation-check job reports it.
           DIGEST="$(awk '/^Digest:/ {print $2}' push.log)"
-          test -n "${DIGEST}" || { echo "helm push printed no digest" >&2; exit 1; }
-          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+          if [ -z "${DIGEST}" ]; then
+            echo "::warning title=No chart digest::helm push printed no Digest line, so the chart (OCI) cannot be attested; the release continues and attestation-check will report it."
+          else
+            echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+          fi
 
       # Provenance for the chart as it sits in the registry, so
       # `gh attestation verify oci://ghcr.io/dorgu-ai/dorgu-operator-charts/dorgu-operator:<version> --owner dorgu-ai` works.
       - name: Attest chart (OCI) build provenance
         id: attest_chart
+        if: ${{ steps.push.outputs.digest != '' }}
         continue-on-error: true
         uses: actions/attest-build-provenance@v4
         with:
