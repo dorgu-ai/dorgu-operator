@@ -45,6 +45,14 @@ const (
 // into a RemediationPlan after retries. The caller should fall back to rules.
 var ErrMalformedPlan = errors.New("planner: malformed structured output from model")
 
+// ErrEmptyPlan is a malformed reply of one kind: valid, with no steps. It is an
+// ErrMalformedPlan too. The cache tells it apart so that a model that keeps answering
+// with nothing for the same situation is not asked every few minutes (B10 L-6).
+var ErrEmptyPlan = fmt.Errorf("%w: the plan has no steps", ErrMalformedPlan)
+
+// errNoSteps is what extractPlan reports for a reply with no steps.
+var errNoSteps = errors.New("the plan has no steps")
+
 // LLMPlanner implements Planner over the one llm.Client interface, the same one
 // diagnosis uses. The model is required to submit its plan through a structured
 // reply (forced tool use on Anthropic, a JSON response on Gemini), and the reply
@@ -99,6 +107,9 @@ func (p *LLMPlanner) PlanRemediation(ctx context.Context, rc RemediationContext)
 		lastErr = parseErr
 	}
 
+	if errors.Is(lastErr, errNoSteps) {
+		return nil, ErrEmptyPlan
+	}
 	return nil, fmt.Errorf("%w: %v", ErrMalformedPlan, lastErr)
 }
 
@@ -115,7 +126,7 @@ func extractPlan(raw json.RawMessage) (*RemediationPlan, error) {
 	if len(result.Steps) == 0 {
 		// A plan with no steps proposes nothing. It used to parse as a success and be cached
 		// for the whole cache TTL (D1.1 finding 7); it is an unusable reply, asked once more.
-		return nil, fmt.Errorf("the plan has no steps")
+		return nil, errNoSteps
 	}
 	return result, nil
 }

@@ -21,8 +21,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -46,7 +48,21 @@ type CachedPlanner struct {
 	inner  Planner
 	cache  *llm.Cache[cachedPlan]
 	logger logr.Logger
+
+	// empties counts, per situation, the plans in a row that came back empty. After
+	// emptyPlanLimit of them the "unusable" answer is remembered for the full TTL.
+	mu      sync.Mutex
+	empties map[string]int
 }
+
+// emptyPlanLimit is how many consecutive empty plans for one situation make the model's
+// answer for it stick for the normal cache TTL, not the short failure one. An empty
+// plan costs two calls (it is asked once more), so without this a model that always
+// answers nothing is asked twice every FailureTTL for as long as the incident is open.
+const emptyPlanLimit = 2
+
+// maxTrackedEmpties bounds the empties map; it is cleared when it grows past this.
+const maxTrackedEmpties = 1024
 
 type cachedPlan struct {
 	plan *RemediationPlan
@@ -57,9 +73,10 @@ type cachedPlan struct {
 // disables caching and every call reaches inner.
 func NewCachedPlanner(inner Planner, ttl time.Duration, logger logr.Logger) *CachedPlanner {
 	return &CachedPlanner{
-		inner:  inner,
-		cache:  llm.NewCache[cachedPlan](ttl, 0),
-		logger: logger.WithName("planner-cache"),
+		inner:   inner,
+		cache:   llm.NewCache[cachedPlan](ttl, 0),
+		logger:  logger.WithName("planner-cache"),
+		empties: map[string]int{},
 	}
 }
 
@@ -80,11 +97,36 @@ func (c *CachedPlanner) PlanRemediation(ctx context.Context, rc RemediationConte
 
 	plan, err := c.inner.PlanRemediation(ctx, rc)
 	if err != nil {
+		if errors.Is(err, ErrEmptyPlan) && c.countEmpty(key) >= emptyPlanLimit {
+			c.logger.Info("the planner answered with an empty plan again for an unchanged situation; remembering that for the full cache TTL")
+			metrics.RecordLLMCache(llm.PurposePlanning, metrics.LLMCacheUnusable)
+			c.cache.Set(key, cachedPlan{err: err})
+			return nil, err
+		}
 		c.cache.SetFor(key, cachedPlan{err: err}, llm.FailureTTL)
 		return nil, err
 	}
+	c.forgetEmpties(key)
 	c.cache.Set(key, cachedPlan{plan: clonePlan(plan)})
 	return plan, nil
+}
+
+// countEmpty records one more empty plan for the situation and returns the run so far.
+func (c *CachedPlanner) countEmpty(key string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.empties) >= maxTrackedEmpties {
+		c.empties = map[string]int{}
+	}
+	c.empties[key]++
+	return c.empties[key]
+}
+
+// forgetEmpties ends a run of empty plans: the model gave a usable one.
+func (c *CachedPlanner) forgetEmpties(key string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.empties, key)
 }
 
 // PlanFingerprint identifies a planning situation: the diagnosis fingerprint,

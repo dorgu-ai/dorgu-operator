@@ -19,7 +19,9 @@ package remediation
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
+	"unicode"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 )
@@ -41,10 +43,27 @@ var errOnlyPlaceholders = errors.New("the plan had only placeholder steps and no
 // placeholder for a description. The patch is what matters; the words are Dorgu's.
 const fallbackStepDescription = "Change the application's resource settings."
 
-// isPlaceholderText reports whether text is the literal word, as a model writes it
-// when it has nothing to say: any case, with surrounding space or a full stop.
+// placeholderWords are the fillers a model writes when it has nothing to say.
+var placeholderWords = []string{"placeholder", "todo", "tbd"}
+
+// isPlaceholderText reports whether text is filler: it begins with one of the
+// placeholderWords as a whole word, in any case ("placeholder", "Placeholder step",
+// "TODO: describe", "TBD"), or is "n/a". Empty text is not filler here (a rationale may be
+// empty); an empty description is handled by the caller. The word inside real prose
+// ("Replace the placeholder image tag.") is not filler.
 func isPlaceholderText(text string) bool {
-	return strings.EqualFold(strings.Trim(strings.TrimSpace(text), ".!"), "placeholder")
+	folded := strings.ToLower(strings.TrimSpace(text))
+	folded = strings.TrimLeft(folded, " .!:;-_*[](){}<>\"'`")
+	if strings.Trim(folded, " .!") == "n/a" {
+		return true
+	}
+	words := strings.FieldsFunc(folded, func(r rune) bool { return !unicode.IsLetter(r) })
+	return len(words) > 0 && slices.Contains(placeholderWords, words[0])
+}
+
+// blankOrPlaceholder is isPlaceholderText for a description, which may not be empty either.
+func blankOrPlaceholder(text string) bool {
+	return strings.TrimSpace(text) == "" || isPlaceholderText(text)
 }
 
 // repairPlaceholderSteps fills the steps whose description or rationale is a placeholder
@@ -56,7 +75,7 @@ func repairPlaceholderSteps(steps []dorguv1.RemediationStep, summary string) []d
 	summary = strings.TrimSpace(summary)
 	found := false
 	for i := range steps {
-		if isPlaceholderText(steps[i].Description) || isPlaceholderText(steps[i].Rationale) {
+		if blankOrPlaceholder(steps[i].Description) || isPlaceholderText(steps[i].Rationale) {
 			found = true
 			break
 		}
@@ -71,7 +90,7 @@ func repairPlaceholderSteps(steps []dorguv1.RemediationStep, summary string) []d
 		if isPlaceholderText(step.Rationale) {
 			step.Rationale = summary
 		}
-		if isPlaceholderText(step.Description) {
+		if blankOrPlaceholder(step.Description) {
 			switch {
 			case summary != "":
 				step.Description = summary

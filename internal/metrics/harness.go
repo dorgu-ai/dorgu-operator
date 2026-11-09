@@ -120,6 +120,10 @@ const (
 	LLMCacheHit = "hit"
 	// LLMCacheMiss means the fingerprint was new or expired and a call was made.
 	LLMCacheMiss = "miss"
+	// LLMCacheUnusable means a model that kept answering with an unusable (empty) plan for
+	// the same situation was remembered for the full cache TTL instead of the short failure
+	// one, so it is no longer asked every few minutes (B10 L-6).
+	LLMCacheUnusable = "unusable"
 )
 
 var (

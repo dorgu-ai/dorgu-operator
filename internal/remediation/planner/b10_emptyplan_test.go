@@ -19,13 +19,18 @@ package planner
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
+	"time"
+
+	"github.com/go-logr/logr"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/dorgu-ai/dorgu-operator/internal/llm"
 	"github.com/dorgu-ai/dorgu-operator/internal/llm/llmtest"
+	"github.com/dorgu-ai/dorgu-operator/internal/metrics"
 	"github.com/dorgu-ai/dorgu-operator/internal/metrics/metricstest"
 )
 
@@ -80,4 +85,86 @@ func TestEmptyPlan_ARealPlanOnTheSecondAttemptIsUsed(t *testing.T) {
 func TestEmptyPlan_ThePromptAsksForAtLeastOneStep(t *testing.T) {
 	assert.Contains(t, planSystemPrompt, "at least one step")
 	assert.Contains(t, planSystemPrompt, "never an empty steps list")
+}
+
+// --- L-6: a model that keeps answering with nothing is not asked every few minutes ---------
+
+// clockedCache returns a CachedPlanner over a fake clock the test can move.
+func clockedCache(inner Planner, ttl time.Duration) (*CachedPlanner, func(time.Duration)) {
+	p := NewCachedPlanner(inner, ttl, logr.Discard())
+	now := time.Now()
+	p.cache.SetClock(func() time.Time { return now })
+	return p, func(d time.Duration) { now = now.Add(d) }
+}
+
+func TestEmptyPlan_TwoInARowAreRememberedForTheFullTTL(t *testing.T) {
+	unusable := func() float64 { return planCache(t, metrics.LLMCacheUnusable) }
+	before := unusable()
+	inner := &countingInner{err: ErrEmptyPlan}
+	p, advance := clockedCache(inner, 30*time.Minute)
+
+	_, err := p.PlanRemediation(context.Background(), baseContext())
+	require.ErrorIs(t, err, ErrEmptyPlan)
+	require.Equal(t, 1, inner.calls)
+
+	// The first empty plan is remembered for the failure TTL only.
+	advance(llm.FailureTTL + time.Minute)
+	_, _ = p.PlanRemediation(context.Background(), baseContext())
+	require.Equal(t, 2, inner.calls, "after the short TTL it is asked again")
+	assert.Equal(t, 1.0, unusable()-before, "the second consecutive empty plan is the one that sticks")
+
+	// The second is remembered for the full TTL: not asked again after the short one passes.
+	advance(llm.FailureTTL + time.Minute)
+	_, err = p.PlanRemediation(context.Background(), baseContext())
+	require.ErrorIs(t, err, ErrEmptyPlan)
+	assert.Equal(t, 2, inner.calls, "no call: the unusable answer is cached for the normal TTL")
+
+	advance(30 * time.Minute)
+	_, _ = p.PlanRemediation(context.Background(), baseContext())
+	assert.Equal(t, 3, inner.calls, "and it is asked again when that TTL ends")
+}
+
+func TestEmptyPlan_AUsablePlanEndsTheRun(t *testing.T) {
+	inner := &countingInner{err: ErrEmptyPlan}
+	p, advance := clockedCache(inner, 30*time.Minute)
+	_, _ = p.PlanRemediation(context.Background(), baseContext())
+	advance(llm.FailureTTL + time.Minute)
+
+	inner.err, inner.plan = nil, cachedTestPlan()
+	_, err := p.PlanRemediation(context.Background(), baseContext())
+	require.NoError(t, err)
+
+	// A later empty reply for the same situation is a first one again.
+	advance(31 * time.Minute)
+	inner.err, inner.plan = ErrEmptyPlan, nil
+	_, _ = p.PlanRemediation(context.Background(), baseContext())
+	advance(llm.FailureTTL + time.Minute)
+	_, _ = p.PlanRemediation(context.Background(), baseContext())
+	assert.Equal(t, 4, inner.calls, "short TTL again, so it was asked again")
+}
+
+func TestEmptyPlan_OtherFailuresKeepTheShortTTL(t *testing.T) {
+	inner := &countingInner{err: errors.New("the provider is down")}
+	p, advance := clockedCache(inner, 30*time.Minute)
+	for range 3 {
+		_, _ = p.PlanRemediation(context.Background(), baseContext())
+		advance(llm.FailureTTL + time.Minute)
+	}
+	assert.Equal(t, 3, inner.calls)
+}
+
+func TestEmptyPlan_TheTrackedRunsAreBounded(t *testing.T) {
+	p := NewCachedPlanner(&countingInner{}, time.Hour, logr.Discard())
+	for i := range maxTrackedEmpties + 5 {
+		p.countEmpty(fmt.Sprint(i))
+	}
+	assert.LessOrEqual(t, len(p.empties), maxTrackedEmpties)
+}
+
+// The planner reports the empty reply as its own error, which is still a malformed one.
+func TestEmptyPlan_TheErrorIsAMalformedPlanToo(t *testing.T) {
+	client := llmtest.New(func(llm.Request) (*llm.Response, error) { return emptyReply(), nil })
+	_, err := planWith(client).PlanRemediation(context.Background(), RemediationContext{})
+	assert.ErrorIs(t, err, ErrEmptyPlan)
+	assert.ErrorIs(t, err, ErrMalformedPlan)
 }

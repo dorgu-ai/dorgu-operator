@@ -21,6 +21,9 @@ jobs:
   docker:
     name: Build & Push Docker Image
     runs-on: ubuntu-latest
+    outputs:
+      # What the attest step did ("success", "failure", "skipped"), read by attestation-check.
+      image_attestation: ${{ steps.attest_image.outcome }}
     steps:
       - uses: actions/checkout@v4
 
@@ -71,7 +74,14 @@ jobs:
       # Provenance for the image: the digest of the manifest list that was pushed, so
       # `gh attestation verify oci://ghcr.io/dorgu-ai/dorgu-operator:<version> --owner dorgu-ai`
       # checks what the tag resolves to.
+      #
+      # Attestation never blocks a release: a failure here would leave an image pushed with no
+      # chart and no GitHub release (the chart and release jobs need this one). So it is
+      # continue-on-error, and the attestation-check job at the end turns a skipped attestation
+      # into a red run with an error annotation and a summary.
       - name: Attest image build provenance
+        id: attest_image
+        continue-on-error: true
         uses: actions/attest-build-provenance@v4
         with:
           subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
@@ -82,6 +92,9 @@ jobs:
     name: Package & Publish Helm Chart
     runs-on: ubuntu-latest
     needs: [docker]
+    outputs:
+      archive_attestation: ${{ steps.attest_archive.outcome }}
+      chart_attestation: ${{ steps.attest_chart.outcome }}
     env:
       # e.g. v0.1.0 -> 0.1.0
       CHART_VERSION: ${{ github.ref_name }}
@@ -116,6 +129,8 @@ jobs:
 
       # Provenance for the chart archive that is attached to the GitHub release.
       - name: Attest chart archive build provenance
+        id: attest_archive
+        continue-on-error: true
         uses: actions/attest-build-provenance@v4
         with:
           subject-path: dist/dorgu-operator-*.tgz
@@ -139,6 +154,8 @@ jobs:
       # Provenance for the chart as it sits in the registry, so
       # `gh attestation verify oci://ghcr.io/dorgu-ai/dorgu-operator-charts/dorgu-operator:<version> --owner dorgu-ai` works.
       - name: Attest chart (OCI) build provenance
+        id: attest_chart
+        continue-on-error: true
         uses: actions/attest-build-provenance@v4
         with:
           subject-name: ghcr.io/${{ github.repository_owner }}/dorgu-operator-charts/dorgu-operator
@@ -199,3 +216,37 @@ jobs:
             --title "Dorgu Operator ${{ github.ref_name }}" \
             --notes-file release_notes.md \
             dist/*.tgz
+
+  # Runs last, whatever happened before, and fails loudly when an attestation did not happen.
+  # It blocks nothing: the image, the chart and the release are already published by now.
+  attestation-check:
+    name: Check build provenance attestations
+    runs-on: ubuntu-latest
+    if: ${{ always() }}
+    needs: [docker, helm, github-release]
+    steps:
+      - name: Fail if any attestation was skipped
+        env:
+          IMAGE: ${{ needs.docker.outputs.image_attestation }}
+          ARCHIVE: ${{ needs.helm.outputs.archive_attestation }}
+          CHART: ${{ needs.helm.outputs.chart_attestation }}
+        run: |
+          missing=0
+          details=""
+          for pair in "image:${IMAGE}" "chart archive:${ARCHIVE}" "chart (OCI):${CHART}"; do
+            name="${pair%%:*}"
+            outcome="${pair#*:}"
+            if [ "${outcome}" != "success" ]; then
+              missing=1
+              echo "::error title=Attestation missing::the ${name} has NO build provenance attestation (outcome: ${outcome:-not run}). The release itself was published; re-run the attest step or file it as a release defect."
+              details="${details}- **${name}**: not attested (outcome: ${outcome:-not run})"$'\n'
+            fi
+          done
+          if [ "${missing}" -ne 0 ]; then
+            {
+              echo "### Build provenance attestation was skipped"
+              printf '%s' "${details}"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "All attestations were created." >> "$GITHUB_STEP_SUMMARY"

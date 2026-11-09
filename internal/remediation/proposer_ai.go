@@ -207,7 +207,7 @@ func (p *Proposer) gateAndPersistPlan(
 	// stayed can still quote them, and the reader would paste what the gate refused: take
 	// the text out and say that steps were not proposed.
 	if len(droppedCommands) > 0 {
-		if scrubbed := scrubDroppedCommands(action, droppedCommands); scrubbed > 0 {
+		if scrubbed := scrubDroppedCommands(action, droppedCommands, len(dropped) > 0); scrubbed > 0 {
 			p.logger.Info("removed the text of refused commands from the remaining steps",
 				"action", action.Name, "surfaces", scrubbed)
 		}

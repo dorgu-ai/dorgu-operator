@@ -164,3 +164,46 @@ func TestPlaceholder_AnAIPlanOfOnlyPlaceholdersFallsBackToTheRules(t *testing.T)
 	assert.Equal(t, dorguv1.PlanSourceRuleBased, result.Action.Spec.PlanSource, "the rule engine's plan, not an empty AI one")
 	assertNoPlaceholder(t, result.Action)
 }
+
+// --- L-4 (review): filler is detected as a prefix word, in any case, and an empty description is filler ---
+
+func TestPlaceholder_FillerIsDetectedByPrefixAndWholeWord(t *testing.T) {
+	for text, want := range map[string]bool{
+		"placeholder":                        true,
+		"Placeholder step":                   true,
+		"PLACEHOLDER TEXT":                   true,
+		"  placeholder.  ":                   true,
+		"TODO":                               true,
+		"TODO: describe this":                true,
+		"todo - fill in":                     true,
+		"TBD":                                true,
+		"tbd by the owner":                   true,
+		"N/A":                                true,
+		"Replace the placeholder image tag.": false,
+		"the tag is a placeholder":           false,
+		"Todos are tracked in Jira":          false,
+		"tbdx":                               false,
+		"":                                   false,
+		"Read the logs.":                     false,
+	} {
+		assert.Equal(t, want, isPlaceholderText(text), "%q", text)
+	}
+}
+
+func TestPlaceholder_AnEmptyDescriptionIsFilledOrDropped(t *testing.T) {
+	filled := repairPlaceholderSteps([]dorguv1.RemediationStep{{Order: 1, ID: "step-1", Type: dorguv1.StepTypeManual, Description: "  "}}, "the real cause")
+	require.Len(t, filled, 1)
+	assert.Equal(t, "the real cause", filled[0].Description)
+
+	dropped := repairPlaceholderSteps([]dorguv1.RemediationStep{
+		{Order: 1, ID: "step-1", Type: dorguv1.StepTypeManual, Description: ""},
+		{Order: 2, ID: "step-2", Type: dorguv1.StepTypeManual, Description: "Read the logs."},
+	}, "")
+	require.Len(t, dropped, 1)
+	assert.Equal(t, "Read the logs.", dropped[0].Description)
+	assert.Equal(t, int32(1), dropped[0].Order)
+
+	// An empty rationale is allowed and is not touched.
+	same := []dorguv1.RemediationStep{{Order: 1, ID: "step-1", Type: dorguv1.StepTypeManual, Description: "Read the logs."}}
+	assert.Equal(t, same, repairPlaceholderSteps(same, "summary"))
+}

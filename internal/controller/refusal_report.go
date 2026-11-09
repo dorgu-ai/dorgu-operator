@@ -95,6 +95,12 @@ func (r *HealthCheckReconciler) recordProposalRefusal(
 		// a refusal that had happened. The message carries no plan text.
 		setCondition(&fresh.Status.Conditions, dorguv1.ConditionProposalRefusalRecorded, metav1.ConditionTrue, reason,
 			"the gate refused a proposal for this incident; this record is kept after ProposalRefused is cleared")
+		// Dated by the latest refusal, not the first: setCondition keeps the time while status and
+		// reason are unchanged, so a fault that comes back and is refused for the same reason
+		// again would otherwise sit at its first date and fall out of a report window.
+		if rec := findCondition(fresh.Status.Conditions, dorguv1.ConditionProposalRefusalRecorded); rec != nil {
+			rec.LastTransitionTime = metav1.Now()
+		}
 		changed = true
 		return r.Client.Status().Update(ctx, &fresh)
 	})

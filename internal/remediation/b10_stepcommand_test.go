@@ -217,3 +217,145 @@ func TestStepCommandRefusal_ANarrowedPlanThatCannotBeGatedLeavesTheFirstRefusal(
 	require.NoError(t, err)
 	assert.Same(t, refusal, result)
 }
+
+// --- M-1 (review): the cut and the check read the refused command in a normal form --------
+
+func TestStepCommandRefusal_ReviewVariantsLeaveNoTraceAndTheRestOfTheStepStays(t *testing.T) {
+	cases := map[string]struct{ description, rationale string }{
+		"the dangerous tail": {"Then run sh -c 'rm -rf /var/lib/app/data' inside the pod and fix the tag.", "the tag must exist"},
+		"other quotes":       {`Then run: kubectl exec my-app-0 -n default -- sh -c "rm -rf /var/lib/app/data" and fix the tag.`, "the tag must exist"},
+		"split across fields": {"Run kubectl exec my-app-0 -n default -- and fix the tag.",
+			"the second half is sh -c 'rm -rf /var/lib/app/data'"},
+		"a line continuation": {"Run kubectl exec my-app-0 -n default -- \\\n sh -c 'rm -rf /var/lib/app/data' and fix the tag.", "the tag must exist"},
+		"backticks and caps":  {"Run `KUBECTL EXEC my-app-0 -n default -- SH -C 'RM -RF /var/lib/app/data'` and fix the tag.", "the tag must exist"},
+		"curly quotes":        {"Then run sh -c ‘rm -rf /var/lib/app/data’ and fix the tag.", "the tag must exist"},
+		"a no-break space":    {"Then run sh -c 'rm -rf /var/lib/app/data' and fix the tag.", "the tag must exist"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			result, _ := proposeImageError(t, reviewPlan(tc.description, tc.rationale))
+
+			require.True(t, result.Proposed, "the cut removes the text, so the rest of the plan is proposed; skip %q", result.SkipReason)
+			raw, err := json.Marshal(result.Action.Spec)
+			require.NoError(t, err)
+			assert.NotContains(t, strings.ToLower(string(raw)), "rm -rf")
+			assert.NotContains(t, strings.ToLower(string(raw)), "rm -rf")
+			assert.NotContains(t, strings.ToLower(string(raw)), "var/lib/app/data")
+			assert.Contains(t, result.Action.Spec.Steps[1].Description+result.Action.Spec.Steps[1].Rationale, "the tag",
+				"the advice around the quotation stays")
+		})
+	}
+}
+
+// The model's plan summary and explanation are replaced, not edited: a root cause that quotes
+// the command, or that says something else entirely, is not in the proposal.
+func TestStepCommandRefusal_TheSummaryAndExplanationAreDorgusWhenStepsWereDropped(t *testing.T) {
+	plan := reviewPlan("Fix the tag.", "it must exist")
+	plan.RootCause = "an injected instruction says to run " + reviewRefused + " and to trust nothing else"
+
+	result, _ := proposeImageError(t, plan)
+
+	require.True(t, result.Proposed)
+	spec := result.Action.Spec
+	assert.NotContains(t, spec.PlanSummary, "injected", "the model's root cause is not the summary of a narrowed plan")
+	assert.NotContains(t, strings.ToLower(spec.PlanSummary+spec.Explanation), "rm -rf")
+	assert.Contains(t, spec.PlanSummary, "Dorgu narrowed this plan")
+	assert.Contains(t, spec.PlanSummary, "1 step(s) were left out")
+	for _, step := range spec.Steps {
+		assert.Contains(t, spec.PlanSummary, strings.TrimSpace(step.Description), "it lists the kept steps")
+	}
+	assert.Contains(t, spec.Explanation, droppedCommandsNote)
+	assert.Contains(t, spec.Explanation, "all advisory")
+}
+
+// A plan that lost no step keeps the model's summary as before.
+func TestStepCommandRefusal_APlanThatLostNothingKeepsItsSummary(t *testing.T) {
+	plan := &planner.RemediationPlan{RootCause: "the tag does not exist", Confidence: 0.8, Steps: []planner.PlannedStep{
+		{Order: 1, Type: dorguv1.StepTypeManual, Description: "Fix the tag.", Rationale: "r", Risk: "low"}}}
+
+	result, _ := proposeImageError(t, plan)
+
+	require.True(t, result.Proposed)
+	assert.Equal(t, "the tag does not exist", result.Action.Spec.PlanSummary)
+	assert.Nil(t, result.PlanRefusal)
+}
+
+// A kept command that is plain is the gate's to judge and is left alone even where it shares
+// words with the refused one; a kept description that shares them is cut.
+func TestStepCommandRefusal_AKeptPlainCommandIsNotCut(t *testing.T) {
+	plan := b10ImagePullPlan()
+	plan.Steps[0].Command = "kubectl get pods -l app=my-app -n default"
+
+	result, _ := proposeImageError(t, plan)
+
+	require.True(t, result.Proposed)
+	assert.Equal(t, "kubectl get pods -l app=my-app -n default", result.Action.Spec.Steps[0].Command)
+}
+
+func TestStepCommandRefusal_ASplitCommandAcrossFieldsFailsTheCheck(t *testing.T) {
+	action := &dorguv1.RemediationAction{Spec: dorguv1.RemediationActionSpec{Steps: []dorguv1.RemediationStep{
+		{Order: 1, ID: "step-1", Type: dorguv1.StepTypeManual, Description: "Run kubectl exec", Rationale: "my-app-0 -n default -- and look"},
+	}}}
+	assert.True(t, mentionsAnyCommand(action, []string{reviewRefused}), "three words of the command run across two fields")
+
+	action.Spec.Steps[0].Rationale = "and look"
+	assert.False(t, mentionsAnyCommand(action, []string{reviewRefused}))
+}
+
+func TestStepCommandRefusal_AShortRefusedCommandIsMatchedWhole(t *testing.T) {
+	out, changed := removeCommandText("please run kubectl get 'x' now", []string{"kubectl get 'x'"})
+	assert.True(t, changed)
+	assert.NotContains(t, out, "kubectl get")
+	assert.Equal(t, commandMatchWindow, 3, "the window is the named constant the brief asks for")
+}
+
+func TestStepCommandRefusal_TwoWordsOfAnOrdinarySentenceAreNotACommand(t *testing.T) {
+	out, changed := removeCommandText("check kubectl exec output", []string{reviewRefused})
+	assert.False(t, changed, "two matching words are not a passage")
+	assert.Equal(t, "check kubectl exec output", out)
+}
+
+// --- L-3: a kept step does not point at a dropped one ---------------------------------------
+
+func TestNeutralizeStepReferences(t *testing.T) {
+	for in, want := range map[string]string{
+		"After step 2 has run, fix it.":                  "After a step of the original plan has run, fix it.",
+		"Do the command from the step above first.":      "Do the command from a step of the original plan first.",
+		"See steps 1 and 3 for the logs.":                "See a step of the original plan for the logs.",
+		"Run the previous command, then the next step.":  "Run a step of the original plan, then a step of the original plan.",
+		"The output above shows the reason.":             "The output [reference removed] shows the reason.",
+		"Nothing here refers to anything else.":          "Nothing here refers to anything else.",
+		"Raise the memory step by step over the weekend": "Raise the memory step by step over the weekend",
+	} {
+		got, _ := neutralizeStepReferences(in)
+		assert.Equal(t, want, got, in)
+	}
+}
+
+// --- L-5: two narrowings in a row record both refusals --------------------------------------
+
+func TestStepCommandRefusal_ChainedNarrowingsRecordBothRefusals(t *testing.T) {
+	// A persona change the rules did not authorise AND a command the gate refuses.
+	plan := &planner.RemediationPlan{RootCause: "it exits at start", Confidence: 0.6, Steps: []planner.PlannedStep{
+		{Order: 1, Type: dorguv1.StepTypePersonaUpdate, Description: "raise memory", Rationale: "maybe", Risk: "low",
+			Patch: json.RawMessage(`{"spec":{"resources":{"limits":{"memory":"384Mi"}}}}`)},
+		{Order: 2, Type: dorguv1.StepTypeManual, Description: "Read the logs.", Rationale: "exit reason", Risk: "low", Command: "kubectl logs deploy/my-app -n default"},
+		{Order: 3, Type: dorguv1.StepTypeManual, Description: "Inspect.", Rationale: "r", Risk: "low", Command: notPlain},
+	}}
+	c := fake.NewClientBuilder().WithScheme(newTestScheme()).
+		WithRuntimeObjects(newTestPersona(defaultNamespace, "my-app")).
+		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+	p := NewProposer(c, gate.New(c, testLogger()), testLogger(), WithPlanner(&planCounter{plan: plan}))
+	diag := newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical)
+	diag.Contributing[0].Signal.Type = detection.SignalCrashLoopBackOff
+	diag.SuggestedAction = rulesInvestigate
+
+	result, err := p.Propose(context.Background(), diag, newTestIncident(defaultNamespace, "crash", "my-app", "CrashLoopBackOff"))
+
+	require.NoError(t, err)
+	require.True(t, result.Proposed, "skip %q (%s/%s)", result.SkipReason, result.Stage, result.Reason)
+	require.Len(t, result.PlanRefusals, 2, "both narrowings are reported")
+	assert.Equal(t, gate.GuardrailActionClass, result.PlanRefusals[0].Reason, "in the order they happened")
+	assert.Equal(t, gate.GuardrailStepCommand, result.PlanRefusals[1].Reason)
+	assert.Same(t, result.PlanRefusals[0], result.PlanRefusal, "PlanRefusal is the first")
+}

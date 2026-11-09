@@ -70,3 +70,35 @@ func TestProposeRemediation_AStepCommandFallbackStillRecordsTheRefusalOnce(t *te
 	assert.Equal(t, metav1.ConditionFalse, cond.Status, "the proposal that followed answers the refusal")
 	assert.Equal(t, dorguv1.ReasonProposalMade, cond.Reason)
 }
+
+// L-5: a plan narrowed twice (the persona change dropped, then a command) answers two
+// refusals. Both are recorded: an Event each, and the incident's conditions end on the
+// latest one.
+func TestProposeRemediation_AChainOfNarrowingsRecordsEveryRefusal(t *testing.T) {
+	action := &dorguv1.RemediationAction{ObjectMeta: metav1.ObjectMeta{Name: "ra-1", Namespace: "shop"}}
+	first := &remediation.ProposalResult{Stage: gate.StageValidate, Reason: gate.GuardrailActionClass, SkipReason: "persona change not recommended"}
+	second := &remediation.ProposalResult{Stage: gate.StageValidate, Reason: gate.GuardrailStepCommand, SkipReason: "a command is not plain"}
+	proposer := &stubProposer{result: &remediation.ProposalResult{
+		Proposed: true, Action: action, PlanRefusal: first, PlanRefusals: []*remediation.ProposalResult{first, second},
+	}}
+	r := newHandoffReconciler(t, proposer)
+	r.Client = fake.NewClientBuilder().WithScheme(r.Client.Scheme()).
+		WithStatusSubresource(&dorguv1.IncidentMemory{}).Build()
+	rec := record.NewFakeRecorder(10)
+	r.Recorder = rec
+	diag, incident := handoffFixtures()
+	require.NoError(t, r.Client.Create(context.Background(), incident))
+
+	r.proposeRemediation(context.Background(), diag, incident)
+
+	events := drainEvents(rec)
+	assert.Len(t, events, 2, "one Event per refusal: %v", events)
+	var got dorguv1.IncidentMemory
+	require.NoError(t, r.Client.Get(context.Background(), client.ObjectKeyFromObject(incident), &got))
+	recorded := findCondition(got.Status.Conditions, dorguv1.ConditionProposalRefusalRecorded)
+	require.NotNil(t, recorded)
+	assert.Equal(t, "Validate_StepCommand", recorded.Reason, "the history ends on the latest refusal")
+	live := findCondition(got.Status.Conditions, dorguv1.ConditionProposalRefused)
+	require.NotNil(t, live)
+	assert.Equal(t, metav1.ConditionFalse, live.Status, "and the proposal that followed answers them")
+}

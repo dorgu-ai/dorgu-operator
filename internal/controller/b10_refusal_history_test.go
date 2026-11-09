@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -122,4 +123,29 @@ func TestRefusalHistory_ADeferralLeavesNoRecord(t *testing.T) {
 	r.proposeRemediation(context.Background(), diag, incident)
 
 	assert.Nil(t, recordedRefusal(t, r, incident))
+}
+
+// L-2: a refusal that comes back is dated by its latest occurrence, so a report window that
+// began after the first one still counts it.
+func TestRefusalHistory_ARecurringRefusalIsDatedByTheLatestOne(t *testing.T) {
+	proposer := refusedProposal(gate.StageValidate, gate.GuardrailStepCommand)
+	r, _, incident := handoffWithIncident(t, proposer)
+	diag, _ := handoffFixtures()
+	r.proposeRemediation(context.Background(), diag, incident)
+
+	// The fault resolved and came back: the live condition was cleared by an answer, the record
+	// stands at its old date.
+	var stored dorguv1.IncidentMemory
+	require.NoError(t, r.Client.Get(context.Background(), client.ObjectKeyFromObject(incident), &stored))
+	old := metav1.NewTime(time.Now().Add(-10 * 24 * time.Hour))
+	findCondition(stored.Status.Conditions, dorguv1.ConditionProposalRefusalRecorded).LastTransitionTime = old
+	findCondition(stored.Status.Conditions, dorguv1.ConditionProposalRefused).Status = metav1.ConditionFalse
+	findCondition(stored.Status.Conditions, dorguv1.ConditionProposalRefused).Reason = dorguv1.ReasonProposalMade
+	require.NoError(t, r.Client.Status().Update(context.Background(), &stored))
+
+	r.proposeRemediation(context.Background(), diag, incident) // refused again, same reason
+
+	rec := recordedRefusal(t, r, incident)
+	require.NotNil(t, rec)
+	assert.True(t, rec.LastTransitionTime.After(old.Add(24*time.Hour)), "dated now, not ten days ago: %s", rec.LastTransitionTime)
 }

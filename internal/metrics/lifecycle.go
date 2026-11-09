@@ -229,7 +229,7 @@ func preRegister() {
 		}
 	}
 	for _, purpose := range []string{LLMPurposeDiagnosis, LLMPurposePlanning} {
-		for _, r := range []string{LLMCacheHit, LLMCacheMiss} {
+		for _, r := range []string{LLMCacheHit, LLMCacheMiss, LLMCacheUnusable} {
 			llmCacheTotal.WithLabelValues(purpose, r)
 		}
 	}

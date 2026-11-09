@@ -269,7 +269,7 @@ const (
 	// rewritten to False when the incident resolves or a later proposal answers it, so
 	// a refusal that happened could not be counted afterwards. This one is set with it
 	// and never cleared: status True, the same "<Stage>_<Reason>" enum as its reason,
-	// and the time of the first such refusal. An incident carries at most one, for its
+	// and the time of the latest such refusal. An incident carries at most one, for its
 	// latest distinct reason. Deferrals are not refusals and are not recorded.
 	ConditionProposalRefusalRecorded = "ProposalRefusalRecorded"
 
