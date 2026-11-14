@@ -27,7 +27,7 @@ operator    operator     operator     you       CLI     operator   IncidentMemor
                          Steps[])      approve) workload) rollback)
 ```
 
-1. **Detect** — the health check reconciler runs every 60 seconds and gathers signals: node conditions, pod failures (OOMKilled, CrashLoopBackOff, ImagePullBackOff), resource saturation, control plane component health, and optionally container-level usage from metrics-server.
+1. **Detect.** Every 60 seconds the health check reconciler gathers signals: node conditions, pod failures (OOMKilled, CrashLoopBackOff, ImagePullBackOff), resource saturation, control plane component health, and optionally container-level usage from metrics-server. A container held back by its own CPU limit is a `CPUThrottling` signal (see [CPU throttling detection](#cpu-throttling-detection)).
 2. **Diagnose** — deterministic rules produce a root cause with a confidence score (0.0–1.0). With an Anthropic key configured, AI enhances the diagnosis. An **IncidentMemory** CRD records it.
 3. **Propose** — the remediation proposer emits a **RemediationAction**: an explanation, a pre-patch snapshot, a JSON merge patch against a Persona spec, and — with `aiRemediation.enabled` — an ordered `Steps[]` plan from the AI planner. Deterministic rules remain the floor; AI never replaces them.
 4. **Approve** — the action sits in `Pending`. Nothing happens until a human runs `dorgu remediation approve`.
@@ -123,6 +123,44 @@ Remediation phases: `Pending` → `Approved` → `Applying` → `Verifying` → 
 
 ---
 
+## CPU throttling detection
+
+A container that is throttled by its own CPU limit is slow without being down, so nothing restarts and nothing is killed. Dorgu detects it from one of two sources and proposes raising that container's CPU limit, through the same gate as every other proposal.
+
+| Source | Signal fires when | Needs |
+|--------|-------------------|-------|
+| `metrics.k8s.io` (default) | a container's CPU usage is at or above **95% of its CPU limit for 3 consecutive health-check cycles** | metrics-server, and a CPU limit on the container |
+| Prometheus (optional, wins when set) | `rate(container_cpu_cfs_throttled_periods_total[5m]) / rate(container_cpu_cfs_periods_total[5m])` is **25% or more** | a Prometheus-compatible endpoint that scrapes cAdvisor, in `spec.metrics.prometheus.url` |
+
+```yaml
+apiVersion: dorgu.io/v1
+kind: ClusterPersona
+metadata:
+  name: dorgu-cluster
+spec:
+  name: dorgu-cluster
+  metrics:
+    prometheus:
+      url: http://prometheus-server.monitoring:9090   # http or https only
+```
+
+- The URL must be `http` or `https`, with no credentials, query string or fragment. The operator queries `<url>/api/v1/query` with a 10 second timeout, follows no redirect, reads at most 4 MiB (about 2,000 containers' worth of cAdvisor series; above that the query fails, the log says so at Info and detection falls back to `metrics.k8s.io`) and treats the answer as untrusted.
+- **The URL is trusted to the extent that an administrator set it.** Anyone who can write a ClusterPersona is already cluster-admin tier, and the operator does not block link-local or loopback hosts, so point it only at an address you mean. What the operator does not trust is the answer: it is bounded, validated series by series, and can only name containers that exist in the cluster and have a CPU limit.
+- An **empty answer is not a source.** The query returns a series for every container, quiet ones included, so an answer that names none of the containers in the cluster means the endpoint has no cAdvisor data (not scraped, relabelled, an outage). Dorgu then reads `metrics.k8s.io` instead and says so with the reason `PrometheusNoData`.
+- The only RBAC it needs is `get` and `list` on `pods.metrics.k8s.io`. Dorgu never asks for `nodes/proxy` or any other way to reach a kubelet.
+- Only containers that have a CPU limit are counted. The proposal raises the **live** limit by 25%, or by 50% when at least half of the container's scheduling periods are throttled (a measured ratio, so only the Prometheus source can reach it; usage from `metrics.k8s.io` is always a warning). It never introduces a limit the workload does not have, and is bounded by the gate's 2x ceiling. It is sized from the container the signal names: if that is not the container this persona's single resources block describes (a throttled sidecar next to a main container), nothing is proposed and the advisory says which container to raise by hand.
+- **What counts as a cycle.** "3 consecutive cycles" means three detection cycles that all read the metrics. A cycle is a detection call made at least half a health-check interval after the previous cycle ran; a call closer than that (the verifier) is answered from the previous cycle and counts for nothing. A cycle that could not read the pods or the metrics resets every streak. A container's streak belongs to that pod instance, so a recreated pod of the same name starts from zero. The window is wall-clock: a verifier call later than half an interval after a cycle is counted as a cycle, which moves the signal one cycle earlier or later, never loses it.
+- **If neither source is available, detection is off and says so.** The ClusterPersona carries the condition `CPUThrottlingDetection` and the field `status.cpuThrottlingDetection` (`enabled`, `source`, `reason`, `message`):
+
+  ```bash
+  kubectl get clusterpersona dorgu-cluster -o jsonpath='{.status.cpuThrottlingDetection}'
+  ```
+
+  Reasons: `MetricsServerActive`, `PrometheusActive`, `PrometheusUnreachable`, `PrometheusNoData` and `PrometheusURLInvalid` (each of the three fell back to metrics-server when it is served, and is off when it is not), `NoMetricsSource`, `MetricsServerDisabled`, `MetricsSourceLost`, `MetricsReadFailed`.
+- **A CPU source that cannot look blinds CPU throttling only.** While the source is absent, lost, unreadable or not yet read by a freshly started operator, an open `CPUThrottling` incident is not resolved and a CPU-limit fix is not verified healthy: its verification reads Unknown, and Unknown retries twice, then rolls the change back, so an approved CPU raise is rolled back if the source stays blind for about 3 minutes. Nothing else is held back: crash loops, OOM kills and every other family keep resolving and verifying while the CPU source is down. A collector that reads pods and workloads still blinds the whole cycle, as before.
+
+---
+
 ## CRDs
 
 All five live in API group `dorgu.io/v1`.
@@ -154,8 +192,8 @@ Source-of-truth split: the CLI and GitOps own `spec` (desired intent); the opera
 | Missing | Effect |
 |---------|--------|
 | No Anthropic key | Detection and diagnosis run fully rule-based. The proposer uses the deterministic path. Nothing else changes. |
-| No metrics-server | Saturation signals degrade (usage-based detection is unavailable). **OOM detection is unaffected** — it reads pod termination state, not metrics. |
-| No Prometheus | Resource baseline learning is skipped. |
+| No metrics-server | Saturation signals degrade (usage-based detection is unavailable) and **CPU throttling detection is off** unless a Prometheus URL is set; the ClusterPersona status says so. **OOM detection is unaffected**, because it reads pod termination state, not metrics. |
+| No Prometheus | Resource baseline learning is skipped. CPU throttling detection falls back to `metrics.k8s.io` usage. |
 | No ArgoCD | Sync/health fields on Persona status stay empty. |
 
 ### Install with Helm (recommended)

@@ -123,6 +123,13 @@ const (
 	SignalMemorySaturationCrit  SignalType = "MemorySaturationCritical"
 	SignalCPUUsageHigh          SignalType = "CPUUsageHigh"
 	SignalMemoryUsageHigh       SignalType = "MemoryUsageHigh"
+
+	// SignalCPUThrottling is a container whose CPU is being held back by its own
+	// limit: usage at or above 95% of the limit for three consecutive cycles
+	// (metrics.k8s.io), or, when a Prometheus-compatible endpoint is configured,
+	// the cfs throttled-period ratio at or above 25%. It names a container, not a
+	// node, and the fix is the container's CPU limit.
+	SignalCPUThrottling SignalType = "CPUThrottling"
 )
 
 // Control plane signals.
@@ -194,4 +201,34 @@ var faultRank = map[SignalType]int{
 func FaultRank(t SignalType) (int, bool) {
 	rank, ok := faultRank[t]
 	return rank, ok
+}
+
+// Family names a set of signals that are one fault in different shapes. A fault's
+// identity is the application, the CONTAINER and the family, so everything that
+// keys on identity (the incident a diagnosis merges into, the recurrence budget, the
+// rejection cooldown) asks FamilyOf rather than listing signals.
+type Family string
+
+const (
+	// FamilyFault is the progression of one container dying: not Ready, restarted
+	// by the kubelet, crash-looping, OOM-killed. It is ranked (see FaultRank).
+	FamilyFault Family = "fault"
+
+	// FamilyCPUThrottling is a container held back by its own CPU limit. It has one
+	// rung: there is nothing milder or worse in it, so it never escalates, and it
+	// never merges with the fault progression, which is a different fix.
+	FamilyCPUThrottling Family = "cpu-throttling"
+)
+
+// FamilyOf returns the family a signal belongs to, and whether it belongs to one.
+// A signal in no family keeps the identity it always had: persona, category and
+// signal.
+func FamilyOf(t SignalType) (Family, bool) {
+	if _, ok := faultRank[t]; ok {
+		return FamilyFault, true
+	}
+	if t == SignalCPUThrottling {
+		return FamilyCPUThrottling, true
+	}
+	return "", false
 }

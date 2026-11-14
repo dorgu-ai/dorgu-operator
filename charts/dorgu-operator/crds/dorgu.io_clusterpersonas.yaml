@@ -161,6 +161,28 @@ spec:
                 - production
                 - sandbox
                 type: string
+              metrics:
+                description: metrics names the optional metrics sources detection
+                  may read.
+                properties:
+                  prometheus:
+                    description: |-
+                      prometheus is a Prometheus-compatible endpoint. When set, CPU throttling
+                      detection reads the true throttling ratio from it instead of inferring it
+                      from metrics.k8s.io usage.
+                    properties:
+                      url:
+                        description: |-
+                          url is the base URL of the Prometheus-compatible API (for example
+                          http://prometheus-server.monitoring:9090). Only http and https are accepted;
+                          credentials, a query string and a fragment are not. The operator queries
+                          <url>/api/v1/query with a timeout and a bounded response size, and treats
+                          the answer as untrusted.
+                        maxLength: 2048
+                        pattern: ^[Hh][Tt][Tt][Pp][Ss]?://[^\s/?#@]+(/[^\s?#]*)?$
+                        type: string
+                    type: object
+                type: object
               name:
                 description: name is the cluster's friendly name.
                 type: string
@@ -433,6 +455,40 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              cpuThrottlingDetection:
+                description: |-
+                  cpuThrottlingDetection says whether CPU throttling detection is on, which
+                  source it reads, and why it is off when it is. `dorgu health` shows it.
+                properties:
+                  enabled:
+                    description: enabled is true when a source is being read this
+                      cycle.
+                    type: boolean
+                  message:
+                    description: message states what the operator knows, in a sentence.
+                    maxLength: 512
+                    type: string
+                  reason:
+                    description: |-
+                      reason is a CamelCase token: MetricsServerActive, PrometheusActive,
+                      PrometheusUnreachable, PrometheusNoData (the endpoint answered with no series for
+                      any container in the cluster) or PrometheusURLInvalid (each of the three fell back
+                      to metrics.k8s.io when it is served, and is off when it is not), NoMetricsSource,
+                      MetricsServerDisabled, MetricsSourceLost or MetricsReadFailed.
+                    maxLength: 64
+                    type: string
+                  source:
+                    description: source is the source in use, or none.
+                    enum:
+                    - metrics.k8s.io
+                    - prometheus
+                    - none
+                    type: string
+                required:
+                - enabled
+                - reason
+                - source
+                type: object
               kubernetesVersion:
                 description: kubernetesVersion is the cluster's Kubernetes version.
                 type: string

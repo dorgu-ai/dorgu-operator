@@ -101,6 +101,7 @@ var signalClarity = map[detection.SignalType]float64{
 	detection.SignalCPUSaturationHigh:     0.75,
 	detection.SignalMemorySaturationHigh:  0.75,
 	detection.SignalCPUUsageHigh:          0.7,
+	detection.SignalCPUThrottling:         0.8,
 	detection.SignalMemoryUsageHigh:       0.7,
 }
 
