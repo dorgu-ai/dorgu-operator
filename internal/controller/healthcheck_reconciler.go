@@ -148,6 +148,9 @@ const (
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=replicasets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch
+// Pod metrics for the metrics-usage and CPU throttling collectors: read-only, and the only
+// way either reads usage. CPU throttling never touches a kubelet, so nodes/proxy is not
+// granted anywhere (cmd/rbac_test.go pins it).
 // +kubebuilder:rbac:groups=metrics.k8s.io,resources=pods,verbs=get;list
 
 // HealthCheckReconciler runs detection and diagnosis on a fixed interval,

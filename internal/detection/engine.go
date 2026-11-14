@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/go-logr/logr"
 )
@@ -41,6 +42,10 @@ type Engine struct {
 	collectors []SignalCollector
 	correlator PersonaCorrelator
 	logger     logr.Logger
+
+	// failureLog rate-limits the ERROR line for a collector that keeps failing.
+	failureLog *logThrottle
+	now        func() time.Time
 }
 
 // SetPersonaCorrelator sets the correlator used to link signals to personas.
@@ -53,6 +58,8 @@ func NewEngine(logger logr.Logger, collectors ...SignalCollector) *Engine {
 	return &Engine{
 		collectors: collectors,
 		logger:     logger.WithName("detection-engine"),
+		failureLog: newLogThrottle(logRepeatInterval),
+		now:        time.Now,
 	}
 }
 
@@ -107,6 +114,25 @@ func IsPartial(err error) bool {
 	return errors.As(err, &ce)
 }
 
+// logCollectorFailure logs a failing collector at ERROR once, then at most once per
+// logRepeatInterval, with the number of failures it held back. The failure itself is
+// not throttled: CollectAll returns it every cycle.
+func (e *Engine) logCollectorFailure(name string, err error) {
+	if e.failureLog == nil || e.now == nil { // an Engine not built by NewEngine
+		e.logger.Error(err, "collector failed", "collector", name)
+		return
+	}
+	ok, held := e.failureLog.allow(name, e.now())
+	if !ok {
+		return
+	}
+	kv := []any{"collector", name}
+	if held > 0 {
+		kv = append(kv, "failuresSinceLastLog", held)
+	}
+	e.logger.Error(err, "collector failed", kv...)
+}
+
 // CollectAll runs all collectors and returns aggregated signals.
 //
 // A failing collector does not block the others: their signals are still
@@ -121,7 +147,7 @@ func (e *Engine) CollectAll(ctx context.Context) ([]Signal, error) {
 	for _, collector := range e.collectors {
 		signals, err := collector.Collect(ctx)
 		if err != nil {
-			e.logger.Error(err, "collector failed", "collector", collector.Name())
+			e.logCollectorFailure(collector.Name(), err)
 			failures = append(failures, CollectorFailure{Collector: collector.Name(), Err: err})
 			continue
 		}

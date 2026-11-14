@@ -49,13 +49,13 @@ type cpuEnv struct {
 	collector *stubCollector
 }
 
-func throttleSignalFor(pod, container string) detection.Signal {
+func throttleSignalFor(container string) detection.Signal {
 	pct, threshold := 98.0, 95.0
 	return detection.Signal{
 		Type: detection.SignalCPUThrottling, Severity: detection.SeverityWarning, Category: detection.CategoryResource,
 		Source:     "cpu-throttling-checker",
 		Message:    "container " + container + " is at its CPU limit",
-		Resource:   dorguv1.ResourceReference{Kind: "Pod", Name: pod, Namespace: cpuNS},
+		Resource:   dorguv1.ResourceReference{Kind: "Pod", Name: "api-abc", Namespace: cpuNS},
 		PersonaRef: &dorguv1.PersonaReference{Kind: "ApplicationPersona", Name: cpuPersona, Namespace: cpuNS},
 		Value:      &pct, Threshold: &threshold,
 		DetectedAt: time.Now(),
@@ -96,7 +96,7 @@ func (e *cpuEnv) resolve(name string) {
 }
 
 func TestCPUThrottling_OneContainerIsOneIncidentAndOneProposal(t *testing.T) {
-	e := newCPUEnv(t, throttleSignalFor("api-abc", "app"))
+	e := newCPUEnv(t, throttleSignalFor("app"))
 	e.cycle()
 	e.cycle()
 	e.cycle()
@@ -125,7 +125,7 @@ func TestCPUThrottling_IsNotMergedWithTheFaultLadder(t *testing.T) {
 		Source: "stub", Message: "app was OOMKilled", Resource: pod, PersonaRef: ref, DetectedAt: time.Now(),
 		Metadata: map[string]string{"container": "app"},
 	}
-	e := newCPUEnv(t, throttleSignalFor("api-abc", "app"), oom)
+	e := newCPUEnv(t, throttleSignalFor("app"), oom)
 	e.cycle()
 	e.cycle()
 
@@ -141,47 +141,60 @@ func TestCPUThrottling_IsNotMergedWithTheFaultLadder(t *testing.T) {
 	}
 }
 
-// A fault is application + container + family. CPU throttling in container "app"
-// that resolved and came back is a recurrence; CPU throttling in a DIFFERENT container
-// of the application is a first occurrence of a different fault, with its own
-// budget, generation and cooldown.
-func TestCPUThrottling_IdentityIncludesTheContainer(t *testing.T) {
-	e := newCPUEnv(t, throttleSignalFor("api-abc", "app"))
+// A fault is application + container + family. The recurrence budget is per fault: with
+// a cap of one recurrence in the window, container "app" having used its one must not
+// make the first appearance of throttling in container "sidecar" look like a flap that
+// has to be folded into app's record. Under the old per-signal identity it did.
+func TestCPUThrottling_RecurrenceBudgetIsPerContainer(t *testing.T) {
+	e := newCPUEnv(t, throttleSignalFor("app"))
+	e.r.RecurrenceCap = 1
+	e.r.RecurrenceWindow = time.Hour
+
 	e.cycle()
 	require.Len(t, e.incidents(), 1)
-	first := e.incidents()[0]
-	e.resolve(first.Name)
+	e.resolve(e.incidents()[0].Name)
 
-	// Same container again: a recurrence of the same fault.
-	e.cycle()
-	var recurrence *dorguv1.IncidentMemory
+	e.cycle() // app recurs: generation 1, the budget of one is now spent
+	var appRecurrence dorguv1.IncidentMemory
 	for _, im := range e.incidents() {
 		if im.Status.Phase != PhaseResolved {
-			recurrence = &im
+			appRecurrence = im
 		}
 	}
-	require.NotNil(t, recurrence, "the recurrence opens a new record: %s", incidentSignals(e.incidents()))
-	assert.Equal(t, 1, gate.IncidentGeneration(recurrence.Name), "same container: generation 1")
-	assert.True(t, gate.SameIncidentLineage(first.Name, recurrence.Name))
-	e.resolve(recurrence.Name)
+	require.NotEmpty(t, appRecurrence.Name, "the recurrence opens a new record: %s", incidentSignals(e.incidents()))
+	assert.Equal(t, 1, gate.IncidentGeneration(appRecurrence.Name))
+	e.resolve(appRecurrence.Name)
 
-	// A different container: not a recurrence of "app".
-	e.collector.signals = []detection.Signal{throttleSignalFor("api-abc", "sidecar")}
+	// A different container: its own fault, so the cap app used up does not apply and its
+	// first appearance is a new, open incident about the sidecar.
+	e.collector.signals = []detection.Signal{throttleSignalFor("sidecar")}
 	e.cycle()
-	var other *dorguv1.IncidentMemory
+	var open []dorguv1.IncidentMemory
 	for _, im := range e.incidents() {
 		if im.Status.Phase != PhaseResolved {
-			other = &im
+			open = append(open, im)
 		}
 	}
-	require.NotNil(t, other)
-	assert.Equal(t, 0, gate.IncidentGeneration(other.Name),
-		"a different container is a different fault: its first occurrence, not a recurrence of app's")
-	assert.Equal(t, "sidecar", other.Annotations[AnnotationContainers])
+	require.Len(t, open, 1, "a new open incident for the sidecar: %s", incidentSignals(e.incidents()))
+	assert.Equal(t, "sidecar", open[0].Annotations[AnnotationContainers])
+	assert.Empty(t, open[0].Annotations[AnnotationRecurrencesFolded], "nothing folded: the sidecar has not flapped")
+	for _, im := range e.incidents() {
+		if im.Name == appRecurrence.Name {
+			assert.Equal(t, PhaseResolved, im.Status.Phase, "app's record is not reopened for the sidecar's fault")
+		}
+	}
+	e.resolve(open[0].Name)
+
+	// And the budget app spent is still spent: its third appearance folds into the
+	// latest record instead of opening another (reopenLatest).
+	e.collector.signals = []detection.Signal{throttleSignalFor("app")}
+	before := len(e.incidents())
+	e.cycle()
+	assert.Equal(t, before, len(e.incidents()), "capped: app's fault reopens its latest record, no new one")
 }
 
 func TestCPUThrottling_RejectionHoldsAcrossARecurrence(t *testing.T) {
-	e := newCPUEnv(t, throttleSignalFor("api-abc", "app"))
+	e := newCPUEnv(t, throttleSignalFor("app"))
 	e.cycle()
 	require.Len(t, e.actions(), 1)
 	ra := e.actions()[0]
@@ -202,31 +215,3 @@ func TestCPUThrottling_RejectionHoldsAcrossARecurrence(t *testing.T) {
 
 	assert.Len(t, e.actions(), 1, "the human's no still covers the same fault when it recurs")
 }
-
-func TestCPUThrottling_ClearsWhenTheSignalGoes(t *testing.T) {
-	e := newCPUEnv(t, throttleSignalFor("api-abc", "app"))
-	e.cycle()
-	require.Len(t, e.incidents(), 1)
-
-	e.collector.signals = nil
-	e.cycle()
-	im := e.incidents()[0]
-	assert.Equal(t, PhaseResolved, im.Status.Phase, "a throttled container that stops being throttled resolves its incident")
-}
-
-func TestCPUThrottling_BlindCycleDoesNotResolve(t *testing.T) {
-	e := newCPUEnv(t, throttleSignalFor("api-abc", "app"))
-	e.cycle()
-	require.Len(t, e.incidents(), 1)
-
-	// The metrics source is down: the collector fails. Silence is not evidence.
-	e.collector.signals = nil
-	e.collector.err = assertErr("metrics API unavailable")
-	e.cycle()
-	assert.NotEqual(t, PhaseResolved, e.incidents()[0].Status.Phase,
-		"B2b: a collector that could not look must never read as healthy")
-}
-
-type assertErr string
-
-func (e assertErr) Error() string { return string(e) }

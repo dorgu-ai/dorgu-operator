@@ -26,6 +26,7 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
@@ -35,6 +36,14 @@ import (
 // C4: "detection degrades loudly but harmlessly". The collector says which source it
 // reads, or why it reads none; the sink puts that on the ClusterPersona, where a
 // status condition and a structured field (the one `dorgu health` reads) carry it.
+
+// noiseWatchClient is noiseClient with the type interceptor.NewClient wants.
+func noiseWatchClient(t *testing.T, objs ...client.Object) client.WithWatch {
+	t.Helper()
+	return fake.NewClientBuilder().WithScheme(noiseScheme(t)).WithObjects(objs...).
+		WithStatusSubresource(&dorguv1.IncidentMemory{}, &dorguv1.RemediationAction{}, &dorguv1.ClusterPersona{}).
+		Build()
+}
 
 func clusterPersonaNamed(name, promURL string) *dorguv1.ClusterPersona {
 	cp := &dorguv1.ClusterPersona{
@@ -47,10 +56,10 @@ func clusterPersonaNamed(name, promURL string) *dorguv1.ClusterPersona {
 	return cp
 }
 
-func getClusterPersona(t *testing.T, c client.Client, name string) dorguv1.ClusterPersona {
+func getClusterPersona(t *testing.T, c client.Client) dorguv1.ClusterPersona {
 	t.Helper()
 	var cp dorguv1.ClusterPersona
-	require.NoError(t, c.Get(context.Background(), client.ObjectKey{Name: name}, &cp))
+	require.NoError(t, c.Get(context.Background(), client.ObjectKey{Name: "dorgu"}, &cp))
 	return cp
 }
 
@@ -81,7 +90,7 @@ func TestPrometheusURLFromClusterPersona(t *testing.T) {
 }
 
 func TestPrometheusURLFromClusterPersona_ListErrorIsAnError(t *testing.T) {
-	c := interceptor.NewClient(noiseClient(t), interceptor.Funcs{
+	c := interceptor.NewClient(noiseWatchClient(t), interceptor.Funcs{
 		List: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error {
 			return errors.New("forbidden")
 		},
@@ -99,7 +108,7 @@ func TestCPUThrottlingStatusSink_WritesTheFieldAndTheCondition(t *testing.T) {
 		Message: "CPU throttling detection is off: neither metrics.k8s.io nor spec.metrics.prometheus.url is available",
 	})
 
-	cp := getClusterPersona(t, c, "dorgu")
+	cp := getClusterPersona(t, c)
 	require.NotNil(t, cp.Status.CPUThrottlingDetection)
 	assert.False(t, cp.Status.CPUThrottlingDetection.Enabled)
 	assert.Equal(t, "none", cp.Status.CPUThrottlingDetection.Source)
@@ -127,11 +136,11 @@ func TestCPUThrottlingStatusSink_ActiveSources(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			c := noiseClient(t, clusterPersonaNamed("dorgu", ""))
 			NewCPUThrottlingStatusSink(c, noiseLogger()).ReportCPUThrottlingSource(context.Background(), tt.status)
-			cp := getClusterPersona(t, c, "dorgu")
+			cp := getClusterPersona(t, c)
 			require.NotNil(t, cp.Status.CPUThrottlingDetection)
 			assert.True(t, cp.Status.CPUThrottlingDetection.Enabled)
 			assert.Equal(t, tt.source, cp.Status.CPUThrottlingDetection.Source)
-			assert.Equal(t, string(tt.status.Reason), cp.Status.CPUThrottlingDetection.Reason)
+			assert.Equal(t, tt.status.Reason, cp.Status.CPUThrottlingDetection.Reason)
 			cond := apimeta.FindStatusCondition(cp.Status.Conditions, ConditionCPUThrottlingDetection)
 			require.NotNil(t, cond)
 			assert.Equal(t, metav1.ConditionTrue, cond.Status)
@@ -141,7 +150,7 @@ func TestCPUThrottlingStatusSink_ActiveSources(t *testing.T) {
 
 func TestCPUThrottlingStatusSink_WritesOnlyOnChange(t *testing.T) {
 	writes := 0
-	base := noiseClient(t, clusterPersonaNamed("dorgu", ""))
+	base := noiseWatchClient(t, clusterPersonaNamed("dorgu", ""))
 	c := interceptor.NewClient(base, interceptor.Funcs{
 		SubResourceUpdate: func(ctx context.Context, cl client.Client, sub string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
 			writes++
@@ -172,7 +181,7 @@ func TestCPUThrottlingStatusSink_NoClusterPersonaIsHarmless(t *testing.T) {
 func TestCPUThrottlingStatusSink_FailedWriteIsRetriedNextCycle(t *testing.T) {
 	fail := true
 	writes := 0
-	base := noiseClient(t, clusterPersonaNamed("dorgu", ""))
+	base := noiseWatchClient(t, clusterPersonaNamed("dorgu", ""))
 	c := interceptor.NewClient(base, interceptor.Funcs{
 		SubResourceUpdate: func(ctx context.Context, cl client.Client, sub string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
 			if fail {
@@ -189,20 +198,20 @@ func TestCPUThrottlingStatusSink_FailedWriteIsRetriedNextCycle(t *testing.T) {
 	fail = false
 	sink.ReportCPUThrottlingSource(context.Background(), st)
 	assert.Equal(t, 1, writes, "a write that failed must not be remembered as done")
-	assert.NotNil(t, getClusterPersona(t, base, "dorgu").Status.CPUThrottlingDetection)
+	assert.NotNil(t, getClusterPersona(t, base).Status.CPUThrottlingDetection)
 }
 
 func TestCPUThrottlingStatusSink_FollowsARecreatedClusterPersona(t *testing.T) {
-	base := noiseClient(t, clusterPersonaNamed("dorgu", ""))
+	base := noiseWatchClient(t, clusterPersonaNamed("dorgu", ""))
 	sink := NewCPUThrottlingStatusSink(base, noiseLogger())
 	st := detection.SourceStatus{Reason: detection.ReasonNoMetricsSource, Source: detection.CPUThrottlingSourceNone, Message: "off"}
 	sink.ReportCPUThrottlingSource(context.Background(), st)
 
-	cp := getClusterPersona(t, base, "dorgu")
+	cp := getClusterPersona(t, base)
 	require.NoError(t, base.Delete(context.Background(), &cp))
 	require.NoError(t, base.Create(context.Background(), clusterPersonaNamed("dorgu", "")))
 
 	sink.ReportCPUThrottlingSource(context.Background(), st)
-	assert.NotNil(t, getClusterPersona(t, base, "dorgu").Status.CPUThrottlingDetection,
+	assert.NotNil(t, getClusterPersona(t, base).Status.CPUThrottlingDetection,
 		"the sink reads the object, not its own memory of what it wrote")
 }

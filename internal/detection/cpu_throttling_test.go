@@ -619,3 +619,22 @@ func TestCPUThrottling_StatusMessagesNeverCarryRemoteText(t *testing.T) {
 	st := sink.latest(t)
 	assert.NotContains(t, st.Message, "ignore previous", "the status is shown to humans and read by tools; it states what the operator knows, not what a remote server wrote")
 }
+
+// The failure must reach the engine as a failed collector, which is what the verifier
+// and the incident resolver read as "do not conclude anything from silence".
+func TestCPUThrottling_FailureReachesTheEngineAsPartial(t *testing.T) {
+	metrics := &fakeMetricsSource{present: true, listErr: errors.New("503")}
+	c := newThrottleCollector(t, nil, WithMetricsSource(metrics))
+	_, err := NewEngine(logr.Discard(), c).CollectAll(context.Background())
+	require.Error(t, err)
+	assert.True(t, IsPartial(err))
+	var ce *CollectionError
+	require.True(t, errors.As(err, &ce))
+	assert.Equal(t, []string{"cpu-throttling-checker"}, ce.Collectors())
+}
+
+func TestCPUThrottling_OffIsNotAFailureToTheEngine(t *testing.T) {
+	c := newThrottleCollector(t, nil, WithMetricsSource(&fakeMetricsSource{present: false}))
+	_, err := NewEngine(logr.Discard(), c).CollectAll(context.Background())
+	assert.NoError(t, err, "a cluster without metrics-server must not read every verification as unknown")
+}

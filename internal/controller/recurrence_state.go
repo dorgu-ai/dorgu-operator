@@ -69,30 +69,32 @@ func isResolvedIncident(im *dorguv1.IncidentMemory) bool {
 // resolvedPredecessors lists the Resolved incidents of the same fault as a diagnosis
 // about a subject.
 //
-// A fault is the application, the container and the family, so a signal in the
-// family (see incident_family.go) looks at every Resolved incident of the application
-// in the family that is about the same container, whatever shape it was in: the
-// recurrence cap, the generation number and the lineage are per fault, not per
-// signal, or a fault that flapped and changed shape each time would have a budget per
-// shape. Any other signal keeps looking for its own: same persona, category, signal
-// and attribution.
+// A fault is the application, the container and the family, so a signal in a family
+// (see incident_family.go and detection.FamilyOf) looks at every Resolved incident of
+// the application in that family that is about the same container, whatever shape it
+// was in: the recurrence cap, the generation number and the lineage are per fault, not
+// per signal, or a fault that flapped and changed shape each time would have a budget
+// per shape. CPU throttling is a family of one signal, so it gets the container
+// identity and nothing else. Any signal in no family keeps looking for its own: same
+// persona, category, signal and attribution.
 func (r *HealthCheckReconciler) resolvedPredecessors(
 	ctx context.Context,
 	subject incidentSubject,
 	diag *diagnosis.Diagnosis,
 ) ([]dorguv1.IncidentMemory, error) {
 	signal := primarySignalType(diag)
-	_, family := detection.FaultRank(signal)
+	family, inFamily := detection.FamilyOf(signal)
 
 	var candidates []dorguv1.IncidentMemory
-	if family {
+	if inFamily {
 		all, err := r.applicationIncidents(ctx, subject)
 		if err != nil {
 			return nil, err
 		}
 		containers := containersOf(diag)
 		for i := range all {
-			if _, in := rankOf(all[i].Spec.Detection.Signal); in && containersOverlap(incidentContainers(&all[i]), containers) {
+			if f, in := detection.FamilyOf(detection.SignalType(all[i].Spec.Detection.Signal)); in && f == family &&
+				containersOverlap(incidentContainers(&all[i]), containers) {
 				candidates = append(candidates, all[i])
 			}
 		}

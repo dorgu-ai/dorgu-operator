@@ -51,6 +51,27 @@ func wiringClient(t *testing.T, objs ...client.Object) client.Client {
 		WithStatusSubresource(&dorguv1.ClusterPersona{}).Build()
 }
 
+func wiringClusterPersona(prometheusURL string) *dorguv1.ClusterPersona {
+	cp := &dorguv1.ClusterPersona{
+		ObjectMeta: metav1.ObjectMeta{Name: "dorgu"},
+		Spec:       dorguv1.ClusterPersonaSpec{Name: "dorgu"},
+	}
+	if prometheusURL != "" {
+		cp.Spec.Metrics = &dorguv1.ClusterMetricsSpec{Prometheus: &dorguv1.PrometheusSpec{URL: prometheusURL}}
+	}
+	return cp
+}
+
+// wiringMetricsClient is a fake metrics-server client that serves metrics.k8s.io.
+// The generated fake has no NewClientset in this version of k8s.io/metrics.
+func wiringMetricsClient(served bool) *metricsfake.Clientset {
+	mc := metricsfake.NewSimpleClientset() //nolint:staticcheck // SA1019: the only generated constructor
+	if served {
+		mc.Resources = []*metav1.APIResourceList{{GroupVersion: "metrics.k8s.io/v1beta1"}}
+	}
+	return mc
+}
+
 func wiringPod() *corev1.Pod {
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: "api-1", Namespace: "shop"},
@@ -69,9 +90,9 @@ func statusOf(t *testing.T, c client.Client) *dorguv1.CPUThrottlingDetectionStat
 }
 
 func TestNewCPUThrottlingCollector_NoSourceReportsOff(t *testing.T) {
-	cp := &dorguv1.ClusterPersona{ObjectMeta: metav1.ObjectMeta{Name: "dorgu"}, Spec: dorguv1.ClusterPersonaSpec{Name: "dorgu"}}
-	c := wiringClient(t, cp, wiringPod())
-	col := newCPUThrottlingCollector(c, nil, metricsfake.NewSimpleClientset(), operatorConfig{enableMetricsServer: true}, logr.Discard())
+	c := wiringClient(t, wiringClusterPersona(""), wiringPod())
+	cfg := operatorConfig{enableMetricsServer: true}
+	col := newCPUThrottlingCollector(c, nil, wiringMetricsClient(false), cfg, logr.Discard())
 
 	signals, err := col.Collect(context.Background())
 	require.NoError(t, err)
@@ -83,11 +104,9 @@ func TestNewCPUThrottlingCollector_NoSourceReportsOff(t *testing.T) {
 }
 
 func TestNewCPUThrottlingCollector_MetricsServerPresent(t *testing.T) {
-	cp := &dorguv1.ClusterPersona{ObjectMeta: metav1.ObjectMeta{Name: "dorgu"}, Spec: dorguv1.ClusterPersonaSpec{Name: "dorgu"}}
-	c := wiringClient(t, cp, wiringPod())
-	mc := metricsfake.NewSimpleClientset()
-	mc.Fake.Resources = []*metav1.APIResourceList{{GroupVersion: "metrics.k8s.io/v1beta1"}}
-	col := newCPUThrottlingCollector(c, nil, mc, operatorConfig{enableMetricsServer: true}, logr.Discard())
+	c := wiringClient(t, wiringClusterPersona(""), wiringPod())
+	cfg := operatorConfig{enableMetricsServer: true}
+	col := newCPUThrottlingCollector(c, nil, wiringMetricsClient(true), cfg, logr.Discard())
 
 	_, err := col.Collect(context.Background())
 	require.NoError(t, err)
@@ -98,11 +117,9 @@ func TestNewCPUThrottlingCollector_MetricsServerPresent(t *testing.T) {
 }
 
 func TestNewCPUThrottlingCollector_FlagOffDisablesMetricsServer(t *testing.T) {
-	cp := &dorguv1.ClusterPersona{ObjectMeta: metav1.ObjectMeta{Name: "dorgu"}, Spec: dorguv1.ClusterPersonaSpec{Name: "dorgu"}}
-	c := wiringClient(t, cp, wiringPod())
-	mc := metricsfake.NewSimpleClientset()
-	mc.Fake.Resources = []*metav1.APIResourceList{{GroupVersion: "metrics.k8s.io/v1beta1"}}
-	col := newCPUThrottlingCollector(c, nil, mc, operatorConfig{enableMetricsServer: false}, logr.Discard())
+	c := wiringClient(t, wiringClusterPersona(""), wiringPod())
+	cfg := operatorConfig{enableMetricsServer: false}
+	col := newCPUThrottlingCollector(c, nil, wiringMetricsClient(true), cfg, logr.Discard())
 
 	_, err := col.Collect(context.Background())
 	require.NoError(t, err)
@@ -119,17 +136,9 @@ func TestNewCPUThrottlingCollector_PrometheusFromTheClusterPersonaWins(t *testin
 	}))
 	t.Cleanup(srv.Close)
 
-	cp := &dorguv1.ClusterPersona{
-		ObjectMeta: metav1.ObjectMeta{Name: "dorgu"},
-		Spec: dorguv1.ClusterPersonaSpec{
-			Name:    "dorgu",
-			Metrics: &dorguv1.ClusterMetricsSpec{Prometheus: &dorguv1.PrometheusSpec{URL: srv.URL}},
-		},
-	}
-	c := wiringClient(t, cp, wiringPod())
-	mc := metricsfake.NewSimpleClientset()
-	mc.Fake.Resources = []*metav1.APIResourceList{{GroupVersion: "metrics.k8s.io/v1beta1"}}
-	col := newCPUThrottlingCollector(c, nil, mc, operatorConfig{enableMetricsServer: true, healthCheckInterval: time.Minute}, logr.Discard())
+	c := wiringClient(t, wiringClusterPersona(srv.URL), wiringPod())
+	cfg := operatorConfig{enableMetricsServer: true, healthCheckInterval: time.Minute}
+	col := newCPUThrottlingCollector(c, nil, wiringMetricsClient(true), cfg, logr.Discard())
 
 	signals, err := col.Collect(context.Background())
 	require.NoError(t, err)

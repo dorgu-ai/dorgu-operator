@@ -30,7 +30,7 @@ import (
 
 type alwaysFails struct{ name string }
 
-func (a alwaysFails) Name() string                            { return a.name }
+func (a alwaysFails) Name() string                              { return a.name }
 func (a alwaysFails) Collect(context.Context) ([]Signal, error) { return nil, errors.New("503") }
 
 // A collector that stays broken is reported to every caller of CollectAll, every

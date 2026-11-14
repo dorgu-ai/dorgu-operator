@@ -27,15 +27,17 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	clienttesting "k8s.io/client-go/testing"
 	metricsv1beta1 "k8s.io/metrics/pkg/apis/metrics/v1beta1"
 	metricsfake "k8s.io/metrics/pkg/client/clientset/versioned/fake"
-	clienttesting "k8s.io/client-go/testing"
 )
 
-func fakeMetricsClient(withGroup bool, objs ...runtime.Object) *metricsfake.Clientset {
-	cs := metricsfake.NewSimpleClientset(objs...)
+func fakeMetricsClient(withGroup bool) *metricsfake.Clientset {
+	// NewSimpleClientset is the only constructor k8s.io/metrics v0.35 generates.
+	cs := metricsfake.NewSimpleClientset() //nolint:staticcheck // SA1019
 	if withGroup {
-		cs.Fake.Resources = []*metav1.APIResourceList{{GroupVersion: "metrics.k8s.io/v1beta1"}}
+		cs.Resources = []*metav1.APIResourceList{{GroupVersion: "metrics.k8s.io/v1beta1"}}
 	}
 	return cs
 }
@@ -52,7 +54,7 @@ func TestMetricsAPISource_Available(t *testing.T) {
 
 func TestMetricsAPISource_DiscoveryErrorIsAnError(t *testing.T) {
 	cs := fakeMetricsClient(true)
-	cs.Fake.PrependReactor("get", "group", func(clienttesting.Action) (bool, runtime.Object, error) {
+	cs.PrependReactor("get", "group", func(clienttesting.Action) (bool, runtime.Object, error) {
 		return true, nil, errors.New("discovery timeout")
 	})
 	ok, err := NewMetricsAPISource(cs).Available(context.Background())
@@ -67,7 +69,11 @@ func TestMetricsAPISource_PodMetrics(t *testing.T) {
 			Name: "app", Usage: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("900m")},
 		}},
 	}
-	items, err := NewMetricsAPISource(fakeMetricsClient(true, pm)).PodMetrics(context.Background())
+	cs := fakeMetricsClient(true)
+	// The tracker guesses "podmetricses" from the kind; the API's resource is "pods".
+	gvr := schema.GroupVersionResource{Group: "metrics.k8s.io", Version: "v1beta1", Resource: "pods"}
+	require.NoError(t, cs.Tracker().Create(gvr, pm, "shop"))
+	items, err := NewMetricsAPISource(cs).PodMetrics(context.Background())
 	require.NoError(t, err)
 	require.Len(t, items, 1)
 	assert.Equal(t, "api-1", items[0].Name)
@@ -75,7 +81,7 @@ func TestMetricsAPISource_PodMetrics(t *testing.T) {
 
 func TestMetricsAPISource_ListError(t *testing.T) {
 	cs := fakeMetricsClient(true)
-	cs.Fake.PrependReactor("list", "pods", func(clienttesting.Action) (bool, runtime.Object, error) {
+	cs.PrependReactor("list", "pods", func(clienttesting.Action) (bool, runtime.Object, error) {
 		return true, nil, errors.New("503 service unavailable")
 	})
 	_, err := NewMetricsAPISource(cs).PodMetrics(context.Background())

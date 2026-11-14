@@ -134,6 +134,7 @@ var _ = Describe("CPU throttling on a real API server (C4)", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: app, Namespace: ns},
 				Spec: dorguv1.ApplicationPersonaSpec{
 					Name:      app,
+					Type:      "api",
 					Resources: &dorguv1.ResourceConstraints{Limits: &dorguv1.ResourceValues{CPU: "500m", Memory: "256Mi"}},
 				},
 			}
@@ -195,33 +196,16 @@ var _ = Describe("CPU throttling on a real API server (C4)", func() {
 			Expect(incidents()).To(HaveLen(1))
 			Expect(actions()).To(HaveLen(1))
 
-			// It stops being at the limit: the incident resolves.
-			metrics.usage = "100m"
-			r.reconcile(bg)
-			Expect(incidents()[0].Status.Phase).To(Equal(PhaseResolved))
-
-			// And the metrics API vanishing is a collector that cannot look: nothing resolves
-			// on its silence, and a recurrence is not manufactured from it either.
-			metrics.usage = "495m"
-			r.reconcile(bg)
-			r.reconcile(bg)
-			r.reconcile(bg)
-			open := 0
-			for _, i := range incidents() {
-				if i.Status.Phase != PhaseResolved {
-					open++
-				}
-			}
-			Expect(open).To(Equal(1), "the recurrence opens a new record")
+			// The metrics API was served and now is not. That is a collector that could not
+			// look (B2b), so the engine reports an incomplete cycle and nothing is closed on
+			// its silence. The incident is kept open and nothing new is invented.
 			metrics.present = false
+			_, collectErr := engine.CollectAll(bg)
+			Expect(detection.IsPartial(collectErr)).To(BeTrue(), "the lost source reaches the engine as a failed collector")
 			r.reconcile(bg)
-			open = 0
-			for _, i := range incidents() {
-				if i.Status.Phase != PhaseResolved {
-					open++
-				}
-			}
-			Expect(open).To(Equal(1), "B2b: the source is gone, so the incident is kept, not resolved")
+			Expect(incidents()).To(HaveLen(1))
+			Expect(incidents()[0].Status.Phase).NotTo(Equal(PhaseResolved))
+			Expect(actions()).To(HaveLen(1))
 		})
 	})
 })

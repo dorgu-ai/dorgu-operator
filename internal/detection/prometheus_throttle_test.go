@@ -18,6 +18,7 @@ package detection
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -41,20 +42,27 @@ func vector(results ...string) string {
 }
 
 func series(ns, pod, container, value string) string {
-	return fmt.Sprintf(`{"metric":{"namespace":%q,"pod":%q,"container":%q},"value":[1731585600.123,%q]}`, ns, pod, container, value)
+	doc, err := json.Marshal(map[string]any{
+		"metric": map[string]string{"namespace": ns, "pod": pod, "container": container},
+		"value":  []any{1731585600.123, value},
+	})
+	if err != nil {
+		panic(err)
+	}
+	return string(doc)
 }
 
-func promServer(t *testing.T, handler http.HandlerFunc) (*httptest.Server, *PrometheusThrottleSource) {
+func promServer(t *testing.T, handler http.HandlerFunc) *PrometheusThrottleSource {
 	t.Helper()
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 	src := NewPrometheusThrottleSource(func(context.Context) (string, error) { return srv.URL, nil })
-	return srv, src
+	return src
 }
 
 func TestPrometheusThrottle_ParsesAVector(t *testing.T) {
 	var gotPath, gotQuery string
-	_, src := promServer(t, func(w http.ResponseWriter, r *http.Request) {
+	src := promServer(t, func(w http.ResponseWriter, r *http.Request) {
 		gotPath, gotQuery = r.URL.Path, r.URL.Query().Get("query")
 		_, _ = w.Write([]byte(vector(
 			series("shop", "api-1", "app", "0.31"),
@@ -245,7 +253,7 @@ func TestPrometheusThrottle_BadResponses(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, src := promServer(t, func(w http.ResponseWriter, _ *http.Request) {
+			src := promServer(t, func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(tt.status)
 				_, _ = w.Write([]byte(tt.body))
 			})
@@ -284,7 +292,7 @@ func TestPrometheusThrottle_DropsHostileSeries(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, src := promServer(t, func(w http.ResponseWriter, _ *http.Request) {
+			src := promServer(t, func(w http.ResponseWriter, _ *http.Request) {
 				_, _ = w.Write([]byte(vector(tt.s, series("shop", "ok-1", "app", "0.6"))))
 			})
 			samples, err := src.Query(context.Background())
@@ -296,7 +304,7 @@ func TestPrometheusThrottle_DropsHostileSeries(t *testing.T) {
 }
 
 func TestPrometheusThrottle_CapsTheSeriesCount(t *testing.T) {
-	_, src := promServer(t, func(w http.ResponseWriter, _ *http.Request) {
+	src := promServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		parts := make([]string, 0, 50)
 		for i := range 50 {
 			parts = append(parts, series("shop", fmt.Sprintf("api-%d", i), "app", "0.5"))
@@ -311,7 +319,7 @@ func TestPrometheusThrottle_CapsTheSeriesCount(t *testing.T) {
 
 func TestPrometheusThrottle_NeverSendsCredentialsOrHeadersFromTheURL(t *testing.T) {
 	var auth string
-	_, src := promServer(t, func(w http.ResponseWriter, r *http.Request) {
+	src := promServer(t, func(w http.ResponseWriter, r *http.Request) {
 		auth = r.Header.Get("Authorization")
 		_, _ = w.Write([]byte(vector()))
 	})
