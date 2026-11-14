@@ -108,3 +108,30 @@ func TestCPUThrottlingRule_DoesNotAbsorbOtherSignals(t *testing.T) {
 func TestSignalClarity_CPUThrottling(t *testing.T) {
 	assert.Greater(t, SignalClarity(detection.SignalCPUThrottling), 0.5, "known signal, not the unknown-type default")
 }
+
+// F-11: Critical needs a measured throttling ratio. A signal from metrics.k8s.io is
+// evidence, not a measurement, and never raises the diagnosis above Warning.
+func TestCPUThrottlingRule_CriticalOnlyFromAMeasuredRatio(t *testing.T) {
+	critical := func(source string) detection.Signal {
+		s := throttleSignal(source)
+		s.Severity = detection.SeverityCritical
+		return s
+	}
+	tests := []struct {
+		name   string
+		signal detection.Signal
+		want   detection.Severity
+	}{
+		{"prometheus warning", throttleSignal("prometheus"), detection.SeverityWarning},
+		{"prometheus critical", critical("prometheus"), detection.SeverityCritical},
+		{"metrics.k8s.io never critical", critical("metrics.k8s.io"), detection.SeverityWarning},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			diags, err := newTestProvider().Diagnose(context.Background(), []detection.Signal{tt.signal})
+			require.NoError(t, err)
+			require.Len(t, diags, 1)
+			assert.Equal(t, tt.want, diags[0].Severity)
+		})
+	}
+}

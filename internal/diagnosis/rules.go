@@ -532,12 +532,27 @@ func diagnoseCPUThrottling(signals []detection.Signal) *Diagnosis {
 		Summary:           summary,
 		Confidence:        buildConfidence(base, throttled),
 		Category:          string(detection.CategoryResource),
-		Severity:          detection.SeverityWarning,
+		Severity:          cpuThrottlingSeverity(throttled),
 		PersonaRef:        firstPersonaRef(throttled),
 		AffectedResources: collectAffectedResources(throttled),
 		Contributing:      buildContributing(throttled, detail),
 		SuggestedAction:   actionResourceAdjustment,
 	}
+}
+
+// cpuThrottlingSeverity is Critical only when a signal measured the throttling itself
+// (the Prometheus path, throttled ratio at or above detection.PrometheusCriticalRatio,
+// which the collector turns into a Critical signal). Usage at the limit is evidence of
+// throttling, not a measurement of it, so a signal from metrics.k8s.io never raises the
+// diagnosis above Warning whatever severity it carries.
+func cpuThrottlingSeverity(throttled []detection.Signal) detection.Severity {
+	for i := range throttled {
+		if throttled[i].Metadata["source"] == detection.CPUThrottlingSourcePrometheus &&
+			throttled[i].Severity == detection.SeverityCritical {
+			return detection.SeverityCritical
+		}
+	}
+	return detection.SeverityWarning
 }
 
 // ============================================================================
