@@ -79,6 +79,9 @@ func buildHealthPipeline(
 		// planning a change in the namespace Dorgu itself runs in.
 		gateOpts = append(gateOpts, gate.WithOperatorNamespaceUnknown())
 	}
+	if cfg.ticketTTL > 0 {
+		gateOpts = append(gateOpts, gate.WithTicketTTL(cfg.ticketTTL))
+	}
 	if reader != nil {
 		// Sibling RemediationActions (rate limit, concurrency, dedup) and the live
 		// workload at approval are read from the API server, not the cache, so a

@@ -102,6 +102,11 @@ healthCheck:
 # --remediation-pending-ttl. Set 0 to disable the TTL.
 remediation:
   pendingTTL: 24h
+  # How long an apply ticket stays valid after approval issues it. A ticket not
+  # applied within it is refused and the remediation ends Expired (reason
+  # TicketExpired): nothing is applied and no cooldown starts. Positive, at most 24h.
+  # Maps to --ticket-ttl.
+  ticketTTL: 15m
 
 # Remediation safety. Dorgu never remediates kube-system or the namespace it is
 # installed in (read from the pod's own namespace). List any other namespace it

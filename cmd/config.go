@@ -36,6 +36,10 @@ import (
 // before it expires.
 const DefaultRemediationPendingTTL = 24 * time.Hour
 
+// maxTicketTTL bounds --ticket-ttl. A ticket describes the cluster as the gate
+// measured it at approval; a day is already far longer than that stays true.
+const maxTicketTTL = 24 * time.Hour
+
 // operatorConfig holds all operator configuration parsed from command-line flags.
 type operatorConfig struct {
 	// Metrics server
@@ -84,6 +88,11 @@ type operatorConfig struct {
 	// Remediation: how long a proposal may wait for approval before it expires.
 	// Zero disables the TTL.
 	remediationPendingTTL time.Duration
+
+	// ticketTTL is how long an apply ticket stays valid (P2-D9). Positive and at
+	// most maxTicketTTL; a zero value in a bare operatorConfig means the gate's
+	// default, but --ticket-ttl=0 on the command line is refused.
+	ticketTTL time.Duration
 
 	// LLM (AI diagnosis)
 	llmProvider string // "claude", "gemini", or "" (disabled)
@@ -196,6 +205,11 @@ func parseFlagSet(fs *flag.FlagSet, args []string) (operatorConfig, error) {
 			"Expired. Expired is terminal, applies nothing and starts no cooldown. 0 disables the TTL; "+
 			"a spec.approval.deadline set by the proposal is still honoured, and can only shorten the window.")
 
+	fs.DurationVar(&cfg.ticketTTL, "ticket-ttl", gate.DefaultTicketTTL,
+		"How long an apply ticket stays valid after the approval re-check issues it. A ticket that is not "+
+			"applied within it is refused: the action ends Expired with reason TicketExpired, nothing is applied "+
+			"and no cooldown starts. Must be positive and at most "+maxTicketTTL.String()+".")
+
 	// LLM flags
 	fs.StringVar(&cfg.llmProvider, "llm-provider", "",
 		"LLM provider for AI-enhanced diagnosis: 'claude' or 'gemini' (default: disabled).")
@@ -227,12 +241,28 @@ func parseFlagSet(fs *flag.FlagSet, args []string) (operatorConfig, error) {
 		return operatorConfig{}, err
 	}
 
+	// An unset flag keeps the default; one set to zero or less is a mistake worth
+	// stopping for, not something to quietly replace.
+	var ttlErr error
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "ticket-ttl" && cfg.ticketTTL <= 0 {
+			ttlErr = fmt.Errorf("--ticket-ttl must be positive, got %s: "+
+				"a ticket that is born expired turns every approval into a refusal", cfg.ticketTTL)
+		}
+	})
+	if ttlErr != nil {
+		return operatorConfig{}, ttlErr
+	}
+
 	cfg.safetyExcludedNamespaces = splitNamespaces(excludedNamespaces)
 	return cfg, nil
 }
 
 // validate rejects configuration the operator must not start with.
 func (c operatorConfig) validate() error {
+	if c.ticketTTL < 0 || c.ticketTTL > maxTicketTTL {
+		return fmt.Errorf("--ticket-ttl must be positive and at most %s, got %s", maxTicketTTL, c.ticketTTL)
+	}
 	if c.remediationPendingTTL < 0 {
 		return fmt.Errorf("--remediation-pending-ttl must not be negative (use 0 to disable), got %s",
 			c.remediationPendingTTL)

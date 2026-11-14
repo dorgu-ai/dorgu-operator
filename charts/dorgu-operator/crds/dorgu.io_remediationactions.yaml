@@ -206,6 +206,10 @@ spec:
                   Steps is the ordered remediation plan and the only plan: the operator's
                   approval re-check turns its persona-update steps into the apply ticket, and
                   the ticket is exactly what is applied.
+
+                  At most 64 steps. The bound exists so the API server can price the step
+                  command rule (a regular expression over every step's command): without one
+                  it estimates a plan of tens of thousands of steps and refuses the rule.
                 items:
                   description: |-
                     RemediationStep is a single ordered action within a multi-step remediation plan.
@@ -361,9 +365,11 @@ spec:
                   x-kubernetes-validations:
                   - message: only persona-update steps may be autoExecutable
                     rule: '!self.autoExecutable || self.type == ''persona-update'''
-                  - message: step command must be a kubectl invocation
-                    rule: '!has(self.command) || self.command.startsWith(''kubectl
-                      '')'
+                  - message: step command must be a single-line kubectl invocation
+                      with none of ; | & $ ` ( ) < > or a newline
+                    rule: '!has(self.command) || (self.command.startsWith(''kubectl
+                      '') && !self.command.matches(''[;|&$`()<>\n\r]''))'
+                maxItems: 64
                 type: array
                 x-kubernetes-list-type: atomic
               trustLevel:
@@ -493,6 +499,13 @@ spec:
                   the CLI apply exactly this and nothing else, and refuse when it is missing,
                   expired, or its workload no longer matches. Written by the operator only.
                 properties:
+                  approvedBy:
+                    description: |-
+                      ApprovedBy is who approved the plan, copied from status.approvedBy when the
+                      approval re-check passed. The operator issues no ticket when it is empty.
+                      Absent on a v0 ticket, which is refused.
+                    maxLength: 253
+                    type: string
                   container:
                     description: |-
                       Container is the container in that Deployment whose resources the ticket
@@ -500,8 +513,9 @@ spec:
                     type: string
                   expiresAt:
                     description: |-
-                      ExpiresAt is when the ticket stops being valid. Nothing is applied under an
-                      expired ticket.
+                      ExpiresAt is IssuedAt plus the ticket lifetime (15 minutes by default, set
+                      with the operator's --ticket-ttl flag). Nothing is applied under an expired
+                      ticket: the action ends Expired with reason TicketExpired.
                     format: date-time
                     type: string
                   issuedAt:
@@ -532,12 +546,32 @@ spec:
                       ({"spec":{"resources":{...}}}): every persona-update step of the plan,
                       clamped and merged in order.
                     x-kubernetes-preserve-unknown-fields: true
+                  specHash:
+                    description: |-
+                      SpecHash is the SHA-256 of the canonical encoding of spec at the moment the
+                      gate cleared it (RemediationActionSpec.Hash: 64 lowercase hex characters).
+                      Nothing is applied under the ticket once the spec no longer hashes to it.
+                      Absent on a v0 ticket, which is refused.
+                    maxLength: 64
+                    type: string
                   verdicts:
                     description: Verdicts is every guardrail the approval re-check
                       ran and what each decided.
                     items:
                       description: GateVerdict is one guardrail's decision.
                       properties:
+                        ceilingSource:
+                          description: |-
+                            CeilingSource says where the limit this verdict applied came from. The
+                            guardrails stage fills it on every verdict it records, so a client never
+                            infers it. Verdicts of other stages and verdicts recorded before it existed
+                            leave it empty.
+                          enum:
+                          - Default
+                          - ClusterPersona
+                          - ApplicationPersona
+                          - LiveWorkload
+                          type: string
                         guardrail:
                           description: |-
                             Guardrail names the check within the stage, e.g. blast-radius,
@@ -776,6 +810,18 @@ spec:
                     items:
                       description: GateVerdict is one guardrail's decision.
                       properties:
+                        ceilingSource:
+                          description: |-
+                            CeilingSource says where the limit this verdict applied came from. The
+                            guardrails stage fills it on every verdict it records, so a client never
+                            infers it. Verdicts of other stages and verdicts recorded before it existed
+                            leave it empty.
+                          enum:
+                          - Default
+                          - ClusterPersona
+                          - ApplicationPersona
+                          - LiveWorkload
+                          type: string
                         guardrail:
                           description: |-
                             Guardrail names the check within the stage, e.g. blast-radius,

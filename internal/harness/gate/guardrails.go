@@ -84,7 +84,8 @@ func (s guardrailsStage) Run(ctx context.Context, cand *Candidate, d *Decision) 
 	// to approve. At proposal the plan may still be repaired by the proposer.
 	if d.Phase == PhaseApprovalRecheck && hadChange && d.Result != ResultRefuse && !hasAutoApplicable(d) {
 		d.refuse(StageGuardrails, GuardrailNothingLeft,
-			"every change in this plan is now outside the guardrails measured against the live workload, so nothing is left to apply", nil)
+			"every change in this plan is now outside the guardrails measured against the live workload, so nothing is left to apply", nil).
+			From(baselineSource(d))
 	}
 	return nil
 }
@@ -102,16 +103,19 @@ func (s guardrailsStage) completeness(cand *Candidate, d *Decision) {
 		// A workload a deployer owns is advised, never changed (B10 b): a plan that applies
 		// nothing is the considered outcome there, not a plan that failed to produce a fix.
 		d.pass(StageGuardrails, GuardrailNothingApplies,
-			"the workload is owned by a deployer, so the plan is advice and applies nothing by design", nil)
+			"the workload is owned by a deployer, so the plan is advice and applies nothing by design", nil).
+			From(dorguv1.CeilingSourceDefault)
 		return
 	}
 	if AppliesDiagnosedChange(d.Steps, d.Action, target) {
-		d.pass(StageGuardrails, GuardrailNothingApplies, "the plan applies the diagnosed change", nil)
+		d.pass(StageGuardrails, GuardrailNothingApplies, "the plan applies the diagnosed change", nil).
+			From(dorguv1.CeilingSourceDefault)
 		return
 	}
 	d.refuse(StageGuardrails, GuardrailNothingApplies,
 		fmt.Sprintf("refusing to persist a plan that applies nothing for a diagnosed change to %s: no step carries an appliable persona-update patch for it", target),
-		map[string]string{"target": target})
+		map[string]string{"target": target}).
+		From(dorguv1.CeilingSourceDefault)
 }
 
 // AppliesDiagnosedChange reports whether some auto-executable persona-update step
@@ -151,9 +155,10 @@ func (s guardrailsStage) personaWide(ctx context.Context, cand *Candidate, d *De
 		if v.Rule == RuleOperatorNamespace {
 			guardrail = GuardrailOperatorNamespace
 		}
-		d.refuse(StageGuardrails, guardrail, v.Message, nil)
+		d.refuse(StageGuardrails, guardrail, v.Message, nil).From(v.Source)
 	} else {
-		d.pass(StageGuardrails, GuardrailDenyList, "namespace is not protected", nil)
+		d.pass(StageGuardrails, GuardrailDenyList, "namespace is not protected", nil).
+			From(dorguv1.CeilingSourceDefault)
 	}
 
 	siblings, err := s.g.siblings(ctx, cand)
@@ -172,11 +177,12 @@ func (s guardrailsStage) personaWide(ctx context.Context, cand *Candidate, d *De
 // rateLimit enforces the per-persona hourly cap. It fails closed: a policy that
 // cannot be read is not the default policy, it is an unknown one.
 func (s guardrailsStage) rateLimit(ctx context.Context, cand *Candidate, d *Decision, siblings []dorguv1.RemediationAction) {
-	maxPerHour, err := s.g.maxRemediationsPerHour(ctx)
+	maxPerHour, limitSource, err := s.g.maxRemediationsPerHour(ctx)
 	if err != nil {
 		s.g.logUnreadable("rateLimit", err, "cannot read the ClusterPersona rate limit; refusing until it is readable")
 		d.refuse(StageGuardrails, GuardrailRateLimit,
-			"the rate limit could not be read, so the persona cannot be cleared", nil)
+			"the rate limit could not be read, so the persona cannot be cleared", nil).
+			From(dorguv1.CeilingSourceClusterPersona)
 		return
 	}
 
@@ -200,10 +206,11 @@ func (s guardrailsStage) rateLimit(ctx context.Context, cand *Candidate, d *Deci
 	numbers := map[string]string{"recent": fmt.Sprint(recent), "max": fmt.Sprint(maxPerHour)}
 	if recent >= int(maxPerHour) {
 		d.refuse(StageGuardrails, GuardrailRateLimit,
-			fmt.Sprintf("rate limit exceeded: %d remediations for persona in last hour (max %d)", recent, maxPerHour), numbers)
+			fmt.Sprintf("rate limit exceeded: %d remediations for persona in last hour (max %d)", recent, maxPerHour), numbers).
+			From(limitSource)
 		return
 	}
-	d.pass(StageGuardrails, GuardrailRateLimit, "within the hourly limit", numbers)
+	d.pass(StageGuardrails, GuardrailRateLimit, "within the hourly limit", numbers).From(limitSource)
 }
 
 // ownActiveProposal reports whether sib is an active (pending or in-flight)
@@ -229,7 +236,7 @@ func (s guardrailsStage) concurrent(cand *Candidate, d *Decision, siblings []dor
 	if d.Phase == PhaseProposal && cand.Facts.Incident != nil {
 		for i := range siblings {
 			if reason := activeRemediationReason(cand, siblings[i:i+1]); reason != "" {
-				d.refuse(StageDedupCooldown, GuardrailActiveAction, reason, nil)
+				d.refuse(StageDedupCooldown, GuardrailActiveAction, reason, nil).From(dorguv1.CeilingSourceDefault)
 				return
 			}
 		}
@@ -248,10 +255,12 @@ func (s guardrailsStage) concurrent(cand *Candidate, d *Decision, siblings []dor
 		d.refuse(StageGuardrails, GuardrailConcurrent,
 			fmt.Sprintf("concurrent remediation %s is in phase %s for persona %s/%s",
 				sib.Name, sib.Status.Phase, personaKey(cand).Namespace, cand.Target.Name),
-			map[string]string{"sibling": sib.Name, "phase": sib.Status.Phase})
+			map[string]string{"sibling": sib.Name, "phase": sib.Status.Phase}).
+			From(dorguv1.CeilingSourceDefault)
 		return
 	}
-	d.pass(StageGuardrails, GuardrailConcurrent, "no other remediation is in flight for the persona", nil)
+	d.pass(StageGuardrails, GuardrailConcurrent, "no other remediation is in flight for the persona", nil).
+		From(dorguv1.CeilingSourceDefault)
 }
 
 // approvedBefore reports whether sibling's approval orders ahead of the
@@ -287,11 +296,13 @@ func (s guardrailsStage) failedCooldown(cand *Candidate, d *Decision, siblings [
 			d.refuse(StageGuardrails, GuardrailFailedCooldown,
 				fmt.Sprintf("failed remediation %s within %s cooldown period for persona %s/%s",
 					sib.Name, FailedCooldown, personaKey(cand).Namespace, cand.Target.Name),
-				map[string]string{"sibling": sib.Name, "cooldown": FailedCooldown.String()})
+				map[string]string{"sibling": sib.Name, "cooldown": FailedCooldown.String()}).
+				From(dorguv1.CeilingSourceDefault)
 			return
 		}
 	}
-	d.pass(StageGuardrails, GuardrailFailedCooldown, "no recent failed remediation for the persona", nil)
+	d.pass(StageGuardrails, GuardrailFailedCooldown, "no recent failed remediation for the persona", nil).
+		From(dorguv1.CeilingSourceDefault)
 }
 
 // wentWrong reports whether a sibling is a remediation that actually went wrong:
@@ -349,7 +360,8 @@ func (s guardrailsStage) dropAbsentFields(d *Decision) {
 		}
 		d.clamp(StageGuardrails, GuardrailAbsentField,
 			fmt.Sprintf("step %d: left out %d field(s) the live container does not set", step.Order, len(dropped)),
-			map[string]string{"step": fmt.Sprint(step.Order), "fields": fmt.Sprint(len(dropped))})
+			map[string]string{"step": fmt.Sprint(step.Order), "fields": fmt.Sprint(len(dropped))}).
+			From(dorguv1.CeilingSourceLiveWorkload)
 	}
 
 	// The executor applies Action.Patch whatever the steps say, so it is measured
@@ -362,13 +374,15 @@ func (s guardrailsStage) dropAbsentFields(d *Decision) {
 		}
 		if patch == nil && len(d.Steps) == 0 {
 			d.refuse(StageGuardrails, GuardrailAbsentField,
-				"the change would introduce a resource field the live container has never had", nil)
+				"the change would introduce a resource field the live container has never had", nil).
+				From(dorguv1.CeilingSourceLiveWorkload)
 			return
 		}
 		d.Action.PrePatchState = PrunePatchPaths(d.Action.PrePatchState, dropped)
 		narrowAction(d, patch)
 		d.clamp(StageGuardrails, GuardrailAbsentField,
-			fmt.Sprintf("left out %d field(s) the live container does not set", len(dropped)), nil)
+			fmt.Sprintf("left out %d field(s) the live container does not set", len(dropped)), nil).
+			From(dorguv1.CeilingSourceLiveWorkload)
 	}
 }
 
@@ -408,7 +422,8 @@ func (s guardrailsStage) blastRadius(d *Decision) {
 		refuseStepFields(step, violations)
 		for _, v := range violations {
 			d.clamp(StageGuardrails, GuardrailBlastRadius,
-				fmt.Sprintf("step %d: %s", step.Order, v.Message), blastNumbers(v))
+				fmt.Sprintf("step %d: %s", step.Order, v.Message), blastNumbers(v)).
+				From(violationSource(d, v))
 		}
 	}
 	if actionAppliable(d) {
@@ -416,7 +431,8 @@ func (s guardrailsStage) blastRadius(d *Decision) {
 		s.measureAction(d)
 	}
 	if measured && !hasVerdict(d, GuardrailBlastRadius, "") && !hasVerdict(d, GuardrailNoBaseline, "") {
-		d.pass(StageGuardrails, GuardrailBlastRadius, "every change is within the blast-radius cap of the live value", nil)
+		d.pass(StageGuardrails, GuardrailBlastRadius, "every change is within the blast-radius cap of the live value", nil).
+			From(baselineSource(d))
 	}
 }
 
@@ -430,14 +446,16 @@ func (s guardrailsStage) measureAction(d *Decision) {
 			d.refuse(StageGuardrails, GuardrailNoBaseline,
 				fmt.Sprintf("no live or persona value exists for %s, so the change cannot be measured against anything",
 					HumanFieldList(unmeasured)),
-				map[string]string{"fields": fmt.Sprint(len(unmeasured))})
+				map[string]string{"fields": fmt.Sprint(len(unmeasured))}).
+				From(baselineSource(d))
 			return
 		}
 		narrowAction(d, PrunePatchPaths(d.Action.Patch, unmeasured))
 		d.Action.PrePatchState = PrunePatchPaths(d.Action.PrePatchState, unmeasured)
 		d.clamp(StageGuardrails, GuardrailNoBaseline,
 			fmt.Sprintf("left out %d field(s) with nothing to measure them against", len(unmeasured)),
-			map[string]string{"fields": fmt.Sprint(len(unmeasured))})
+			map[string]string{"fields": fmt.Sprint(len(unmeasured))}).
+			From(baselineSource(d))
 		if !actionAppliable(d) {
 			return
 		}
@@ -447,7 +465,7 @@ func (s guardrailsStage) measureAction(d *Decision) {
 	violations := blastRadiusViolations(raw, baselineValues(raw, d))
 	if standalone {
 		for _, v := range violations {
-			d.refuse(StageGuardrails, GuardrailBlastRadius, v.Message, blastNumbers(v))
+			d.refuse(StageGuardrails, GuardrailBlastRadius, v.Message, blastNumbers(v)).From(violationSource(d, v))
 		}
 		return
 	}
@@ -459,7 +477,7 @@ func (s guardrailsStage) measureAction(d *Decision) {
 		if v.BlastRadius != nil {
 			fields = append(fields, v.BlastRadius.Field)
 		}
-		d.clamp(StageGuardrails, GuardrailBlastRadius, v.Message, blastNumbers(v))
+		d.clamp(StageGuardrails, GuardrailBlastRadius, v.Message, blastNumbers(v)).From(violationSource(d, v))
 	}
 	d.Action.PrePatchState = PrunePatchPaths(d.Action.PrePatchState, fields)
 	narrowAction(d, PrunePatchPaths(d.Action.Patch, fields))
@@ -489,7 +507,8 @@ func (s guardrailsStage) dropUnmeasured(d *Decision, step *dorguv1.RemediationSt
 	}
 	d.clamp(StageGuardrails, GuardrailNoBaseline,
 		fmt.Sprintf("step %d: left out %d field(s) with nothing to measure them against", step.Order, len(unmeasured)),
-		map[string]string{"step": fmt.Sprint(step.Order), "fields": fmt.Sprint(len(unmeasured))})
+		map[string]string{"step": fmt.Sprint(step.Order), "fields": fmt.Sprint(len(unmeasured))}).
+		From(baselineSource(d))
 }
 
 // unmeasuredFields returns the resource fields of a patch that have no usable
@@ -643,15 +662,14 @@ func (g *Gate) siblings(ctx context.Context, cand *Candidate) ([]dorguv1.Remedia
 // one set). A list
 // error is returned, not defaulted: an unreadable limit is unknown, and unknown
 // fails closed.
-func (g *Gate) maxRemediationsPerHour(ctx context.Context) (int32, error) {
+func (g *Gate) maxRemediationsPerHour(ctx context.Context) (limit int32, source string, err error) {
 	var clusterPersonas dorguv1.ClusterPersonaList
 	if err := g.client.List(ctx, &clusterPersonas); err != nil {
-		return 0, fmt.Errorf("listing ClusterPersonas: %w", err)
+		return 0, dorguv1.CeilingSourceClusterPersona, fmt.Errorf("listing ClusterPersonas: %w", err)
 	}
 
 	// Several ClusterPersonas each may set a limit: the lowest wins, whatever order
 	// the list comes back in.
-	limit := int32(0)
 	for i := range clusterPersonas.Items {
 		cp := &clusterPersonas.Items[i]
 		if cp.Spec.Policies == nil || cp.Spec.Policies.SelfHealing == nil {
@@ -662,7 +680,30 @@ func (g *Gate) maxRemediationsPerHour(ctx context.Context) (int32, error) {
 		}
 	}
 	if limit > 0 {
-		return limit, nil
+		return limit, dorguv1.CeilingSourceClusterPersona, nil
 	}
-	return DefaultMaxRemediationsPerHour, nil
+	return DefaultMaxRemediationsPerHour, dorguv1.CeilingSourceDefault, nil
+}
+
+// baselineSource is where the baseline the guardrails measure a change against
+// comes from: the live Deployment when one resolved, otherwise the persona's
+// recorded value (baselineValues).
+func baselineSource(d *Decision) string {
+	if Resolved(d.WorkloadRef) {
+		return dorguv1.CeilingSourceLiveWorkload
+	}
+	return dorguv1.CeilingSourceApplicationPersona
+}
+
+// violationSource is the source of the baseline one blast-radius violation was
+// measured against: the live value of that field when the workload sets it,
+// otherwise the persona's.
+func violationSource(d *Decision, v Violation) string {
+	if v.BlastRadius != nil {
+		if _, ok := ObservedValue(d.WorkloadRef, v.BlastRadius.Field); ok {
+			return dorguv1.CeilingSourceLiveWorkload
+		}
+		return dorguv1.CeilingSourceApplicationPersona
+	}
+	return baselineSource(d)
 }

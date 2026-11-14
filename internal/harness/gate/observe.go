@@ -101,6 +101,8 @@ var refusalCatalog = []refusalSite{
 
 	{Stage: StageGuardrails, Guardrail: GuardrailNothingLeft, approvalOnly: true},
 	{Stage: StageGuardrails, Guardrail: GuardrailNoPlan, approvalOnly: true},
+	{Stage: StageGuardrails, Guardrail: GuardrailNoApprover, approvalOnly: true},
+	{Stage: StageGuardrails, Guardrail: GuardrailTicketIncomplete, approvalOnly: true},
 	{Stage: StageGuardrails, Guardrail: GuardrailNothingApplies},
 	{Stage: StageGuardrails, Guardrail: GuardrailDenyList},
 	{Stage: StageGuardrails, Guardrail: GuardrailOperatorNamespace},
@@ -133,7 +135,7 @@ var ticketOnlyReasons = []string{
 	GuardrailTicket, GuardrailNotApproved, GuardrailPatchShape, GuardrailTicketExpired,
 	GuardrailNoProposalRecord, GuardrailWorkloadGone, GuardrailWorkloadAmbiguous, GuardrailLiveWorkload,
 	GuardrailTicketMismatch, GuardrailNoPlan, GuardrailNoBaseline, GuardrailPersona,
-	GuardrailNotTicketed, GuardrailClusterUnreadable,
+	GuardrailNotTicketed, GuardrailClusterUnreadable, GuardrailTicketIncomplete,
 }
 
 // applyReasons are every reason an apply-time check can refuse with: the ticket's
@@ -188,6 +190,7 @@ func allGuardrails() []string {
 		GuardrailNoProposalRecord, GuardrailWorkloadUnbound, GuardrailSpecChanged, GuardrailNoPlan,
 		GuardrailActionClass, GuardrailPolicyUnreadable, GuardrailUnknownMode, GuardrailNotTicketed,
 		GuardrailClusterUnreadable, GuardrailTicket, GuardrailNotApproved, GuardrailTicketMismatch, GuardrailTicketExpired,
+		GuardrailNoApprover, GuardrailTicketIncomplete,
 	}
 	return all
 }
@@ -272,9 +275,23 @@ func sealApproval(cand *Candidate, d *Decision) {
 		return
 	}
 	if _, err := d.Ticket(); err != nil {
-		d.RefuseNoPlan()
+		switch {
+		case d.approvedBy == "":
+			d.refuse(StageGuardrails, GuardrailNoApprover, noApproverReason, nil).From(dorguv1.CeilingSourceDefault)
+		case d.specHash == "":
+			d.refuse(StageGuardrails, GuardrailTicketIncomplete, noSpecHashReason, nil).From(dorguv1.CeilingSourceDefault)
+		default:
+			d.RefuseNoPlan()
+		}
 	}
 }
+
+// The sentences on the verdicts of an approval that cannot be ticketed for want of
+// an approver or a spec hash.
+const (
+	noApproverReason = "the approval names nobody (status.approvedBy is empty), so the gate issues no ticket for it; an approval is a person's decision and one that cannot say whose it was is not acted on"
+	noSpecHashReason = "the spec could not be hashed, so the gate cannot bind a ticket to what was approved"
+)
 
 // recordGateError counts a run that could not decide, at the stage that failed.
 func recordGateError(phase, stage string) {

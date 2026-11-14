@@ -271,10 +271,7 @@ func TestTicketed_AppliesAValidTicket(t *testing.T) {
 
 func TestTicketed_RefusesWithoutAValidTicket(t *testing.T) {
 	cases := map[string]func(*dorguv1.RemediationAction){
-		"no ticket": func(ra *dorguv1.RemediationAction) { ra.Status.ApplyTicket = nil },
-		"expired": func(ra *dorguv1.RemediationAction) {
-			ra.Status.ApplyTicket.ExpiresAt = metav1.NewTime(time.Now().Add(-time.Second))
-		},
+		"no ticket":        func(ra *dorguv1.RemediationAction) { ra.Status.ApplyTicket = nil },
 		"another workload": func(ra *dorguv1.RemediationAction) { ra.Status.ApplyTicket.WorkloadUID = "uid-someone-else" },
 		"policy in a patch": func(ra *dorguv1.RemediationAction) {
 			ra.Status.ApplyTicket.Patch = &apiextensionsv1.JSON{Raw: []byte(`{"spec":{"policies":{"security":{"runAsNonRoot":false}}}}`)}

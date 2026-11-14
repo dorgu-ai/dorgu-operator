@@ -33,7 +33,7 @@ import (
 // ------------------------------------------------------------------- ownership
 
 func helmOwned(d *appsv1.Deployment) {
-	d.Labels["app.kubernetes.io/managed-by"] = "Helm"
+	d.Labels[managedByLabel] = helmManager
 	d.Annotations = map[string]string{"meta.helm.sh/release-name": "shop", "meta.helm.sh/release-namespace": testNS}
 }
 

@@ -105,7 +105,7 @@ func TestL1_UnknownPhaseIsAnErrorNotAPass(t *testing.T) {
 
 func TestM1_ApprovalRecheckRefusesAnOwnerCommandWhateverFinalSays(t *testing.T) {
 	g := newTestGate(t, fakeClient(t, persona("512Mi"), deployment("512Mi", func(d *appsv1.Deployment) {
-		d.Labels["app.kubernetes.io/managed-by"] = "Helm"
+		d.Labels[managedByLabel] = helmManager
 		d.Annotations = map[string]string{"meta.helm.sh/release-name": "web"}
 	})))
 	step := dorguv1.RemediationStep{Order: 1, ID: "s", Type: dorguv1.StepTypeManual, Description: "x",
@@ -427,25 +427,39 @@ func TestR11_ApprovalReadsTheLiveWorkloadUncached(t *testing.T) {
 
 // --- the ticket at apply time -----------------------------------------------------
 
+// specHashOfTheSpecAsCleared is the placeholder ticketedAction gives the ticket's
+// specHash; it becomes the hash of the spec as the fixture's mutators leave it, so
+// a mutator that shapes the plan does not trip the spec-changed refusal. A test of
+// that refusal edits the spec of the finished fixture instead, and a mutator that
+// sets SpecHash itself (even to "") keeps what it set.
+const specHashOfTheSpecAsCleared = "<the hash of the spec as cleared>"
+
 func ticketedAction(mutate ...func(*dorguv1.RemediationAction)) *dorguv1.RemediationAction {
-	return proposedAction(append([]func(*dorguv1.RemediationAction){func(ra *dorguv1.RemediationAction) {
+	base := func(ra *dorguv1.RemediationAction) {
 		issued := metav1.NewTime(fixedNow)
 		ra.Status.Phase = "Ticketed"
-		specHash, err := ra.Spec.Hash()
-		if err != nil {
-			panic(err)
-		}
 		ra.Status.ApplyTicket = &dorguv1.ApplyTicket{
 			WorkloadUID: "uid-1", Container: testPersona, Patch: memPatch("384Mi"),
 			ObservedResourceVersion: "42", IssuedAt: &issued, ExpiresAt: metav1.NewTime(fixedNow.Add(DefaultTicketTTL)),
-			SpecHash: specHash, ApprovedBy: ra.Status.ApprovedBy,
+			SpecHash: specHashOfTheSpecAsCleared, ApprovedBy: ra.Status.ApprovedBy,
 		}
 		// What the approval re-check recorded when it issued the ticket.
 		ra.Status.Gate = &dorguv1.GateStatus{
 			Phase: string(PhaseApprovalRecheck), Result: string(ResultPass), EvaluatedAt: issued,
 			Observed: priorObservation("uid-1"), PrePatchState: memPatch("256Mi"),
 		}
-	}}, mutate...)...)
+	}
+	seal := func(ra *dorguv1.RemediationAction) {
+		if ra.Status.ApplyTicket != nil && ra.Status.ApplyTicket.SpecHash == specHashOfTheSpecAsCleared {
+			hash, err := ra.Spec.Hash()
+			if err != nil {
+				panic(err)
+			}
+			ra.Status.ApplyTicket.SpecHash = hash
+		}
+	}
+	mutators := append([]func(*dorguv1.RemediationAction){base}, mutate...)
+	return proposedAction(append(mutators, seal)...)
 }
 
 func checkTicket(t *testing.T, g *Gate, ra *dorguv1.RemediationAction) *TicketProblem {
@@ -469,7 +483,7 @@ func TestTicket_RefusalsAreEnumerated(t *testing.T) {
 		"expired": {func(ra *dorguv1.RemediationAction) {
 			ra.Status.ApplyTicket.ExpiresAt = metav1.NewTime(fixedNow.Add(-time.Second))
 		}, GuardrailTicketExpired},
-		"no expiry":   {func(ra *dorguv1.RemediationAction) { ra.Status.ApplyTicket.ExpiresAt = metav1.Time{} }, GuardrailTicketExpired},
+		"no expiry":   {func(ra *dorguv1.RemediationAction) { ra.Status.ApplyTicket.ExpiresAt = metav1.Time{} }, GuardrailTicketIncomplete},
 		"unbound":     {func(ra *dorguv1.RemediationAction) { ra.Status.ApplyTicket.WorkloadUID = "" }, GuardrailNoProposalRecord},
 		"other UID":   {func(ra *dorguv1.RemediationAction) { ra.Status.ApplyTicket.WorkloadUID = "uid-other" }, GuardrailLiveWorkload},
 		"empty patch": {func(ra *dorguv1.RemediationAction) { ra.Status.ApplyTicket.Patch = nil }, GuardrailPatchShape},

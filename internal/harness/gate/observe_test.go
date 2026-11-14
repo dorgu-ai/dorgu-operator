@@ -447,7 +447,7 @@ func TestObserve_ARejectionCooldownAndEveryOtherRefusalAreNotDeferred(t *testing
 // not first as a pass or clamp.
 func TestObserve_ANoPlanApprovalIsCountedOnlyAsARefusal(t *testing.T) {
 	cand := legacyCandidate(memPatch("384Mi")) // asks for a change
-	cleared := &Decision{Phase: PhaseApprovalRecheck, Result: ResultPass}
+	cleared := &Decision{Phase: PhaseApprovalRecheck, Result: ResultPass, approvedBy: "alice@example.com", specHash: "abc"}
 	require.Empty(t, cleared.Steps, "the decision carries no persona patch to ticket")
 	counts := func() (float64, float64, float64) {
 		return decisions(t, "ApprovalRecheck", StageComplete, "pass", ReasonNone),
