@@ -25,6 +25,7 @@ import (
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/retry"
@@ -422,6 +423,12 @@ func (r *RemediationController) handleApproved(ctx context.Context, logger logr.
 		fmt.Sprintf("the gate re-checked this approval on live state and issued an apply ticket valid until %s",
 			ticket.ExpiresAt.UTC().Format(time.RFC3339)))
 	if err := r.Status().Update(ctx, action); err != nil {
+		if apierrors.IsInvalid(err) {
+			// The API server validates the whole status and refuses this ticket. The same
+			// approval produces the same ticket, so a retry is refused the same way for
+			// ever: end it with a reason (F-3).
+			return ctrl.Result{}, r.refuseUnwritableTicket(ctx, logger, action, err)
+		}
 		return ctrl.Result{}, fmt.Errorf("updating status to Ticketed: %w", err)
 	}
 	r.reportTicketIssued(action, ticket)
@@ -432,6 +439,40 @@ func (r *RemediationController) handleApproved(ctx context.Context, logger logr.
 	logger.Info("approval cleared the gate on live state; ticket issued", "expiresAt", ticket.ExpiresAt)
 
 	return r.handleTicketed(ctx, logger, action)
+}
+
+// refuseUnwritableTicket ends an approval whose apply ticket the API server refused
+// to store (a validation error, which a retry cannot change). The action in hand
+// carries the rejected ticket and the Ticketed phase, so it is re-read first; the
+// action then ends Failed with GateRefusedAtApproval, no cooldown (nothing was
+// applied), and a GateRefused condition that says the ticket could not be stored.
+func (r *RemediationController) refuseUnwritableTicket(
+	ctx context.Context, logger logr.Logger, action *dorguv1.RemediationAction, writeErr error,
+) error {
+	var fresh dorguv1.RemediationAction
+	if err := r.Get(ctx, client.ObjectKeyFromObject(action), &fresh); err != nil {
+		return fmt.Errorf("re-reading the action after its ticket was refused: %w", err)
+	}
+	message := fmt.Sprintf("refused at approval (%s): the apply ticket could not be stored (%s); nothing was applied",
+		dorguv1.ReasonTicketUnwritable, truncateMessage(writeErr.Error(), 512))
+	logger.Info("the API server refused the apply ticket; ending the approval instead of retrying",
+		"error", writeErr.Error())
+
+	setCondition(&fresh.Status.Conditions, dorguv1.ConditionGateRefused, metav1.ConditionTrue,
+		dorguv1.ReasonTicketUnwritable, message)
+	if err := r.transitionToFailedWithReason(ctx, &fresh, dorguv1.ReasonGateRefusedAtApproval, message); err != nil {
+		return err
+	}
+	r.reportApprovalRefusal(&fresh, gate.StageGuardrails, message)
+	return nil
+}
+
+// truncateMessage bounds a message that quotes an API server error.
+func truncateMessage(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n-1] + "…"
 }
 
 // refuseAtApproval ends an approval the gate refused: Failed with the

@@ -520,3 +520,44 @@ func TestSanitizeStepCommand_NamedControlCharacters(t *testing.T) {
 		t.Error("printable non-ASCII text was refused")
 	}
 }
+
+// MaxApprovedByLength is what the gate enforces on the approver; the CRD's maxLength
+// is what the API server enforces, on the field the approver writes and on the
+// ticket's copy. One number.
+func TestMaxApprovedByLength_IsTheCRDMaxLengthOfBothApprovedByFields(t *testing.T) {
+	raw, err := os.ReadFile("../../config/crd/bases/dorgu.io_remediationactions.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var crd map[string]any
+	if err := yaml.Unmarshal(raw, &crd); err != nil {
+		t.Fatal(err)
+	}
+	walk := func(path ...string) any {
+		var cur any = crd
+		for _, key := range path {
+			m, ok := cur.(map[string]any)
+			if !ok {
+				t.Fatalf("no %q on the way to %v", key, path)
+			}
+			cur = m[key]
+		}
+		return cur
+	}
+	status := []string{"spec", "versions"}
+	versions, ok := walk(status...).([]any)
+	if !ok || len(versions) == 0 {
+		t.Fatal("the CRD has no versions")
+	}
+	root := versions[0].(map[string]any)["schema"].(map[string]any)["openAPIV3Schema"].(map[string]any)["properties"].(map[string]any)["status"].(map[string]any)["properties"].(map[string]any)
+	fields := map[string]any{
+		"status.approvedBy":             root["approvedBy"],
+		"status.applyTicket.approvedBy": root["applyTicket"].(map[string]any)["properties"].(map[string]any)["approvedBy"],
+	}
+	for name, field := range fields {
+		got, _ := field.(map[string]any)["maxLength"].(float64)
+		if int(got) != MaxApprovedByLength {
+			t.Errorf("%s maxLength = %v, MaxApprovedByLength = %d", name, got, MaxApprovedByLength)
+		}
+	}
+}

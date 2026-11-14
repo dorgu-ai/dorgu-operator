@@ -206,6 +206,11 @@ const (
 	// ticket, written before ticket v1, which is refused rather than honoured.
 	GuardrailTicketIncomplete = "ticket-incomplete"
 
+	// GuardrailBadApprover: status.approvedBy is longer than the ticket can carry
+	// (dorguv1.MaxApprovedByLength) or is not printable text. It is refused with a
+	// reason instead of leaving a ticket the API server will not store.
+	GuardrailBadApprover = "bad-approver"
+
 	// GuardrailTooManySteps: the plan has more steps than spec.steps allows
 	// (dorguv1.MaxPlanSteps). It is refused with a reason here rather than failing
 	// the create of the RemediationAction on every cycle.

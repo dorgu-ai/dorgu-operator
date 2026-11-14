@@ -170,6 +170,9 @@ func (d *Decision) Ticket() (*dorguv1.ApplyTicket, error) {
 	if d.approvedBy == "" {
 		return nil, errors.New("the approval names nobody (status.approvedBy is empty), so no ticket is issued")
 	}
+	if approverProblem(d.approvedBy) != "" {
+		return nil, errors.New("the approver cannot be carried by a ticket, so no ticket is issued")
+	}
 	if d.specHash == "" {
 		return nil, errors.New("the spec could not be hashed, so no ticket is issued")
 	}

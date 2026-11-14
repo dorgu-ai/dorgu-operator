@@ -1,8 +1,11 @@
 package gate
 
 import (
+	"fmt"
 	"slices"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/metrics"
@@ -103,6 +106,7 @@ var refusalCatalog = []refusalSite{
 	{Stage: StageGuardrails, Guardrail: GuardrailNothingLeft, approvalOnly: true},
 	{Stage: StageGuardrails, Guardrail: GuardrailNoPlan, approvalOnly: true},
 	{Stage: StageGuardrails, Guardrail: GuardrailNoApprover, approvalOnly: true},
+	{Stage: StageGuardrails, Guardrail: GuardrailBadApprover, approvalOnly: true},
 	{Stage: StageGuardrails, Guardrail: GuardrailTicketIncomplete, approvalOnly: true},
 	{Stage: StageGuardrails, Guardrail: GuardrailNothingApplies},
 	{Stage: StageGuardrails, Guardrail: GuardrailDenyList},
@@ -191,7 +195,7 @@ func allGuardrails() []string {
 		GuardrailNoProposalRecord, GuardrailWorkloadUnbound, GuardrailSpecChanged, GuardrailNoPlan,
 		GuardrailActionClass, GuardrailPolicyUnreadable, GuardrailUnknownMode, GuardrailNotTicketed,
 		GuardrailClusterUnreadable, GuardrailTicket, GuardrailNotApproved, GuardrailTicketMismatch, GuardrailTicketExpired,
-		GuardrailNoApprover, GuardrailTicketIncomplete, GuardrailTooManySteps,
+		GuardrailNoApprover, GuardrailBadApprover, GuardrailTicketIncomplete, GuardrailTooManySteps,
 	}
 	return all
 }
@@ -279,12 +283,41 @@ func sealApproval(cand *Candidate, d *Decision) {
 		switch {
 		case d.approvedBy == "":
 			d.refuse(StageGuardrails, GuardrailNoApprover, noApproverReason, nil).From(dorguv1.CeilingSourceDefault)
+		case approverProblem(d.approvedBy) != "":
+			d.refuse(StageGuardrails, GuardrailBadApprover, badApproverReason(d.approvedBy), nil).From(dorguv1.CeilingSourceDefault)
 		case d.specHash == "":
 			d.refuse(StageGuardrails, GuardrailTicketIncomplete, noSpecHashReason, nil).From(dorguv1.CeilingSourceDefault)
 		default:
 			d.RefuseNoPlan()
 		}
 	}
+}
+
+// approverProblem is why status.approvedBy cannot be carried by a ticket, or "":
+// longer than dorguv1.MaxApprovedByLength, invalid UTF-8, or any character that is
+// not printable (controls, line and paragraph separators, bidirectional overrides,
+// zero-width and other format characters, the replacement character). A plain space
+// is allowed: an IAM role name can contain one. It describes the value without
+// quoting it, because the value is the approver's text.
+func approverProblem(approvedBy string) string {
+	if len(approvedBy) > dorguv1.MaxApprovedByLength {
+		return fmt.Sprintf("is longer than the %d characters a ticket carries", dorguv1.MaxApprovedByLength)
+	}
+	if !utf8.ValidString(approvedBy) {
+		return "is not valid UTF-8"
+	}
+	for _, r := range approvedBy {
+		if (r != ' ' && !unicode.IsPrint(r)) || r == utf8.RuneError {
+			return "contains a character that is not printable"
+		}
+	}
+	return ""
+}
+
+// badApproverReason is the sentence on the refusal of an approver a ticket cannot carry.
+func badApproverReason(approvedBy string) string {
+	return "the approver (status.approvedBy) " + approverProblem(approvedBy) +
+		", so the gate issues no ticket for it; an approver is a person's name, and one that cannot be shown safely is not acted on"
 }
 
 // The sentences on the verdicts of an approval that cannot be ticketed for want of

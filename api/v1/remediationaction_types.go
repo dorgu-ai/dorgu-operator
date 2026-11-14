@@ -25,6 +25,11 @@ import (
 // RemediationAction Spec types
 // ============================================================================
 
+// MaxApprovedByLength is the most characters status.approvedBy and
+// status.applyTicket.approvedBy may hold: the maxLength of both. The kubebuilder
+// marker cannot read a constant, so a test pins them together.
+const MaxApprovedByLength = 253
+
 // MaxPlanSteps is the most steps a plan may have: the maxItems of spec.steps.
 // The kubebuilder marker cannot read a constant, so a test pins the two together.
 // The gate refuses a longer plan (too-many-steps) before anything is created.
@@ -455,8 +460,11 @@ type RemediationActionStatus struct {
 	// +optional
 	Phase string `json:"phase,omitempty"`
 
-	// ApprovedBy identifies who approved the remediation.
+	// ApprovedBy identifies who approved the remediation. At most 253 characters,
+	// the same bound as the copy on the apply ticket, so an approval the ticket
+	// could not carry is refused where the approver writes it.
 	// +optional
+	// +kubebuilder:validation:MaxLength=253
 	ApprovedBy string `json:"approvedBy,omitempty"`
 
 	// ApprovedAt is when the remediation was approved.

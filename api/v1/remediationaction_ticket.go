@@ -42,6 +42,12 @@ const (
 	// phase is Failed. Nothing was applied.
 	ReasonSpecChanged = "SpecChanged"
 
+	// ReasonTicketUnwritable is the GateRefused reason of an approval whose apply
+	// ticket the API server refused to store. The same ticket is refused every
+	// time, so the action ends Failed (GateRefusedAtApproval) instead of retrying.
+	// Nothing was applied.
+	ReasonTicketUnwritable = "TicketUnwritable"
+
 	// ReasonTicketIncomplete is the GateRefused reason of a ticket that lacks
 	// specHash, approvedBy, issuedAt or expiresAt: a v0 ticket written before
 	// ticket v1. It is refused, never honoured.

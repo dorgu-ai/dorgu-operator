@@ -17,13 +17,18 @@ limitations under the License.
 package controller
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/go-logr/logr"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/validation/field"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
@@ -231,5 +236,102 @@ func TestTicketV1_AV0TicketAlreadyAppliedCarriesOn(t *testing.T) {
 
 	if got.Status.Phase != RemediationPhaseVerifying {
 		t.Fatalf("phase = %q, want Verifying: an applied v0 ticket must not be disturbed", got.Status.Phase)
+	}
+}
+
+// F-3: an approval that cannot become a ticket ends, it does not retry forever.
+func TestF3_AnApproverTheTicketCannotCarryEndsFailedNotRetrying(t *testing.T) {
+	ra := lcRA("Approved", func(ra *dorguv1.RemediationAction) {
+		ra.Status.ApprovedBy = strings.Repeat("a", dorguv1.MaxApprovedByLength+47)
+	})
+	rc, c := lcController(t, []client.Object{lcPersonaObj(lcBaseline), lcIncidentObj(), ra.DeepCopy()})
+
+	// lcReconcile fails the test on a returned error: a returned error is the retry.
+	_, got := lcReconcile(t, rc, ra)
+
+	if got.Status.ApplyTicket != nil {
+		t.Fatalf("a ticket was issued: %+v", got.Status.ApplyTicket)
+	}
+	if got.Status.Phase != RemediationPhaseFailed {
+		t.Fatalf("phase = %q, want Failed", got.Status.Phase)
+	}
+	applied := lcCondition(got, ConditionApplied)
+	if applied == nil || applied.Reason != dorguv1.ReasonGateRefusedAtApproval {
+		t.Errorf("Applied = %+v, want GateRefusedAtApproval", applied)
+	}
+	refused := lcCondition(got, dorguv1.ConditionGateRefused)
+	if refused == nil || refused.Reason != "BadApprover" {
+		t.Errorf("GateRefused = %+v, want reason BadApprover", refused)
+	}
+	if mem := lcPersonaMemory(t, c); mem != lcBaseline {
+		t.Errorf("persona memory = %s: nothing may be applied", mem)
+	}
+}
+
+// Whatever else the API server refuses about the ticket (it validates the whole
+// status), the same ticket is refused every time: the approval ends with a reason.
+func TestF3_ATicketTheAPIServerRefusesToStoreEndsFailedWithAReason(t *testing.T) {
+	ra := lcRA("Approved")
+	rc, c := lcController(t, []client.Object{lcPersonaObj(lcBaseline), lcIncidentObj(), ra.DeepCopy()})
+	refusals := 0
+	rc.Client = interceptor.NewClient(c, interceptor.Funcs{
+		SubResourceUpdate: func(ctx context.Context, cl client.Client, sub string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+			if got, ok := obj.(*dorguv1.RemediationAction); ok && got.Status.ApplyTicket != nil && got.Status.Phase == RemediationPhaseTicketed {
+				refusals++
+				return apierrors.NewInvalid(dorguv1.GroupVersion.WithKind("RemediationAction").GroupKind(), got.Name, field.ErrorList{
+					field.TooLong(field.NewPath("status", "applyTicket", "approvedBy"), "x", 253),
+				})
+			}
+			return cl.SubResource(sub).Update(ctx, obj, opts...)
+		},
+	})
+
+	_, got := lcReconcile(t, rc, ra)
+
+	if refusals != 1 {
+		t.Errorf("the ticket write was attempted %d times, want once", refusals)
+	}
+	if got.Status.ApplyTicket != nil {
+		t.Fatalf("a ticket is stored: %+v", got.Status.ApplyTicket)
+	}
+	if got.Status.Phase != RemediationPhaseFailed {
+		t.Fatalf("phase = %q, want Failed", got.Status.Phase)
+	}
+	applied := lcCondition(got, ConditionApplied)
+	if applied == nil || applied.Reason != dorguv1.ReasonGateRefusedAtApproval {
+		t.Fatalf("Applied = %+v, want GateRefusedAtApproval", applied)
+	}
+	if !strings.Contains(applied.Message, "apply ticket") || !strings.Contains(applied.Message, "could not be stored") {
+		t.Errorf("the message must say the ticket could not be stored: %q", applied.Message)
+	}
+	refused := lcCondition(got, dorguv1.ConditionGateRefused)
+	if refused == nil || refused.Reason != "TicketUnwritable" {
+		t.Errorf("GateRefused = %+v, want reason TicketUnwritable", refused)
+	}
+	if ticketed := lcCondition(got, dorguv1.ConditionTicketed); ticketed != nil && ticketed.Status == metav1.ConditionTrue {
+		t.Errorf("Ticketed must not be True: %+v", ticketed)
+	}
+	if mem := lcPersonaMemory(t, c); mem != lcBaseline {
+		t.Errorf("persona memory = %s: nothing may be applied", mem)
+	}
+}
+
+// A transient failure of the same write is still retried.
+func TestF3_ATransientTicketWriteFailureIsStillRetried(t *testing.T) {
+	ra := lcRA("Approved")
+	rc, c := lcController(t, []client.Object{lcPersonaObj(lcBaseline), lcIncidentObj(), ra.DeepCopy()})
+	rc.Client = interceptor.NewClient(c, interceptor.Funcs{
+		SubResourceUpdate: func(ctx context.Context, cl client.Client, sub string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+			if got, ok := obj.(*dorguv1.RemediationAction); ok && got.Status.Phase == RemediationPhaseTicketed {
+				return apierrors.NewServiceUnavailable("the API server is busy")
+			}
+			return cl.SubResource(sub).Update(ctx, obj, opts...)
+		},
+	})
+
+	_, err := rc.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(ra)})
+
+	if err == nil {
+		t.Fatal("a transient failure must be returned so it is retried")
 	}
 }

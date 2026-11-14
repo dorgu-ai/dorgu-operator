@@ -17,6 +17,7 @@ limitations under the License.
 package gate
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -272,4 +273,62 @@ func TestF10_ClockSkewWithinTheAllowanceIsHonoured(t *testing.T) {
 	problem := checkTicket(t, g, beyond)
 	require.NotNil(t, problem)
 	assert.Equal(t, GuardrailTicket, problem.Guardrail)
+}
+
+// F-3: an approver the ticket cannot carry is a refusal with a reason, not a ticket
+// the API server then refuses to store (which used to leave the approval retrying
+// forever). The limit is the CRD's MaxLength on status.approvedBy and
+// ticket.approvedBy; the value must also be printable, so a name cannot hide text
+// or rewrite the line it is shown on.
+func TestF3_AnApproverTheTicketCannotCarryIsRefused(t *testing.T) {
+	assert.Equal(t, 253, dorguv1.MaxApprovedByLength)
+	long := strings.Repeat("a", dorguv1.MaxApprovedByLength+1)
+	cases := map[string]string{
+		"over the length bound":    long,
+		"a control character":      "alice\x1b[2K@example.com",
+		"a newline":                "alice\nbob",
+		"NUL":                      "alice\x00",
+		"a right-to-left override": "alice‮@example.com",
+		"a line separator":         "alice bob",
+		"invalid UTF-8":            "alice\xff",
+		"a replacement character":  "alice�",
+	}
+	for name, approvedBy := range cases {
+		t.Run(name, func(t *testing.T) {
+			ra := proposedAction(func(ra *dorguv1.RemediationAction) { ra.Status.ApprovedBy = approvedBy })
+
+			d := approvalRun(t, standardGate(t), ra)
+
+			assert.False(t, d.Allowed(), "must be refused")
+			stage, guardrail := d.RefusedBy()
+			assert.Equal(t, StageGuardrails, stage)
+			assert.Equal(t, GuardrailBadApprover, guardrail)
+			assert.NotEmpty(t, d.SkipReason())
+			assert.NotContains(t, d.SkipReason(), approvedBy, "the offending value is not echoed")
+			_, err := d.Ticket()
+			assert.Error(t, err, "a refused decision carries no ticket")
+		})
+	}
+}
+
+func TestF3_OrdinaryApproversStillGetATicket(t *testing.T) {
+	for _, approvedBy := range []string{
+		"alice@example.com",
+		"system:serviceaccount:dorgu-system:dorgu-operator",
+		"arn:aws:iam::123456789012:role/Platform Admins",
+		"Zoë O'Brien",
+		"  padded@example.com  ",
+		strings.Repeat("a", dorguv1.MaxApprovedByLength),
+	} {
+		t.Run(approvedBy[:min(len(approvedBy), 24)], func(t *testing.T) {
+			ra := proposedAction(func(ra *dorguv1.RemediationAction) { ra.Status.ApprovedBy = approvedBy })
+
+			d := approvalRun(t, standardGate(t), ra)
+
+			require.True(t, d.Allowed(), d.SkipReason())
+			ticket, err := d.Ticket()
+			require.NoError(t, err)
+			assert.Equal(t, strings.TrimSpace(approvedBy), ticket.ApprovedBy)
+		})
+	}
 }

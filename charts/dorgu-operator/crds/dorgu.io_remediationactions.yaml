@@ -624,7 +624,11 @@ spec:
                 format: date-time
                 type: string
               approvedBy:
-                description: ApprovedBy identifies who approved the remediation.
+                description: |-
+                  ApprovedBy identifies who approved the remediation. At most 253 characters,
+                  the same bound as the copy on the apply ticket, so an approval the ticket
+                  could not carry is refused where the approver writes it.
+                maxLength: 253
                 type: string
               conditions:
                 description: Conditions are standard K8s conditions.
