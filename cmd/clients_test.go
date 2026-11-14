@@ -32,6 +32,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	dorguv1alpha1 "github.com/dorgu-ai/dorgu-operator/api/v1alpha1"
@@ -70,6 +71,26 @@ func TestNewClusterClients_OnlyTheIntakeClientCanCreateActions(t *testing.T) {
 // The pipeline is wired with both: every component built from it holds the guarded
 // client, and the proposal it makes still becomes an action, created by the intake.
 func TestBuildHealthPipeline_ComponentsAreGuardedAndTheIntakeStillCreates(t *testing.T) {
+	proposeThroughPipeline(t, func(raw client.WithWatch) client.Reader { return raw })
+}
+
+// F-10: the intake's proposal List is served by the cached client the pipeline is
+// built on, not by the API reader (a cluster-wide List per undecided proposal).
+func TestBuildHealthPipeline_TheIntakeListsProposalsFromTheCacheNotTheAPIReader(t *testing.T) {
+	proposeThroughPipeline(t, func(raw client.WithWatch) client.Reader {
+		return interceptor.NewClient(raw, interceptor.Funcs{
+			List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+				if _, ok := list.(*dorguv1alpha1.RemediationProposalList); ok {
+					return errors.New("the API reader must not list proposals")
+				}
+				return c.List(ctx, list, opts...)
+			},
+		})
+	})
+}
+
+func proposeThroughPipeline(t *testing.T, apiReader func(client.WithWatch) client.Reader) {
+	t.Helper()
 	t.Setenv(intake.ServiceAccountEnv, "dorgu-operator")
 	scheme := runtime.NewScheme()
 	for _, add := range []func(*runtime.Scheme) error{
@@ -97,7 +118,7 @@ func TestBuildHealthPipeline_ComponentsAreGuardedAndTheIntakeStillCreates(t *tes
 		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 	setup := newIntakeSetup(raw, testOperatorNS, logr.Discard())
 	setup.Preflight.Run(context.Background())
-	p := buildHealthPipeline(newClusterClients(raw), raw, operatorConfig{}, testOperatorNS, setup, logr.Discard())
+	p := buildHealthPipeline(newClusterClients(raw), apiReader(raw), operatorConfig{}, testOperatorNS, setup, logr.Discard())
 
 	diag := diagnosis.Diagnosis{
 		Summary: "OOMKilled detected", Confidence: 0.85, Category: "resource", Severity: detection.SeverityCritical,

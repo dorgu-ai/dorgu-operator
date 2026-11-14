@@ -25,11 +25,11 @@ import (
 	"github.com/dorgu-ai/dorgu-operator/api/v1alpha1"
 )
 
-// listProposals reads every proposal in the cluster. The rate limit counts across
+// listProposals reads every proposal in the cluster (from the cache, see Config.Lister). The rate limit counts across
 // namespaces, because one proposer is one identity wherever it writes.
 func (p *Processor) listProposals(ctx context.Context) ([]v1alpha1.RemediationProposal, error) {
 	var list v1alpha1.RemediationProposalList
-	if err := p.reader.List(ctx, &list); err != nil {
+	if err := p.lister.List(ctx, &list); err != nil {
 		return nil, fmt.Errorf("listing RemediationProposals: %w", err)
 	}
 	return list.Items, nil

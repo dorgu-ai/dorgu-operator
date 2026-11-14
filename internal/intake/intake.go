@@ -78,6 +78,16 @@ type Config struct {
 	// action written a moment ago is visible to the next decision. Defaults to Client.
 	Reader client.Reader
 
+	// Lister serves the two Lists the intake makes for every undecided proposal:
+	// every proposal (dedupe and the rate limit) and the namespace's actions (the
+	// one an earlier attempt made). It is the manager's cached reader, so a burst of
+	// proposals does not cost a cluster-wide List against the API server each. A
+	// slightly stale answer is safe: the arrival order is total and stable, so a
+	// stale cache can only miss the newest proposals, never the earlier ones that
+	// decide a duplicate, and an action is re-read from the API server before it
+	// is removed. Defaults to Reader.
+	Lister client.Reader
+
 	// Gate rules on every proposal.
 	Gate *gate.Gate
 
@@ -117,6 +127,7 @@ type Config struct {
 type Processor struct {
 	client    client.Client
 	reader    client.Reader
+	lister    client.Reader
 	gate      *gate.Gate
 	incidents IncidentOpener
 	locks     *Locks
@@ -142,6 +153,7 @@ func New(cfg Config) *Processor {
 	p := &Processor{
 		client:      cfg.Client,
 		reader:      cfg.Reader,
+		lister:      cfg.Lister,
 		gate:        cfg.Gate,
 		incidents:   cfg.Incidents,
 		locks:       cfg.Locks,
@@ -157,6 +169,9 @@ func New(cfg Config) *Processor {
 	}
 	if p.reader == nil {
 		p.reader = cfg.Client
+	}
+	if p.lister == nil {
+		p.lister = p.reader
 	}
 	if p.locks == nil {
 		p.locks = NewLocks()

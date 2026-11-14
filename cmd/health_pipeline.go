@@ -147,6 +147,7 @@ func buildHealthPipeline(
 	proposalIntake := intake.New(intake.Config{
 		Client:           clients.Intake,
 		Reader:           reader,
+		Lister:           c, // the manager's cached reads: see intake.Config.Lister
 		Gate:             g,
 		Incidents:        &controller.ProposalIncidents{Client: c},
 		OperatorUsername: setup.Username,

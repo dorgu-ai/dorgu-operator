@@ -357,7 +357,7 @@ func (p *Processor) actionFor(
 	ctx context.Context, prop *v1alpha1.RemediationProposal, removeUnfinished bool,
 ) (*dorguv1.RemediationAction, error) {
 	var list dorguv1.RemediationActionList
-	if err := p.reader.List(ctx, &list, client.InNamespace(prop.Namespace)); err != nil {
+	if err := p.lister.List(ctx, &list, client.InNamespace(prop.Namespace)); err != nil {
 		return nil, fmt.Errorf("listing RemediationActions: %w", err)
 	}
 	for i := range list.Items {
@@ -370,7 +370,19 @@ func (p *Processor) actionFor(
 			if !removeUnfinished {
 				continue
 			}
-			if err := p.client.Delete(ctx, ra); err != nil && !apierrors.IsNotFound(err) {
+			// The list may come from a cache that has not seen the status yet. Only an
+			// action the API server itself shows with no phase is removed.
+			var fresh dorguv1.RemediationAction
+			if err := p.reader.Get(ctx, client.ObjectKeyFromObject(ra), &fresh); err != nil {
+				if apierrors.IsNotFound(err) {
+					continue
+				}
+				return nil, fmt.Errorf("re-reading the RemediationAction %s: %w", ra.Name, err)
+			}
+			if fresh.Status.Phase != "" {
+				return &fresh, nil
+			}
+			if err := p.client.Delete(ctx, &fresh); err != nil && !apierrors.IsNotFound(err) {
 				return nil, fmt.Errorf("removing the unfinished RemediationAction %s: %w", ra.Name, err)
 			}
 			continue
