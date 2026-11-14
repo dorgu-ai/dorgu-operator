@@ -55,6 +55,33 @@ type ClusterPersonaSpec struct {
 	// resourceQuotas defines cluster-wide resource constraints.
 	// +optional
 	ResourceQuotas *ClusterResourceQuotas `json:"resourceQuotas,omitempty"`
+
+	// metrics names the optional metrics sources detection may read.
+	// +optional
+	Metrics *ClusterMetricsSpec `json:"metrics,omitempty"`
+}
+
+// ClusterMetricsSpec names the metrics sources detection may read beyond the
+// Kubernetes API.
+type ClusterMetricsSpec struct {
+	// prometheus is a Prometheus-compatible endpoint. When set, CPU throttling
+	// detection reads the true throttling ratio from it instead of inferring it
+	// from metrics.k8s.io usage.
+	// +optional
+	Prometheus *PrometheusSpec `json:"prometheus,omitempty"`
+}
+
+// PrometheusSpec points at a Prometheus-compatible HTTP API.
+type PrometheusSpec struct {
+	// url is the base URL of the Prometheus-compatible API (for example
+	// http://prometheus-server.monitoring:9090). Only http and https are accepted;
+	// credentials, a query string and a fragment are not. The operator queries
+	// <url>/api/v1/query with a timeout and a bounded response size, and treats
+	// the answer as untrusted.
+	// +kubebuilder:validation:MaxLength=2048
+	// +kubebuilder:validation:Pattern=`^[Hh][Tt][Tt][Pp][Ss]?://[^\s/?#@]+(/[^\s?#]*)?$`
+	// +optional
+	URL string `json:"url,omitempty"`
 }
 
 // ClusterPolicies defines cluster-wide security and governance policies.
@@ -302,11 +329,52 @@ type ClusterPersonaStatus struct {
 	// +optional
 	ApplicationCount int32 `json:"applicationCount,omitempty"`
 
+	// cpuThrottlingDetection says whether CPU throttling detection is on, which
+	// source it reads, and why it is off when it is. `dorgu health` shows it.
+	// +optional
+	CPUThrottlingDetection *CPUThrottlingDetectionStatus `json:"cpuThrottlingDetection,omitempty"`
+
 	// conditions follow the standard Kubernetes condition pattern.
 	// +listType=map
 	// +listMapKey=type
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// CPU throttling detection sources reported in CPUThrottlingDetectionStatus.Source.
+const (
+	// CPUThrottlingSourceMetricsServer is metrics.k8s.io: CPU usage at or above 95%
+	// of the limit for three consecutive cycles.
+	CPUThrottlingSourceMetricsServer = "metrics.k8s.io"
+	// CPUThrottlingSourcePrometheus is the cfs throttled-period ratio from the
+	// Prometheus-compatible URL in spec.metrics.prometheus.url.
+	CPUThrottlingSourcePrometheus = "prometheus"
+	// CPUThrottlingSourceNone means no source is readable and detection is off.
+	CPUThrottlingSourceNone = "none"
+)
+
+// CPUThrottlingDetectionStatus is the operator's own statement about CPU throttling
+// detection. A cluster with no metrics source does not fail; it says so here.
+type CPUThrottlingDetectionStatus struct {
+	// enabled is true when a source is being read this cycle.
+	Enabled bool `json:"enabled"`
+
+	// source is the source in use, or none.
+	// +kubebuilder:validation:Enum=metrics.k8s.io;prometheus;none
+	Source string `json:"source"`
+
+	// reason is a CamelCase token: MetricsServerActive, PrometheusActive,
+	// PrometheusUnreachable, PrometheusNoData (the endpoint answered with no series for
+	// any container in the cluster) or PrometheusURLInvalid (each of the three fell back
+	// to metrics.k8s.io when it is served, and is off when it is not), NoMetricsSource,
+	// MetricsServerDisabled, MetricsSourceLost or MetricsReadFailed.
+	// +kubebuilder:validation:MaxLength=64
+	Reason string `json:"reason"`
+
+	// message states what the operator knows, in a sentence.
+	// +kubebuilder:validation:MaxLength=512
+	// +optional
+	Message string `json:"message,omitempty"`
 }
 
 // NodeInfo contains information about a cluster node.

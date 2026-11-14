@@ -48,6 +48,9 @@ const (
 	// SkipNoLiveLimit: the live container does not set the limit the diagnosis calls
 	// to raise, and introducing one is not a fix.
 	SkipNoLiveLimit = "no-live-limit"
+	// SkipContainerMismatch: the container the signal is about is not the one the
+	// persona's single resources block (and so the proposal) is sized from.
+	SkipContainerMismatch = "container-mismatch"
 	// SkipNoApplicableChange: the signals call for no resource change.
 	SkipNoApplicableChange = "no-applicable-change"
 	// SkipGateUnavailable: the gate could not re-verify the final plan, so it is not proposed.

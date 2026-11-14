@@ -24,6 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
+	"github.com/dorgu-ai/dorgu-operator/internal/detection"
 	"github.com/dorgu-ai/dorgu-operator/internal/metrics"
 )
 
@@ -70,6 +71,17 @@ func (r *HealthCheckReconciler) resolveCleared(ctx context.Context, activeSignal
 			continue // Still active.
 		}
 
+		// Silence from a source that cannot look is not silence. A CPU throttling
+		// incident is about a pod that is Ready and never restarts, so verifyRecovery
+		// below would pass it whether or not it is still throttled. Blindness is scoped
+		// to the signal's family (detection.FamilyCollector): every other incident is
+		// judged as usual.
+		if r.signalBlind(detection.SignalType(im.Spec.Detection.Signal)) {
+			r.Logger.V(1).Info("incident stays open: the source that would report this signal cannot look",
+				"name", im.Name, "signal", im.Spec.Detection.Signal)
+			continue
+		}
+
 		// Check grace period: signal must be absent for ResolutionGracePeriod.
 		if now.Sub(im.Spec.Detection.LastSeen.Time) < ResolutionGracePeriod {
 			continue
@@ -101,6 +113,15 @@ func (r *HealthCheckReconciler) resolveCleared(ctx context.Context, activeSignal
 	}
 
 	return nil
+}
+
+// signalBlind reports whether the detection engine cannot vouch for the absence of a
+// signal of this type: the collector that alone observes its family is failing, has no
+// source, or has not yet looked in this process (a restart). It is read from the engine
+// in this process, not from a persisted status, which after a restart still holds the
+// value from before it.
+func (r *HealthCheckReconciler) signalBlind(signal detection.SignalType) bool {
+	return r.Detection != nil && r.Detection.SignalBlind(signal)
 }
 
 // resolutionEvidence is the full test an incident must pass to close: either its

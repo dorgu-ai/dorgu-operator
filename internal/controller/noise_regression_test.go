@@ -53,7 +53,7 @@ func noiseClient(t *testing.T, objs ...client.Object) client.Client {
 	t.Helper()
 	return fake.NewClientBuilder().WithScheme(noiseScheme(t)).
 		WithObjects(objs...).
-		WithStatusSubresource(&dorguv1.IncidentMemory{}, &dorguv1.RemediationAction{}).
+		WithStatusSubresource(&dorguv1.IncidentMemory{}, &dorguv1.RemediationAction{}, &dorguv1.ClusterPersona{}).
 		Build()
 }
 

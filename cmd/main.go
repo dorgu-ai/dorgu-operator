@@ -255,17 +255,23 @@ func main() {
 			nodeCollector, podCollector, resourceCollector, controlPlaneCollector,
 		}
 
-		// Optional: metrics-server collector.
-		if cfg.enableMetricsServer {
-			mc, err := metricsclient.NewForConfig(restConfig)
-			if err != nil {
-				setupLog.Info("metrics-server client creation failed, skipping metrics collector",
-					"error", err.Error())
-			} else {
-				metricsCollector := detection.NewMetricsCollector(mc, mgr.GetClient(), setupLog)
-				collectors = append(collectors, metricsCollector)
-			}
+		// Optional: metrics-server collector, and CPU throttling detection. The
+		// throttling collector is always registered: with no metrics source it says
+		// so on the ClusterPersona status instead of silently not existing.
+		// mc stays a nil interface when the client cannot be built: assigning a nil
+		// *Clientset to it would make a non-nil interface that panics on first use.
+		var mc metricsclient.Interface
+		if metricsClientset, mcErr := metricsclient.NewForConfig(restConfig); mcErr != nil {
+			setupLog.Info("metrics-server client creation failed, skipping metrics collectors",
+				"error", mcErr.Error())
+		} else {
+			mc = metricsClientset
 		}
+		if cfg.enableMetricsServer && mc != nil {
+			collectors = append(collectors, detection.NewMetricsCollector(mc, mgr.GetClient(), setupLog))
+		}
+		collectors = append(collectors,
+			newCPUThrottlingCollector(mgr.GetClient(), pipeline.Gate, mc, cfg, setupLog))
 
 		// 3. Create detection engine.
 		detectionEngine := detection.NewEngine(setupLog, collectors...)

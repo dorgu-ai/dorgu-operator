@@ -19,7 +19,9 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -151,4 +153,84 @@ func TestChartRBAC_MatchesReplicaSets(t *testing.T) {
 		"chart apps rule must include replicasets alongside deployments")
 	assert.Contains(t, body, `verbs: ["get", "list", "watch"]`,
 		"replicasets grant must be read-only get/list/watch")
+}
+
+// C4 (P2-D11): CPU throttling reads metrics.k8s.io. It must never be given a kubelet
+// path to read cAdvisor with: nodes/proxy is an exec path into every pod on the node.
+func TestRBAC_NeverGrantsKubeletAccess(t *testing.T) {
+	forbidden := func(resource string) bool {
+		return strings.HasPrefix(resource, "nodes/") || resource == "*" || strings.HasSuffix(resource, "/proxy")
+	}
+
+	data, err := os.ReadFile(filepath.Join("..", "config", "rbac", "role.yaml"))
+	require.NoError(t, err)
+	var role rbacv1.ClusterRole
+	require.NoError(t, yaml.Unmarshal(data, &role))
+	for _, rule := range role.Rules {
+		for _, resource := range rule.Resources {
+			assert.False(t, forbidden(resource), "generated role grants %v on %q", rule.Verbs, resource)
+		}
+	}
+
+	roles := chartClusterRoles(t)
+	require.NotEmpty(t, roles,
+		"no chart ClusterRole could be parsed, so this test inspected nothing (it once passed vacuously)")
+	for _, cr := range roles {
+		require.NotEmpty(t, cr.Rules, "chart ClusterRole %q parsed with no rules", cr.Name)
+		for _, rule := range cr.Rules {
+			for _, resource := range rule.Resources {
+				assert.False(t, forbidden(resource), "chart role %q grants %v on %q", cr.Name, rule.Verbs, resource)
+			}
+		}
+	}
+}
+
+var clusterRoleKind = regexp.MustCompile(`(?m)^kind: ClusterRole$`)
+
+// chartClusterRoles parses the ClusterRoles in the chart's rbac template. The template
+// carries {{ }} directives, which are not YAML, so every line holding one is dropped
+// first: the rules themselves are literal. A document that still does not parse fails
+// the test instead of being skipped.
+func chartClusterRoles(t *testing.T) []rbacv1.ClusterRole {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("..", "charts", "dorgu-operator", "templates", "rbac.yaml"))
+	require.NoError(t, err)
+	var kept []string
+	for line := range strings.SplitSeq(string(raw), "\n") {
+		if !strings.Contains(line, "{{") {
+			kept = append(kept, line)
+		}
+	}
+	var roles []rbacv1.ClusterRole
+	for doc := range strings.SplitSeq(strings.Join(kept, "\n"), "\n---") {
+		if !clusterRoleKind.MatchString(doc) {
+			continue
+		}
+		var cr rbacv1.ClusterRole
+		require.NoError(t, yaml.Unmarshal([]byte(doc), &cr), "chart ClusterRole document does not parse:\n%s", doc)
+		if cr.Kind == "ClusterRole" {
+			roles = append(roles, cr)
+		}
+	}
+	return roles
+}
+
+// The pod metrics grant is read-only and exactly get/list, in both install paths.
+func TestRBAC_PodMetricsAreReadOnly(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "config", "rbac", "role.yaml"))
+	require.NoError(t, err)
+	var role rbacv1.ClusterRole
+	require.NoError(t, yaml.Unmarshal(data, &role))
+	assert.True(t, hasRule(role, "metrics.k8s.io", "pods", "get", "list"))
+	for _, verb := range []string{"create", "update", "patch", "delete", "watch"} {
+		assert.False(t, hasRule(role, "metrics.k8s.io", "pods", verb), "metrics.k8s.io pods must not grant %s", verb)
+	}
+
+	chart, err := os.ReadFile(filepath.Join("..", "charts", "dorgu-operator", "templates", "rbac.yaml"))
+	require.NoError(t, err)
+	assert.Contains(t, string(chart), `apiGroups: ["metrics.k8s.io"]
+    resources: ["pods"]
+    verbs: ["get", "list"]`)
+	assert.NotContains(t, string(chart), "nodes/proxy")
+	assert.NotContains(t, string(chart), "nodes/metrics")
 }

@@ -18,10 +18,15 @@ package detection
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/go-logr/logr"
 )
@@ -36,11 +41,76 @@ type SignalCollector interface {
 	Collect(ctx context.Context) ([]Signal, error)
 }
 
+// FamilyCollector is a SignalCollector whose failure blinds only the signal families
+// it owns, not the whole cycle.
+//
+// Most collectors look at the pods and workloads every incident is about: if one of
+// them cannot look, silence about anything proves nothing, and the engine reports the
+// cycle as incomplete (CollectionError). A collector that reads an optional, separate
+// source (CPU usage from metrics.k8s.io or Prometheus) is different. Its absence or
+// failure says nothing about a crash loop, and treating it as a whole-cycle failure
+// would freeze every resolution and make every verification Unknown, rolling back
+// correct fixes of any type, because a metrics endpoint blinked.
+//
+// A FamilyCollector's error is therefore logged and attributed to its families:
+// Engine.SignalBlind answers for them, and CollectAll does not return it. The
+// consumers that conclude health from silence (incident resolution, the verifier)
+// ask SignalBlind about the signal they are judging.
+type FamilyCollector interface {
+	SignalCollector
+
+	// Families lists the families this collector is the only observer of.
+	Families() []Family
+
+	// Blind reports whether the collector currently cannot vouch for silence:
+	// it has not completed a look yet (a restarted process), has no source, or its
+	// last look failed. Collect returns an error only for a source that exists and
+	// could not be read; Blind is also true for one that is absent, which is a
+	// missing capability and not an error.
+	Blind() bool
+}
+
 // Engine orchestrates signal collection from all registered collectors.
 type Engine struct {
 	collectors []SignalCollector
 	correlator PersonaCorrelator
 	logger     logr.Logger
+
+	// failedFamilyCollectors holds the FamilyCollectors whose latest Collect failed.
+	mu                     sync.RWMutex
+	failedFamilyCollectors map[string]bool
+
+	// failureLog rate-limits the ERROR line for a collector that keeps failing.
+	failureLog *LogThrottle
+	now        func() time.Time
+}
+
+// SignalBlind reports whether the engine cannot vouch for the absence of a signal of
+// this type: a FamilyCollector that owns the signal's family failed in the latest
+// CollectAll, or reports itself blind. A signal in no family is never blind here;
+// whether the whole cycle could look is what CollectAll's error says.
+func (e *Engine) SignalBlind(t SignalType) bool {
+	family, ok := FamilyOf(t)
+	if !ok {
+		return false
+	}
+	return e.FamilyBlind(family)
+}
+
+// FamilyBlind is SignalBlind for a family.
+func (e *Engine) FamilyBlind(family Family) bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	for _, c := range e.collectors {
+		fc, ok := c.(FamilyCollector)
+		if !ok || !slices.Contains(fc.Families(), family) {
+			continue
+		}
+		if e.failedFamilyCollectors[fc.Name()] || fc.Blind() {
+			return true
+		}
+	}
+	return false
 }
 
 // SetPersonaCorrelator sets the correlator used to link signals to personas.
@@ -53,6 +123,8 @@ func NewEngine(logger logr.Logger, collectors ...SignalCollector) *Engine {
 	return &Engine{
 		collectors: collectors,
 		logger:     logger.WithName("detection-engine"),
+		failureLog: NewLogThrottle(LogRepeatInterval),
+		now:        time.Now,
 	}
 }
 
@@ -107,6 +179,33 @@ func IsPartial(err error) bool {
 	return errors.As(err, &ce)
 }
 
+// failureKey identifies one failure of one collector: a second, different cause inside
+// the window is a new line, not a held-back repeat of the first.
+func failureKey(name string, err error) string {
+	sum := sha256.Sum256([]byte(err.Error()))
+	return name + "/" + hex.EncodeToString(sum[:8])
+}
+
+// logCollectorFailure logs a failing collector at ERROR once per distinct error, then
+// at most once per LogRepeatInterval, with the number of repeats it held back. The
+// failure itself is not throttled: CollectAll returns it every cycle (or, for a
+// FamilyCollector, Engine.SignalBlind reports it).
+func (e *Engine) logCollectorFailure(name string, err error) {
+	if e.failureLog == nil || e.now == nil { // an Engine not built by NewEngine
+		e.logger.Error(err, "collector failed", "collector", name)
+		return
+	}
+	ok, held := e.failureLog.Allow(failureKey(name, err), e.now())
+	if !ok {
+		return
+	}
+	kv := []any{"collector", name}
+	if held > 0 {
+		kv = append(kv, "failuresSinceLastLog", held)
+	}
+	e.logger.Error(err, "collector failed", kv...)
+}
+
 // CollectAll runs all collectors and returns aggregated signals.
 //
 // A failing collector does not block the others: their signals are still
@@ -114,19 +213,32 @@ func IsPartial(err error) bool {
 // The failure is not swallowed, though. When any collector fails the returned
 // error is a *CollectionError naming each one, so callers can tell "no signals"
 // from "could not look" (see IsPartial).
+//
+// The exception is a FamilyCollector: its failure is logged and recorded for
+// SignalBlind, and it is not part of the returned error, because it blinds only
+// its own families (see FamilyCollector).
 func (e *Engine) CollectAll(ctx context.Context) ([]Signal, error) {
 	var allSignals []Signal
 	var failures []CollectorFailure
+	failedFamily := map[string]bool{}
 
 	for _, collector := range e.collectors {
 		signals, err := collector.Collect(ctx)
 		if err != nil {
-			e.logger.Error(err, "collector failed", "collector", collector.Name())
-			failures = append(failures, CollectorFailure{Collector: collector.Name(), Err: err})
+			e.logCollectorFailure(collector.Name(), err)
+			if _, scoped := collector.(FamilyCollector); scoped {
+				failedFamily[collector.Name()] = true
+			} else {
+				failures = append(failures, CollectorFailure{Collector: collector.Name(), Err: err})
+			}
 			continue
 		}
 		allSignals = append(allSignals, signals...)
 	}
+
+	e.mu.Lock()
+	e.failedFamilyCollectors = failedFamily
+	e.mu.Unlock()
 
 	// Correlate signals to ApplicationPersonas.
 	if e.correlator != nil {

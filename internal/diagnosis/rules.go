@@ -69,6 +69,7 @@ func NewRuleBasedProvider(logger logr.Logger) *RuleBasedProvider {
 		{Name: "node-pressure", Match: matchNodePressure, Diagnose: diagnoseNodePressure},
 		{Name: "node-down", Match: matchNodeDown, Diagnose: diagnoseNodeDown},
 		{Name: "resource-saturation", Match: matchResourceSaturation, Diagnose: diagnoseResourceSaturation},
+		{Name: "cpu-throttling", Match: matchCPUThrottling, Diagnose: diagnoseCPUThrottling},
 		{Name: "control-plane", Match: matchControlPlane, Diagnose: diagnoseControlPlane},
 		{Name: "image-pull-failure", Match: matchImagePull, Diagnose: diagnoseImagePull},
 		{Name: "long-pending-pod", Match: matchPendingPod, Diagnose: diagnosePendingPod},
@@ -489,6 +490,69 @@ func diagnoseReadinessNotReady(signals []detection.Signal) *Diagnosis {
 		Contributing:      buildContributing(notReady, "Container has been not Ready past the threshold"),
 		SuggestedAction:   actionInvestigate,
 	}
+}
+
+// ============================================================================
+// Rule 2c: CPU throttling
+// ============================================================================
+//
+// A container held back by its own CPU limit has a cause the rules know and a fix the
+// proposer can size and the gate can bound: the limit is too low. It mirrors the OOM
+// rule for memory. The summary is built from the signal's type and its source, which
+// the collector chose from two fixed values; nothing a remote metrics server wrote
+// reaches it, and nothing in it drives the action.
+
+func matchCPUThrottling(signals []detection.Signal) bool {
+	return hasSignalType(signals, detection.SignalCPUThrottling)
+}
+
+func diagnoseCPUThrottling(signals []detection.Signal) *Diagnosis {
+	throttled := signalsOfType(signals, detection.SignalCPUThrottling)
+	if len(throttled) == 0 {
+		return nil
+	}
+
+	var summary, detail string
+	var base float64
+	if throttled[0].Metadata["source"] == detection.CPUThrottlingSourcePrometheus {
+		// The cfs throttled-period ratio is the throttling itself.
+		summary = "Container is being CPU throttled: a quarter or more of its scheduling periods are throttled. " +
+			"Its CPU limit is too low for the workload. Raise the CPU limit."
+		detail = "Container is throttled in at least 25% of its CPU scheduling periods"
+		base = 0.85
+	} else {
+		// Usage at the limit is evidence of throttling, not a measurement of it.
+		summary = "Container has used at least 95% of its CPU limit for several cycles in a row, so it is very likely " +
+			"being throttled. Its CPU limit is too low for the workload. Raise the CPU limit."
+		detail = "Container CPU usage has been at its limit for consecutive cycles"
+		base = 0.70
+	}
+
+	return &Diagnosis{
+		Summary:           summary,
+		Confidence:        buildConfidence(base, throttled),
+		Category:          string(detection.CategoryResource),
+		Severity:          cpuThrottlingSeverity(throttled),
+		PersonaRef:        firstPersonaRef(throttled),
+		AffectedResources: collectAffectedResources(throttled),
+		Contributing:      buildContributing(throttled, detail),
+		SuggestedAction:   actionResourceAdjustment,
+	}
+}
+
+// cpuThrottlingSeverity is Critical only when a signal measured the throttling itself
+// (the Prometheus path, throttled ratio at or above detection.PrometheusCriticalRatio,
+// which the collector turns into a Critical signal). Usage at the limit is evidence of
+// throttling, not a measurement of it, so a signal from metrics.k8s.io never raises the
+// diagnosis above Warning whatever severity it carries.
+func cpuThrottlingSeverity(throttled []detection.Signal) detection.Severity {
+	for i := range throttled {
+		if throttled[i].Metadata["source"] == detection.CPUThrottlingSourcePrometheus &&
+			throttled[i].Severity == detection.SeverityCritical {
+			return detection.SeverityCritical
+		}
+	}
+	return detection.SeverityWarning
 }
 
 // ============================================================================

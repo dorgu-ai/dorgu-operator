@@ -77,7 +77,9 @@ rules:
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["get", "list", "watch", "create", "patch"]
-  # Pod metrics (metrics-usage-checker; requires metrics-server)
+  # Pod metrics (metrics-usage-checker and cpu-throttling-checker; requires metrics-server).
+  # Read-only get/list on pods.metrics.k8s.io and nothing more: CPU throttling detection never
+  # reads a kubelet, so no node subresource is granted here and none may be.
   - apiGroups: ["metrics.k8s.io"]
     resources: ["pods"]
     verbs: ["get", "list"]
