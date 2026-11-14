@@ -20,11 +20,15 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
+	"unicode"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
@@ -90,6 +94,11 @@ func TestCommandRule_RejectsEveryShellMetacharacterAndNewline(t *testing.T) {
 		"next line":        "kubectl get pods\u0085-n shop",
 		"line separator":   "kubectl get pods\u2028-n shop",
 		"paragraph sep":    "kubectl get pods\u2029-n shop",
+		"bidi override":    "kubectl get pods -n \u202eevil\u202c shop",
+		"bidi isolate":     "kubectl get pods -n \u2067evil\u2069 shop",
+		"zero width space": "kubectl get pods -n sh\u200bop",
+		"byte order mark":  "kubectl get pods\ufeff",
+		"tag character":    "kubectl get pods \U000e0041",
 	}
 	for name, command := range forbidden {
 		t.Run(name, func(t *testing.T) {
@@ -145,6 +154,34 @@ func safeName(s string) string {
 	return string(out)
 }
 
+// commandCodePoints is every code point the rule is compared on: the C3 review's
+// U+0000 to U+2100 and three more, every Unicode format character (category Cf,
+// N-3: bidi overrides, zero-width characters, the byte order mark, the tag
+// characters, wherever they are in Unicode), and the neighbours of those ranges that
+// are not Cf, which must stay accepted.
+func commandCodePoints() []rune {
+	var points []rune
+	for r := rune(0); r <= 0x2100; r++ {
+		if r >= 0xd800 && r <= 0xdfff {
+			continue
+		}
+		points = append(points, r)
+	}
+	points = append(points, 0xfeff, 0xfffd, 0x1f600)
+	for _, rng := range unicode.Cf.R16 {
+		for r := rune(rng.Lo); r <= rune(rng.Hi); r += rune(rng.Stride) {
+			points = append(points, r)
+		}
+	}
+	for _, rng := range unicode.Cf.R32 {
+		for r := rune(rng.Lo); r <= rune(rng.Hi); r += rune(rng.Stride) {
+			points = append(points, r)
+		}
+	}
+	points = append(points, 0x200a, 0x2065, 0xfff8, 0xfffc, 0xe0000, 0xe0080, 0xe000, 0xf8ff, 0x10ffff)
+	return slices.Compact(slices.Sorted(slices.Values(points)))
+}
+
 // F-7: the rule on the API server and SanitizeStepCommand must agree on every code
 // point, so a command the planner lets out is always storable and nothing the API
 // server stores is a command the planner would have dropped. The list is the one the
@@ -154,14 +191,7 @@ func TestCommandRule_AgreesWithSanitizeStepCommandOnEveryCodePoint(t *testing.T)
 	c := startEnv(t, filepath.Join("..", "..", "config", "crd", "bases"))
 	ctx := context.Background()
 
-	points := make([]rune, 0, 0x2102)
-	for r := rune(0); r <= 0x2100; r++ {
-		if r >= 0xd800 && r <= 0xdfff {
-			continue
-		}
-		points = append(points, r)
-	}
-	points = append(points, 0xfeff, 0xfffd, 0x1f600)
+	points := commandCodePoints()
 
 	accepted := 0
 	for _, r := range points {
@@ -177,10 +207,37 @@ func TestCommandRule_AgreesWithSanitizeStepCommandOnEveryCodePoint(t *testing.T)
 		}
 		if serverAccepts {
 			accepted++
-			if (r <= 0x1f) || (r >= 0x7f && r <= 0x9f) || r == 0x2028 || r == 0x2029 {
-				t.Errorf("the API server accepted control or line-break character U+%04X", r)
+			if (r <= 0x1f) || (r >= 0x7f && r <= 0x9f) || r == 0x2028 || r == 0x2029 || unicode.Is(unicode.Cf, r) {
+				t.Errorf("the API server accepted control, line-break or format character U+%04X", r)
 			}
 		}
 	}
 	assert.Greater(t, accepted, 8000, "ordinary characters must still be accepted")
+}
+
+// N-3: the rule gained \p{Cf}. A plan at both bounds, 64 steps each with a command
+// of the maximum length, must still fit the API server's CEL cost budgets: the
+// estimated one when the CRD is installed (startEnv would fail) and the runtime one
+// when the object is validated.
+func TestCommandRule_FitsTheCELCostBudgetAtTheLargestPlan(t *testing.T) {
+	c := startEnv(t, filepath.Join("..", "..", "config", "crd", "bases"))
+	command := "kubectl get pods " + strings.Repeat("a", dorguv1.MaxStepCommandLength-len("kubectl get pods "))
+	require.Len(t, command, dorguv1.MaxStepCommandLength)
+
+	ra := remediation("largest-plan", command)
+	ra.Spec.Steps = nil
+	for i := 1; i <= dorguv1.MaxPlanSteps; i++ {
+		ra.Spec.Steps = append(ra.Spec.Steps, dorguv1.RemediationStep{
+			Order: int32(i), ID: fmt.Sprintf("s%d", i), Type: dorguv1.StepTypeManual, Description: "x", Command: command,
+		})
+	}
+	require.NoError(t, c.Create(context.Background(), ra))
+
+	// A format character in the last command of that same plan is refused.
+	bad := ra.DeepCopy()
+	bad.ObjectMeta = metav1.ObjectMeta{Name: "largest-plan-bad", Namespace: "default"}
+	bad.Spec.Steps[len(bad.Spec.Steps)-1].Command = "kubectl get pods ‮"
+	err := c.Create(context.Background(), bad)
+	require.Error(t, err)
+	assert.True(t, apierrors.IsInvalid(err), err.Error())
 }

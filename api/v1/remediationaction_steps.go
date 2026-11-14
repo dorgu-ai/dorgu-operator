@@ -169,13 +169,19 @@ const stepCommandForbidden = ";&|<>`$()"
 
 // stepCommandControl reports whether r is a character a command may never contain:
 // every control character (the C0 set U+0000 to U+001F, DEL, and the C1 set U+0080
-// to U+009F, which is unicode.IsControl), and the Unicode line and paragraph
-// separators U+2028 and U+2029. Controls can rewrite the line a human reads
-// (an ESC sequence) or end it (CR, LF, VT, FF, NEL, U+2028, U+2029), so a pasted
-// command is not the command that was shown. Tab is refused too: no kubectl
-// command needs one. It is the class [\p{Cc}\x{2028}\x{2029}] of the CRD rule.
+// to U+009F, which is unicode.IsControl), the Unicode line and paragraph
+// separators U+2028 and U+2029, and the Unicode format characters (category Cf:
+// the bidi embeddings, overrides and isolates U+202A to U+202E and U+2066 to
+// U+2069, the zero-width characters U+200B to U+200D, the byte order mark, the tag
+// characters and the rest of the category). Controls can rewrite the line a human
+// reads (an ESC sequence) or end it (CR, LF, VT, FF, NEL, U+2028, U+2029), and
+// format characters reorder it (a right-to-left override, "Trojan Source") or hide
+// text from it (zero-width), so a pasted command is not the command that was shown.
+// Tab is refused too: no kubectl command needs one. It is the class
+// [\p{Cc}\p{Cf}\x{2028}\x{2029}] of the CRD rule, and the two must agree on every
+// code point (test/crdratchet compares them on all of Cf).
 func stepCommandControl(r rune) bool {
-	return unicode.IsControl(r) || r == '\u2028' || r == '\u2029'
+	return unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || r == '\u2028' || r == '\u2029'
 }
 
 // SanitizeStepCommand returns cmd if it is safe to print as a copy-paste
@@ -183,8 +189,8 @@ func stepCommandControl(r rune) bool {
 //
 // A step command may be authored by a language model, so it is untrusted input
 // on its way to a human's shell. The bar it has to clear is deliberately blunt:
-// one line, a kubectl invocation, no shell metacharacters and no control or
-// line-break character, within the CRD's
+// one line, a kubectl invocation, no shell metacharacters and no control,
+// line-break or invisible format character, within the CRD's
 // length bound. A command that fails any of these is dropped rather than
 // rewritten, because a half-corrected command is worse than none.
 //

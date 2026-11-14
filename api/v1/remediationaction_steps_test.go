@@ -11,8 +11,10 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+	"unicode"
 
 	"github.com/stretchr/testify/require"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -459,16 +461,24 @@ func TestMaxPlanSteps_IsTheCRDMaxItemsOfSpecSteps(t *testing.T) {
 	}
 }
 
-// F-7: every control character, DEL, and the Unicode line and paragraph separators
-// are refused, wherever they sit in the command. They let a command rewrite the
-// line a human reads (ESC sequences), or break it (NEL, VT, FF, U+2028, U+2029).
+// F-7 and N-3: every control character, DEL, the Unicode line and paragraph
+// separators, and every Unicode format character (category Cf: bidi overrides and
+// isolates, zero-width characters, the byte order mark, the tag characters) are
+// refused, wherever they sit in the command. They let a command rewrite the line a
+// human reads (ESC sequences, a right-to-left override that reorders it), hide text
+// (zero-width) or break it (NEL, VT, FF, U+2028, U+2029).
 func isRefusedInCommand(r rune) bool {
-	return r <= 0x1f || (r >= 0x7f && r <= 0x9f) || r == 0x2028 || r == 0x2029
+	return r <= 0x1f || (r >= 0x7f && r <= 0x9f) || r == 0x2028 || r == 0x2029 || unicode.Is(unicode.Cf, r)
 }
 
-func TestSanitizeStepCommand_RejectsControlAndLineBreakCharacters(t *testing.T) {
-	// The code point list the C3 review used: U+0000 to U+2100, and three more.
-	points := make([]rune, 0, 0x2102)
+// commandCodePoints is every code point the API server rule and SanitizeStepCommand
+// are compared on: the C3 review's U+0000 to U+2100 and three more, every Cf code
+// point of the Unicode tables (U+00AD, U+0600 to U+0605, U+200B to U+200F, U+202A to
+// U+202E, U+2060 to U+2064, U+2066 to U+206F, U+FEFF, U+FFF9 to U+FFFB, U+E0001, the
+// tag characters U+E0020 to U+E007F and others above U+2100), and the neighbours of
+// those ranges that are not Cf, which must stay accepted.
+func commandCodePoints() []rune {
+	var points []rune
 	for r := rune(0); r <= 0x2100; r++ {
 		if r >= 0xd800 && r <= 0xdfff {
 			continue // surrogates are not characters
@@ -476,8 +486,24 @@ func TestSanitizeStepCommand_RejectsControlAndLineBreakCharacters(t *testing.T) 
 		points = append(points, r)
 	}
 	points = append(points, 0xfeff, 0xfffd, 0x1f600)
+	for _, rng := range unicode.Cf.R16 {
+		for r := rune(rng.Lo); r <= rune(rng.Hi); r += rune(rng.Stride) {
+			points = append(points, r)
+		}
+	}
+	for _, rng := range unicode.Cf.R32 {
+		for r := rune(rng.Lo); r <= rune(rng.Hi); r += rune(rng.Stride) {
+			points = append(points, r)
+		}
+	}
+	// Neighbours that are not format characters: a space, an unassigned point, an
+	// object replacement character, a language tag block edge, a private use point.
+	points = append(points, 0x200a, 0x2065, 0xfff8, 0xfffc, 0xe0000, 0xe0080, 0xe000, 0xf8ff, 0x10ffff)
+	return slices.Compact(slices.Sorted(slices.Values(points)))
+}
 
-	for _, r := range points {
+func TestSanitizeStepCommand_RejectsControlAndLineBreakCharacters(t *testing.T) {
+	for _, r := range commandCodePoints() {
 		in := "kubectl get pods" + string(r) + "x"
 		got := SanitizeStepCommand(in)
 		if isRefusedInCommand(r) {
@@ -495,6 +521,35 @@ func TestSanitizeStepCommand_RejectsControlAndLineBreakCharacters(t *testing.T) 
 		}
 		if got != in {
 			t.Errorf("U+%04X was refused: %q -> %q", r, in, got)
+		}
+	}
+}
+
+// N-3: the format characters a reader cannot see, by name. The list is written out,
+// not taken from the Unicode tables, so a table that changed could not shrink it.
+func TestSanitizeStepCommand_NamedFormatCharacters(t *testing.T) {
+	for name, r := range map[string]rune{
+		"soft hyphen": 0xad, "arabic number sign": 0x600, "arabic letter mark": 0x61c,
+		"zero width space": 0x200b, "zero width non-joiner": 0x200c, "zero width joiner": 0x200d,
+		"left-to-right mark": 0x200e, "right-to-left mark": 0x200f,
+		"LRE": 0x202a, "RLE": 0x202b, "PDF": 0x202c, "LRO": 0x202d, "RLO": 0x202e,
+		"word joiner": 0x2060, "invisible times": 0x2062, "invisible separator": 0x2063,
+		"LRI": 0x2066, "RLI": 0x2067, "FSI": 0x2068, "PDI": 0x2069,
+		"byte order mark": 0xfeff, "interlinear annotation anchor": 0xfff9,
+		"language tag": 0xe0001, "tag latin a": 0xe0041, "cancel tag": 0xe007f,
+	} {
+		if got := SanitizeStepCommand("kubectl get pods " + string(r) + "-o wide"); got != "" {
+			t.Errorf("%s (U+%04X) was accepted: %q", name, r, got)
+		}
+	}
+	// Trojan Source: a right-to-left override that reorders what a human reads.
+	if got := SanitizeStepCommand("kubectl get pods -n \u202eevil\u202c shop"); got != "" {
+		t.Errorf("a bidi override was accepted: %q", got)
+	}
+	// Ordinary non-ASCII text and visible spaces are not format characters.
+	for _, ok := range []string{"kubectl get pods -l 'app=café'", "kubectl get pods -l 'app=日本語'", "kubectl get pods\u00a0-n shop"} {
+		if SanitizeStepCommand(ok) == "" {
+			t.Errorf("%q was refused", ok)
 		}
 	}
 }
