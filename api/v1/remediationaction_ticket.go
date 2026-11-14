@@ -21,7 +21,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+
+	"github.com/gowebpki/jcs"
 )
 
 // Ticket v1 (P2-D9). The ticket binds what was cleared to who approved it and for
@@ -45,46 +48,100 @@ const (
 	ReasonTicketIncomplete = "TicketIncomplete"
 )
 
-// CanonicalJSON is the canonical encoding of the spec that SpecHash hashes.
+// SpecHashAlgorithm is the one-line statement of how ApplyTicket.SpecHash is
+// computed. A client in any language can reproduce the hash from this alone:
 //
-// The encoding, which a client in another language can reproduce exactly:
+//  1. Take the RemediationAction's .spec object exactly as the API server serves
+//     it (kubectl get -o json, or an unstructured client). Never re-encode a typed
+//     struct: a client built against another version of this API, or one that does
+//     not know a field, would then compute another hash. Provenance
+//     (spec.provenance), when present, is part of .spec and so is hashed.
+//  2. Canonicalise it as RFC 8785 (JSON Canonicalization Scheme, JCS):
+//     - object members are sorted by the UTF-16 code units of their names (not by
+//     UTF-8 bytes or code points: U+1F600 sorts before U+E000);
+//     - no whitespace between tokens, no trailing newline;
+//     - strings are UTF-8 and escape only the quote (\"), the backslash (\\) and
+//     the control characters below U+0020, as \b \t \n \f \r or lowercase \u00xx
+//     (so U+0000 is \u0000). Every other character is written as itself,
+//     including DEL, U+0085, U+2028, U+2029, "<", ">" and "&", and "/" is not
+//     escaped;
+//     - numbers are the ECMAScript (ES6) shortest round-trip form of the IEEE 754
+//     double: 1.0 is 1, 1e3 is 1000, -0 is 0, 1e21 is 1e+21, 1e-7 is 1e-7,
+//     12345678901234567890 is 12345678901234567000;
+//     - arrays keep their order; true, false and null are written as such.
+//  3. The hash is the SHA-256 of those UTF-8 bytes as 64 lowercase hexadecimal
+//     characters, with no prefix.
 //
-//  1. Serialise the spec as JSON with the field names and omitempty rules of this
-//     API version (the same JSON the API server stores).
-//  2. Parse that JSON into a generic document, keeping numbers as their literal
-//     text, so embedded patches (spec.steps[].patch, spec.action.patch) are
-//     normalised along with everything else.
-//  3. Serialise the document again with object keys sorted by byte order, no
-//     whitespace between tokens, no trailing newline, and the characters <, > and
-//     & written as themselves (no < escapes). Strings use the standard JSON
-//     escapes.
+// Because JCS normalises numbers, a spec hashes the same as authored and as read
+// back from the API server. Golden vectors for every rule above are in
+// testdata/spechash_vectors.json, and every implementation should run them.
+const SpecHashAlgorithm = "lowercase hex sha256 of the RFC 8785 (JCS) canonical JSON of the RemediationAction .spec as served by the API server"
+
+// errNotAnObject is returned for a document that is not one JSON object.
+var errNotAnObject = errors.New("a spec is one JSON object")
+
+// CanonicalSpecJSON returns the RFC 8785 canonical form of a spec given as JSON
+// text (the .spec of a RemediationAction as the API server serves it). The input
+// must be one JSON object in valid UTF-8 without duplicate member names.
 //
-// Two documents that differ only in key order or spacing therefore encode alike,
-// and any change to a value, a field or a step changes the encoding.
+// See SpecHashAlgorithm for the exact encoding.
+func CanonicalSpecJSON(raw []byte) ([]byte, error) {
+	if trimmed := bytes.TrimSpace(raw); len(trimmed) == 0 || trimmed[0] != '{' {
+		return nil, errNotAnObject
+	}
+	canonical, err := jcs.Transform(raw)
+	if err != nil {
+		return nil, fmt.Errorf("canonicalising the spec: %w", err)
+	}
+	return canonical, nil
+}
+
+// SpecHashFromJSON is the specHash of a spec given as JSON text: the SHA-256 of
+// CanonicalSpecJSON as 64 lowercase hexadecimal characters. It is the function a
+// CLI, a dashboard or any other client uses on the spec it read from the API
+// server. See SpecHashAlgorithm.
+func SpecHashFromJSON(raw []byte) (string, error) {
+	canonical, err := CanonicalSpecJSON(raw)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(canonical)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+// SpecHashFromMap is SpecHashFromJSON for a spec already decoded into a generic
+// document (an unstructured object's "spec"). Numbers may be float64, int64 or
+// json.Number.
+func SpecHashFromMap(spec map[string]any) (string, error) {
+	if spec == nil {
+		return "", errNotAnObject
+	}
+	raw, err := json.Marshal(spec)
+	if err != nil {
+		return "", fmt.Errorf("encoding the spec: %w", err)
+	}
+	return SpecHashFromJSON(raw)
+}
+
+// CanonicalJSON is the canonical encoding of this typed spec: the JSON the API
+// server stores for it (this version's field names and omitempty rules),
+// canonicalised by CanonicalSpecJSON.
+//
+// The operator hashes the objects it reads through its own typed client, whose
+// JSON is the spec it wrote and the API server serves back. A client that reads
+// the served spec must use SpecHashFromJSON or SpecHashFromMap on it, never a
+// typed struct of its own. Any spec field added later must be omitempty (or a
+// pointer) so that existing specs keep their hash.
 func (s RemediationActionSpec) CanonicalJSON() ([]byte, error) {
 	raw, err := json.Marshal(s)
 	if err != nil {
 		return nil, fmt.Errorf("encoding the spec: %w", err)
 	}
-
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.UseNumber()
-	var doc any
-	if err := decoder.Decode(&doc); err != nil {
-		return nil, fmt.Errorf("reading the encoded spec back: %w", err)
-	}
-
-	var out bytes.Buffer
-	encoder := json.NewEncoder(&out)
-	encoder.SetEscapeHTML(false)
-	if err := encoder.Encode(doc); err != nil {
-		return nil, fmt.Errorf("canonicalising the spec: %w", err)
-	}
-	return bytes.TrimSuffix(out.Bytes(), []byte("\n")), nil
+	return CanonicalSpecJSON(raw)
 }
 
-// Hash is ApplyTicket.SpecHash for this spec: the SHA-256 of CanonicalJSON, as 64
-// lowercase hexadecimal characters with no prefix. It errors when the spec cannot
+// Hash is ApplyTicket.SpecHash for this spec: SpecHashFromJSON of its JSON, which
+// equals SpecHashFromJSON of the spec as served. It errors when the spec cannot
 // be encoded (a patch that is not JSON), which a stored spec never is.
 func (s RemediationActionSpec) Hash() (string, error) {
 	canonical, err := s.CanonicalJSON()
