@@ -32,6 +32,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
+	dorguv1alpha1 "github.com/dorgu-ai/dorgu-operator/api/v1alpha1"
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
 	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
 	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
@@ -127,7 +128,7 @@ func proposalRun(t *testing.T, diag *diagnosis.Diagnosis, objs ...client.Object)
 	c := fake.NewClientBuilder().
 		WithScheme(cf4Scheme(t)).
 		WithObjects(objs...).
-		WithStatusSubresource(&dorguv1.IncidentMemory{}, &dorguv1.RemediationAction{}).
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.IncidentMemory{}, &dorguv1.RemediationAction{}).
 		Build()
 
 	proposer := newSpyProposer(c)
@@ -238,7 +239,7 @@ func TestRejectionCheck_FailsClosed(t *testing.T) {
 	base := fake.NewClientBuilder().
 		WithScheme(cf4Scheme(t)).
 		WithObjects(im).
-		WithStatusSubresource(&dorguv1.IncidentMemory{}).
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.IncidentMemory{}).
 		Build()
 
 	c := interceptor.NewClient(base, interceptor.Funcs{
@@ -278,7 +279,7 @@ func TestRecordRejection_StampsTimestamp(t *testing.T) {
 	c := fake.NewClientBuilder().
 		WithScheme(cf4Scheme(t)).
 		WithObjects(im, ra).
-		WithStatusSubresource(&dorguv1.IncidentMemory{}, &dorguv1.RemediationAction{}).
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.IncidentMemory{}, &dorguv1.RemediationAction{}).
 		Build()
 
 	logger, _ := newRecordingLogger()

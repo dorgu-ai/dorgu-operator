@@ -71,6 +71,11 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: metadata.namespace
+        # Dorgu's own planner proposes as this ServiceAccount.
+        - name: OPERATOR_SERVICE_ACCOUNT
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.serviceAccountName
         ports: []
         securityContext:
           readOnlyRootFilesystem: true

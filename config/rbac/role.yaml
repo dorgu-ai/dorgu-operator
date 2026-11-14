@@ -55,6 +55,7 @@ rules:
   - applicationpersonas
   - clusterpersonas
   - incidentmemories
+  - remediationproposals
   verbs:
   - create
   - delete
@@ -77,6 +78,7 @@ rules:
   - clusterpersonas/status
   - incidentmemories/status
   - remediationactions/status
+  - remediationproposals/status
   verbs:
   - get
   - patch
