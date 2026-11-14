@@ -310,6 +310,10 @@ func (p *Processor) convert(
 		draft.Spec.Action = dorguv1.RemediationActionDetail{Type: dorguv1.ActionTypeNotification}
 	}
 	draft.Spec.Provenance = provenanceFor(prop, hint != nil)
+	if draft.Annotations == nil {
+		draft.Annotations = map[string]string{}
+	}
+	draft.Annotations[AnnotationProposalUID] = string(prop.UID)
 
 	action, err := p.createAction(ctx, draft, dec)
 	if err != nil {
@@ -318,21 +322,48 @@ func (p *Processor) convert(
 	return p.converted(ctx, prop, incident, action, dec)
 }
 
+// AnnotationProposalUID is stamped on every action the intake creates: the UID of
+// the proposal it was converted from. Provenance names the proposal; this pins the
+// one object, so a retry after a partial failure finds the action it made, and
+// never one made for an earlier proposal of the same name.
+const AnnotationProposalUID = "dorgu.io/proposal-uid"
+
 // existingAction finds the action an earlier attempt already created for this
 // proposal. An action with no status was never proposed (its status write failed):
 // it is removed so the proposal is decided afresh.
 func (p *Processor) existingAction(ctx context.Context, prop *v1alpha1.RemediationProposal) (*dorguv1.RemediationAction, error) {
+	return p.actionFor(ctx, prop, true)
+}
+
+// FindAction returns the proposed action that exists for the proposal, or nil. It
+// changes nothing. The planner uses it after a failed decision: if the action was
+// created, the proposal is not undone, because that would leave an action whose
+// provenance names a proposal that is gone.
+func (p *Processor) FindAction(ctx context.Context, key client.ObjectKey) (*dorguv1.RemediationAction, error) {
+	var prop v1alpha1.RemediationProposal
+	if err := p.reader.Get(ctx, key, &prop); err != nil {
+		return nil, client.IgnoreNotFound(err)
+	}
+	return p.actionFor(ctx, &prop, false)
+}
+
+func (p *Processor) actionFor(
+	ctx context.Context, prop *v1alpha1.RemediationProposal, removeUnfinished bool,
+) (*dorguv1.RemediationAction, error) {
 	var list dorguv1.RemediationActionList
 	if err := p.reader.List(ctx, &list, client.InNamespace(prop.Namespace)); err != nil {
 		return nil, fmt.Errorf("listing RemediationActions: %w", err)
 	}
 	for i := range list.Items {
 		ra := &list.Items[i]
-		if ra.Spec.Provenance == nil || ra.Spec.Provenance.Proposal != prop.Name ||
-			ra.CreationTimestamp.Before(&prop.CreationTimestamp) {
+		uid, stamped := ra.Annotations[AnnotationProposalUID]
+		if ra.Spec.Provenance == nil || ra.Spec.Provenance.Proposal != prop.Name || !stamped || uid != string(prop.UID) {
 			continue
 		}
 		if ra.Status.Phase == "" {
+			if !removeUnfinished {
+				continue
+			}
 			if err := p.client.Delete(ctx, ra); err != nil && !apierrors.IsNotFound(err) {
 				return nil, fmt.Errorf("removing the unfinished RemediationAction %s: %w", ra.Name, err)
 			}

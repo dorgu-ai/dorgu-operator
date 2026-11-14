@@ -237,6 +237,7 @@ func TestProcess_AnActionWithNoStatusIsRemovedAndDecidedAfresh(t *testing.T) {
 	prop := w.get(t, "p-unfinished")
 	orphan := derivedAction(prop, incident("inc", "ImagePullBackOff"))
 	orphan.Spec.Provenance = provenanceFor(prop, false)
+	orphan.Annotations[AnnotationProposalUID] = string(prop.UID)
 	orphan.Spec.Action = dorguv1.RemediationActionDetail{Type: dorguv1.ActionTypeNotification}
 	w.create(t, orphan)
 
@@ -823,6 +824,92 @@ func TestProcess_StatusWriteFailureRemovesTheActionAndErrors(t *testing.T) {
 	var actions dorguv1.RemediationActionList
 	require.NoError(t, w.c.List(context.Background(), &actions))
 	assert.Empty(t, actions.Items, "an action with no status is not proposed")
+}
+
+// F-11: conversion is idempotent end to end. The action is created and its status
+// written, then recording the proposal as Converted fails: the retry finds the action
+// it already made and finishes, with no second action.
+func TestProcess_AFailedConvertedWriteIsFinishedByTheRetry(t *testing.T) {
+	w := newWorld(t, Config{}, baseObjects()...)
+	w.create(t, proposal("p", "alice", "k"))
+	failConverted := true
+	failing := interceptor.NewClient(w.c.(client.WithWatch), interceptor.Funcs{
+		SubResourceUpdate: func(ctx context.Context, cl client.Client, sub string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+			if prop, ok := obj.(*v1alpha1.RemediationProposal); ok && failConverted && prop.Status.Phase == v1alpha1.PhaseConverted {
+				return apierrors.NewBadRequest("status write refused")
+			}
+			return cl.SubResource(sub).Update(ctx, obj, opts...)
+		},
+	})
+	w.p.client, w.p.reader = failing, failing
+
+	_, err := w.p.Process(context.Background(), types.NamespacedName{Namespace: testNS, Name: "p"}, nil)
+	require.Error(t, err)
+	assert.NotEqual(t, v1alpha1.PhaseConverted, w.get(t, "p").Status.Phase)
+	var actions dorguv1.RemediationActionList
+	require.NoError(t, w.c.List(context.Background(), &actions))
+	require.Len(t, actions.Items, 1, "the action exists")
+	first := actions.Items[0].Name
+	found, err := w.p.FindAction(context.Background(), types.NamespacedName{Namespace: testNS, Name: "p"})
+	require.NoError(t, err)
+	require.NotNil(t, found, "the planner can see it exists")
+	assert.Equal(t, first, found.Name)
+
+	failConverted = false
+	out, err := w.p.Process(context.Background(), types.NamespacedName{Namespace: testNS, Name: "p"}, nil)
+	require.NoError(t, err)
+	assert.Equal(t, v1alpha1.PhaseConverted, out.Phase)
+	assert.Equal(t, first, out.Action.Name, "the retry adopted the action, it did not make another")
+	require.NoError(t, w.c.List(context.Background(), &actions))
+	assert.Len(t, actions.Items, 1)
+	assert.Equal(t, first, w.get(t, "p").Status.RemediationActionRef.Name)
+}
+
+// F-11: the action is matched by the proposal's UID, so a proposal recreated under
+// the same name does not adopt the action its predecessor left.
+func TestFindAction_IsBoundToTheProposalsUID(t *testing.T) {
+	w := newWorld(t, Config{}, baseObjects()...)
+	w.create(t, proposal("p", "alice", "k"))
+	prop := w.get(t, "p")
+	key := types.NamespacedName{Namespace: testNS, Name: "p"}
+
+	stale := derivedAction(prop, incident("inc", "ImagePullBackOff"))
+	stale.Name = "ra-of-the-predecessor"
+	stale.Spec.Provenance = provenanceFor(prop, false)
+	stale.Annotations[AnnotationProposalUID] = "uid-of-a-deleted-proposal"
+	w.create(t, stale)
+	require.NoError(t, w.c.Get(context.Background(), client.ObjectKeyFromObject(stale), stale))
+	stale.Status.Phase = "Pending"
+	require.NoError(t, w.c.Status().Update(context.Background(), stale))
+
+	found, err := w.p.FindAction(context.Background(), key)
+	require.NoError(t, err)
+	assert.Nil(t, found, "the predecessor's action is not this proposal's")
+
+	mine := stale.DeepCopy()
+	mine.ResourceVersion, mine.Name = "", "ra-of-this-proposal"
+	mine.Annotations = map[string]string{AnnotationProposalUID: string(prop.UID)}
+	mine.Status = dorguv1.RemediationActionStatus{}
+	w.create(t, mine)
+	require.NoError(t, w.c.Get(context.Background(), client.ObjectKeyFromObject(mine), mine))
+	mine.Status.Phase = "Pending"
+	require.NoError(t, w.c.Status().Update(context.Background(), mine))
+
+	found, err = w.p.FindAction(context.Background(), key)
+	require.NoError(t, err)
+	require.NotNil(t, found)
+	assert.Equal(t, "ra-of-this-proposal", found.Name)
+}
+
+func TestFindAction_NoProposalOrNoActionIsNil(t *testing.T) {
+	w := newWorld(t, Config{}, baseObjects()...)
+	found, err := w.p.FindAction(context.Background(), types.NamespacedName{Namespace: testNS, Name: "ghost"})
+	require.NoError(t, err)
+	assert.Nil(t, found)
+	w.create(t, proposal("p", "alice", "k"))
+	found, err = w.p.FindAction(context.Background(), types.NamespacedName{Namespace: testNS, Name: "p"})
+	require.NoError(t, err)
+	assert.Nil(t, found, "decided nothing yet")
 }
 
 func TestFactsFromIncident(t *testing.T) {

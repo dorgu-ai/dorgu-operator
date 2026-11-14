@@ -474,6 +474,17 @@ func (p *Proposer) persist(
 		err = errors.New("the proposal disappeared before it was decided")
 	}
 	if err != nil {
+		// The action may already exist: it was created and its status written, and a
+		// later write (recording the proposal as Converted) failed. Undoing the
+		// proposal would leave an action whose provenance names a proposal that is
+		// gone, and report a failure for something that exists. Keep the proposal;
+		// the claim is released on return and the proposal reconciler finishes it,
+		// adopting the action by the proposal's UID.
+		if existing, findErr := p.intake.FindAction(ctx, key); findErr == nil && existing != nil {
+			p.logger.Error(err, "the proposal could not be recorded as converted; its action exists and the proposal reconciler will finish it",
+				"proposal", proposal.Name, "action", existing.Name)
+			return &ProposalResult{Action: existing, Proposed: true, Decision: dec}, nil
+		}
 		p.logger.Error(err, "the proposal could not be decided; removing it", "proposal", proposal.Name)
 		if delErr := p.client.Delete(ctx, proposal); delErr != nil && !apierrors.IsNotFound(delErr) {
 			p.logger.Error(delErr, "could not remove the undecided proposal; it needs deleting by hand",

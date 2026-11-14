@@ -206,6 +206,51 @@ func TestPropose_AFailedActionWriteLeavesNoProposalAndNoAction(t *testing.T) {
 	assert.Empty(t, actions.Items)
 }
 
+// C1 review F-11: the action was created and its status written, and then recording
+// the proposal as Converted failed. The planner must report success, not an error
+// for something that exists, and must not delete the proposal the action's
+// provenance names. The proposal reconciler finishes it.
+func TestPropose_AFailedConvertedWriteKeepsTheProposalAndReportsTheAction(t *testing.T) {
+	base := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(newTestPersona(defaultNamespace, "my-app")).
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
+	failing := true
+	c := interceptor.NewClient(ticking(base), interceptor.Funcs{
+		SubResourceUpdate: func(ctx context.Context, cl client.Client, sub string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+			if prop, ok := obj.(*dorguv1alpha1.RemediationProposal); ok && failing && prop.Status.Phase == dorguv1alpha1.PhaseConverted {
+				return errors.New("apiserver unavailable")
+			}
+			return cl.SubResource(sub).Update(ctx, obj, opts...)
+		},
+	})
+	g := gate.New(c, testLogger())
+	processor := intake.New(intake.Config{Client: c, Gate: g, OperatorUsername: operatorUser, Logger: testLogger()})
+	p := NewProposer(c, g, testLogger(), WithIntake(processor))
+
+	incident := newTestIncident(defaultNamespace, "oom-f11", "my-app", "OOMKilled")
+	require.NoError(t, c.Create(context.Background(), incident))
+	result, err := p.Propose(context.Background(),
+		newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical), incident)
+
+	require.NoError(t, err, "the action exists, so this is not a failure")
+	require.True(t, result.Proposed)
+	require.NotNil(t, result.Action)
+	props := proposals(t, c)
+	require.Len(t, props, 1, "the proposal the action's provenance names is still there")
+	assert.Equal(t, result.Action.Spec.Provenance.Proposal, props[0].Name)
+	var actions dorguv1.RemediationActionList
+	require.NoError(t, c.List(context.Background(), &actions))
+	require.Len(t, actions.Items, 1)
+
+	// The reconciler's turn: the claim is released, the write works, the proposal is finished.
+	failing = false
+	out, err := processor.Process(context.Background(), client.ObjectKeyFromObject(&props[0]), nil)
+	require.NoError(t, err)
+	assert.Equal(t, dorguv1alpha1.PhaseConverted, out.Phase)
+	assert.Equal(t, result.Action.Name, out.Action.Name, "the same action")
+	require.NoError(t, c.List(context.Background(), &actions))
+	assert.Len(t, actions.Items, 1)
+}
+
 // The proposal carries the planner's explanation as its rationale, bounded to what
 // the API server accepts, and an empty one is given a sentence (a rationale is
 // required).
