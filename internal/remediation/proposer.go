@@ -80,7 +80,7 @@ func diagnosisTargetPath(diag diagnosis.Diagnosis) string {
 	switch primarySignalType(diag) {
 	case detection.SignalOOMKilled, detection.SignalMemorySaturationCrit, detection.SignalMemorySaturationHigh:
 		return gate.ResourcePathMemory
-	case detection.SignalCPUSaturationHigh, detection.SignalCPUSaturationCritical:
+	case detection.SignalCPUSaturationHigh, detection.SignalCPUSaturationCritical, detection.SignalCPUThrottling:
 		return gate.ResourcePathCPU
 	case detection.SignalCrashLoopBackOff:
 		if hasOOMCorrelation(diag) {
@@ -525,7 +525,9 @@ func (p *Proposer) calculateResourceChange(
 	case detection.SignalOOMKilled, detection.SignalMemorySaturationCrit, detection.SignalMemorySaturationHigh:
 		return p.calculateLimitIncrease(diag, persona, ref, gate.ResourceKeyMemory)
 
-	case detection.SignalCPUSaturationHigh, detection.SignalCPUSaturationCritical:
+	case detection.SignalCPUSaturationHigh, detection.SignalCPUSaturationCritical, detection.SignalCPUThrottling:
+		// A throttled container raises its own CPU limit, sized and bounded exactly as
+		// a memory limit is for an OOM kill. The gate rules on the result.
 		return p.calculateLimitIncrease(diag, persona, ref, gate.ResourceKeyCPU)
 
 	case detection.SignalCrashLoopBackOff:

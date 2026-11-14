@@ -36,7 +36,9 @@ import (
 // the CPU limit of the container, sized off the LIVE limit, and the gate (not this
 // package) decides whether the plan may stand.
 
-func newCPUThrottlingDiagnosis(namespace, personaName string, severity detection.Severity) diagnosis.Diagnosis {
+func newCPUThrottlingDiagnosis(severity detection.Severity) diagnosis.Diagnosis {
+	const personaName = "my-app"
+	namespace := defaultNamespace
 	return diagnosis.Diagnosis{
 		Summary:    "CPU throttling detected",
 		Confidence: 0.80,
@@ -57,7 +59,7 @@ func newCPUThrottlingDiagnosis(namespace, personaName string, severity detection
 }
 
 func TestDiagnosisTargetPath_CPUThrottlingIsTheCPULimit(t *testing.T) {
-	diag := newCPUThrottlingDiagnosis(defaultNamespace, "my-app", detection.SeverityWarning)
+	diag := newCPUThrottlingDiagnosis(detection.SeverityWarning)
 	assert.Equal(t, gate.ResourcePathCPU, diagnosisTargetPath(diag),
 		"one throttled container, one CPU-limit fix: the gate dedups on this path")
 }
@@ -86,7 +88,7 @@ func TestProposer_CPUThrottling_RaisesTheLiveCPULimit(t *testing.T) {
 
 			proposer := NewProposer(c, gate.New(c, testLogger()), testLogger())
 			result, err := proposer.Propose(context.Background(),
-				newCPUThrottlingDiagnosis(defaultNamespace, "my-app", tt.severity), incident)
+				newCPUThrottlingDiagnosis(tt.severity), incident)
 
 			require.NoError(t, err)
 			require.True(t, result.Proposed, "skip: %s", result.SkipReason)
@@ -111,7 +113,7 @@ func TestProposer_CPUThrottling_NeverIntroducesACPULimit(t *testing.T) {
 
 	proposer := NewProposer(c, gate.New(c, testLogger()), testLogger())
 	result, err := proposer.Propose(context.Background(),
-		newCPUThrottlingDiagnosis(defaultNamespace, "my-app", detection.SeverityWarning), incident)
+		newCPUThrottlingDiagnosis(detection.SeverityWarning), incident)
 	require.NoError(t, err)
 	assert.False(t, result.Proposed)
 	assert.Equal(t, SkipNoLiveLimit, result.Reason)
@@ -129,7 +131,7 @@ func TestProposer_CPUThrottling_ObserveModeProposesNothing(t *testing.T) {
 
 	proposer := NewProposer(c, gate.New(c, testLogger()), testLogger())
 	result, err := proposer.Propose(context.Background(),
-		newCPUThrottlingDiagnosis(defaultNamespace, "my-app", detection.SeverityWarning), incident)
+		newCPUThrottlingDiagnosis(detection.SeverityWarning), incident)
 	require.NoError(t, err)
 	assert.False(t, result.Proposed, "the gate's mode stage rules, with no check of the proposer's own")
 }
@@ -144,7 +146,7 @@ func TestProposer_CPUThrottling_ProtectedNamespaceProposesNothing(t *testing.T) 
 
 	proposer := NewProposer(c, gate.New(c, testLogger(), gate.WithProtectedNamespaces(defaultNamespace)), testLogger())
 	result, err := proposer.Propose(context.Background(),
-		newCPUThrottlingDiagnosis(defaultNamespace, "my-app", detection.SeverityWarning), incident)
+		newCPUThrottlingDiagnosis(detection.SeverityWarning), incident)
 	require.NoError(t, err)
 	assert.False(t, result.Proposed)
 }
@@ -158,7 +160,7 @@ func TestProposer_CPUThrottling_SecondIncidentSameFixIsDeduped(t *testing.T) {
 		WithRuntimeObjects(persona, deploy).
 		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
 	proposer := NewProposer(c, gate.New(c, testLogger()), testLogger())
-	diag := newCPUThrottlingDiagnosis(defaultNamespace, "my-app", detection.SeverityWarning)
+	diag := newCPUThrottlingDiagnosis(detection.SeverityWarning)
 
 	r1, err := proposer.Propose(context.Background(), diag, first)
 	require.NoError(t, err)
