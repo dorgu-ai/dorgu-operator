@@ -47,8 +47,8 @@ func (failingCollector) Collect(context.Context) ([]detection.Signal, error) {
 
 // cpuIncidentFor is an open CPUThrottling incident on platform/checkout whose signal
 // has been quiet for longer than the grace period.
-func cpuIncidentFor(name string) *dorguv1.IncidentMemory {
-	im := openIncident("platform", "checkout", name)
+func cpuIncidentFor() *dorguv1.IncidentMemory {
+	im := openIncident("platform", "checkout", "im-platform-checkout-cpu")
 	im.Labels[LabelSignal] = string(detection.SignalCPUThrottling)
 	im.Spec.Detection.Signal = string(detection.SignalCPUThrottling)
 	im.Spec.Detection.Source = "cpu-throttling-checker"
@@ -58,7 +58,7 @@ func cpuIncidentFor(name string) *dorguv1.IncidentMemory {
 // The reviewer's probe: restart with no source, open incident, it must not resolve.
 func TestC4F1_AnOpenCPUIncidentDoesNotResolveAfterARestartWithNoSource(t *testing.T) {
 	ctx := context.Background()
-	im := cpuIncidentFor("im-platform-checkout-cpu")
+	im := cpuIncidentFor()
 	pod := basePod("platform", "checkout-57c95bf9b8-47vp9", "checkout") // a Ready pod, 500m cpu limit in real life
 	r, c := resolverFor(t, im, deploymentFor("platform", "checkout", 1), pod)
 
@@ -77,7 +77,7 @@ func TestC4F1_AnOpenCPUIncidentDoesNotResolveAfterARestartWithNoSource(t *testin
 
 func TestC4F1_AnActiveSourceResolvesAsBefore(t *testing.T) {
 	ctx := context.Background()
-	im := cpuIncidentFor("im-platform-checkout-cpu")
+	im := cpuIncidentFor()
 	r, c := resolverFor(t, im, deploymentFor("platform", "checkout", 1), basePod("platform", "checkout-57c95bf9b8-47vp9", "checkout"))
 
 	collector := detection.NewCPUThrottlingCollector(c, logr.Discard(),
@@ -94,7 +94,7 @@ func TestC4F1_AnActiveSourceResolvesAsBefore(t *testing.T) {
 func TestC4F1_ARestartedOperatorWithMetricsServerThenResolves(t *testing.T) {
 	// Blind only until the first cycle that could look.
 	ctx := context.Background()
-	im := cpuIncidentFor("im-platform-checkout-cpu")
+	im := cpuIncidentFor()
 	r, c := resolverFor(t, im, deploymentFor("platform", "checkout", 1), basePod("platform", "checkout-57c95bf9b8-47vp9", "checkout"))
 	collector := detection.NewCPUThrottlingCollector(c, logr.Discard(),
 		detection.WithMinCycleSpacing(0), detection.WithMetricsSource(quietMetrics{present: true}))
@@ -123,7 +123,7 @@ func TestC4F5_ACrashLoopIncidentStillResolvesWhileTheCPUSourceIsDown(t *testing.
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := context.Background()
 			crash := openIncident("platform", "checkout", "im-platform-checkout-crash") // a CrashLoopBackOff incident
-			cpu := cpuIncidentFor("im-platform-checkout-cpu")
+			cpu := cpuIncidentFor()
 			r, c := resolverFor(t, crash, cpu, deploymentFor("platform", "checkout", 1),
 				basePod("platform", "checkout-57c95bf9b8-47vp9", "checkout"))
 

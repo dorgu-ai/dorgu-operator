@@ -173,7 +173,8 @@ func TestRBAC_NeverGrantsKubeletAccess(t *testing.T) {
 	}
 
 	roles := chartClusterRoles(t)
-	require.NotEmpty(t, roles, "no chart ClusterRole could be parsed, so this test inspected nothing (it used to pass vacuously on {{ }} directives)")
+	require.NotEmpty(t, roles,
+		"no chart ClusterRole could be parsed, so this test inspected nothing (it once passed vacuously)")
 	for _, cr := range roles {
 		require.NotEmpty(t, cr.Rules, "chart ClusterRole %q parsed with no rules", cr.Name)
 		for _, rule := range cr.Rules {
