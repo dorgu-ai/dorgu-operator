@@ -116,7 +116,9 @@ func servedSpec(t *testing.T, c client.Client, key client.ObjectKey) map[string]
 // ticketedFromServer is the typed action the operator reconciles, read back from
 // the API server, carrying a ticket whose hash is the given one and the approval
 // fields CheckTicket needs to get as far as the spec check.
-func ticketedFromServer(t *testing.T, c client.Client, key client.ObjectKey, specHash string) *dorguv1.RemediationAction {
+func ticketedFromServer(
+	t *testing.T, c client.Client, key client.ObjectKey, specHash string,
+) *dorguv1.RemediationAction {
 	t.Helper()
 	ra := &dorguv1.RemediationAction{}
 	require.NoError(t, c.Get(context.Background(), key, ra))
@@ -143,7 +145,8 @@ func TestSpecHash_TheTicketHashIsTheHashOfTheServedSpec_NeverTheTypedOne(t *test
 				if how == "create" {
 					require.NoError(t, c.Create(ctx, u))
 				} else {
-					require.NoError(t, c.Patch(ctx, u, client.Apply, client.FieldOwner("n1-test"), client.ForceOwnership))
+					require.NoError(t, c.Apply(ctx, client.ApplyConfigurationFromUnstructured(u),
+						client.FieldOwner("n1-test"), client.ForceOwnership))
 				}
 				key := client.ObjectKey{Namespace: "default", Name: name}
 
@@ -216,5 +219,6 @@ func TestSpecHash_ASpecNewerThanTheOneInHandIsNeverIssuedAHash(t *testing.T) {
 	require.NoError(t, c.Update(ctx, live))
 
 	_, err := g.ServedSpecHash(ctx, stale)
-	assert.ErrorIs(t, err, gate.ErrSpecMoved, "the spec in hand is older than the served one; no hash may be issued for it")
+	assert.ErrorIs(t, err, gate.ErrSpecMoved,
+		"the spec in hand is older than the served one; no hash may be issued for it")
 }

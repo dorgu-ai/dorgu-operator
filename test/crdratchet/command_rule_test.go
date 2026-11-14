@@ -236,7 +236,7 @@ func TestCommandRule_FitsTheCELCostBudgetAtTheLargestPlan(t *testing.T) {
 	// A format character in the last command of that same plan is refused.
 	bad := ra.DeepCopy()
 	bad.ObjectMeta = metav1.ObjectMeta{Name: "largest-plan-bad", Namespace: "default"}
-	bad.Spec.Steps[len(bad.Spec.Steps)-1].Command = "kubectl get pods ‮"
+	bad.Spec.Steps[len(bad.Spec.Steps)-1].Command = "kubectl get pods " + string(rune(0x202e))
 	err := c.Create(context.Background(), bad)
 	require.Error(t, err)
 	assert.True(t, apierrors.IsInvalid(err), err.Error())
