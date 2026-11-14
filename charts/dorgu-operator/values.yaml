@@ -104,8 +104,10 @@ remediation:
   pendingTTL: 24h
   # How long an apply ticket stays valid after approval issues it. A ticket not
   # applied within it is refused and the remediation ends Expired (reason
-  # TicketExpired): nothing is applied and no cooldown starts. Positive, at most 24h.
-  # Maps to --ticket-ttl.
+  # TicketExpired): nothing is applied and no cooldown starts. A duration with a unit
+  # (15m, 90s, 1h30m), positive, at most 24h; the chart refuses anything else at
+  # install and upgrade time. Needs CLI v0.15.0 or later to approve a ticket longer
+  # than 10m: older CLIs refuse it. Maps to --ticket-ttl.
   ticketTTL: 15m
 
 # Remediation safety. Dorgu never remediates kube-system or the namespace it is

@@ -104,9 +104,10 @@ spec:
                    may wait for approval before it expires. */}}
             - --remediation-pending-ttl={{ dig "pendingTTL" "24h" (.Values.remediation | default dict) }}
             {{- /* Rendered unconditionally so the pod spec states how long an apply
-                   ticket stays valid. The fallback keeps a --reuse-values upgrade
-                   from an older release rendering the default, never an empty flag. */}}
-            - --ticket-ttl={{ dig "ticketTTL" "15m" (.Values.remediation | default dict) }}
+                   ticket stays valid. The helper validates it (a bad value fails the
+                   chart) and keeps a --reuse-values upgrade from an older release
+                   rendering the default, never an empty flag. */}}
+            - --ticket-ttl={{ include "dorgu-operator.ticketTTL" . }}
             {{- with .Values.safety.excludedNamespaces }}
             - --safety-excluded-namespaces={{ join "," . }}
             {{- end }}
