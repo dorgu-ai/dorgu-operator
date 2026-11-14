@@ -309,7 +309,7 @@ func (p *Processor) convert(
 		InstallDecision(draft, dec)
 		draft.Spec.Action = dorguv1.RemediationActionDetail{Type: dorguv1.ActionTypeNotification}
 	}
-	draft.Spec.Provenance = provenanceFor(prop)
+	draft.Spec.Provenance = provenanceFor(prop, hint != nil)
 
 	action, err := p.createAction(ctx, draft, dec)
 	if err != nil {

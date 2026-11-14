@@ -21,6 +21,7 @@ import (
 	"strings"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
+	"github.com/dorgu-ai/dorgu-operator/internal/safetext"
 )
 
 // planSystemPrompt instructs the model to act as an SRE remediation planner and
@@ -235,7 +236,7 @@ func buildPlanUserMessage(rc RemediationContext) string {
 	writeAppPersona(&sb, rc.AppPersona)
 	writeClusterPersona(&sb, rc.ClusterPersona)
 	writePastIncidents(&sb, rc.PastIncidents)
-	writePastRemediations(&sb, rc.PastRemediations)
+	writePastRemediations(&sb, rc.PastRemediations, rc.TrustedProposer)
 
 	return sb.String()
 }
@@ -375,7 +376,10 @@ func writePastIncidents(sb *strings.Builder, incidents []dorguv1.IncidentMemory)
 	sb.WriteString("\n")
 }
 
-func writePastRemediations(sb *strings.Builder, remediations []dorguv1.RemediationAction) {
+// writePastRemediations lists what happened to earlier actions. An action's
+// explanation is shown only when trustedExplanation says it is the planner's own;
+// any other is untrusted text from a proposal and is left out.
+func writePastRemediations(sb *strings.Builder, remediations []dorguv1.RemediationAction, trustedProposer string) {
 	sb.WriteString("## Past remediation outcomes\n")
 	if len(remediations) == 0 {
 		sb.WriteString("(none)\n\n")
@@ -391,8 +395,12 @@ func writePastRemediations(sb *strings.Builder, remediations []dorguv1.Remediati
 		if verification == "" {
 			verification = "n/a"
 		}
+		if !trustedExplanation(ra, trustedProposer) {
+			fmt.Fprintf(sb, "- type=%s phase=%s verification=%s\n", ra.Spec.Action.Type, phase, verification)
+			continue
+		}
 		fmt.Fprintf(sb, "- type=%s phase=%s verification=%s explanation=%q\n",
-			ra.Spec.Action.Type, phase, verification, ra.Spec.Explanation)
+			ra.Spec.Action.Type, phase, verification, safetext.Clean(ra.Spec.Explanation, false))
 	}
 	sb.WriteString("\n")
 }

@@ -28,6 +28,7 @@ import (
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/api/v1alpha1"
 	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
+	"github.com/dorgu-ai/dorgu-operator/internal/safetext"
 )
 
 const (
@@ -59,21 +60,31 @@ func InstallDecision(action *dorguv1.RemediationAction, dec *gate.Decision) {
 	action.Spec.Rollback = &verify
 }
 
-// sourceOf is the proposal's source, defaulting the way the CRD does.
-func sourceOf(prop *v1alpha1.RemediationProposal) string {
-	if prop.Spec.Source == "" {
-		return dorguv1.ProposalSourceAgent
-	}
-	return prop.Spec.Source
-}
-
 // provenanceFor is the record the operator writes on the action a proposal became.
-func provenanceFor(prop *v1alpha1.RemediationProposal) *dorguv1.RemediationProvenance {
+//
+// The source is the planner's only when the proposal was decided with a matched
+// in-process hint (plannerRun): that is the one thing a proposer cannot forge. A
+// proposal that merely says it is the planner, or claims the reserved source
+// "rollback", is recorded as an agent's. Free text from the proposal is stripped of
+// control characters.
+func provenanceFor(prop *v1alpha1.RemediationProposal, plannerRun bool) *dorguv1.RemediationProvenance {
+	source := dorguv1.ProposalSourceAgent
+	if plannerRun {
+		source = dorguv1.ProposalSourceDorguPlanner
+	}
+	var agent *dorguv1.AgentInfo
+	if a := prop.Spec.Agent; a != nil {
+		agent = &dorguv1.AgentInfo{
+			Name:    safetext.Clean(a.Name, false),
+			Version: safetext.Clean(a.Version, false),
+			RunID:   safetext.Clean(a.RunID, false),
+		}
+	}
 	return &dorguv1.RemediationProvenance{
 		Proposal: prop.Name,
 		Proposer: prop.Spec.Proposer,
-		Source:   sourceOf(prop),
-		Agent:    prop.Spec.Agent.DeepCopy(),
+		Source:   source,
+		Agent:    agent,
 	}
 }
 
@@ -170,6 +181,8 @@ func derivedAction(prop *v1alpha1.RemediationProposal, incident *dorguv1.Inciden
 	steps := make([]dorguv1.RemediationStep, len(prop.Spec.Steps))
 	for i := range prop.Spec.Steps {
 		steps[i] = *prop.Spec.Steps[i].DeepCopy()
+		steps[i].Description = safetext.Clean(steps[i].Description, true)
+		steps[i].Rationale = safetext.Clean(steps[i].Rationale, true)
 	}
 
 	return &dorguv1.RemediationAction{
@@ -187,9 +200,11 @@ func derivedAction(prop *v1alpha1.RemediationProposal, incident *dorguv1.Inciden
 			IncidentRef: incidentRefFor(prop, incident),
 			PersonaRef:  persona,
 			TrustLevel:  derivedTrustLevel,
-			// The rationale is untrusted text. It is displayed as the action's
-			// explanation and read by nothing else.
-			Explanation: prop.Spec.Rationale,
+			// The rationale is untrusted text. It is stripped of control characters and
+			// displayed as the action's explanation. It is never put in a model's prompt
+			// (planner.BuildContext leaves out any explanation that is not the
+			// planner's own) and no decision reads it.
+			Explanation: safetext.Clean(prop.Spec.Rationale, true),
 			Confidence:  confidence,
 			Steps:       steps,
 			Approval:    &dorguv1.ApprovalSpec{Required: true},

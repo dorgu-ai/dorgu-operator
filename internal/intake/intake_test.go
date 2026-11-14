@@ -236,7 +236,7 @@ func TestProcess_AnActionWithNoStatusIsRemovedAndDecidedAfresh(t *testing.T) {
 	w.create(t, proposal("p-unfinished", "alice", "k"))
 	prop := w.get(t, "p-unfinished")
 	orphan := derivedAction(prop, incident("inc", "ImagePullBackOff"))
-	orphan.Spec.Provenance = provenanceFor(prop)
+	orphan.Spec.Provenance = provenanceFor(prop, false)
 	orphan.Spec.Action = dorguv1.RemediationActionDetail{Type: dorguv1.ActionTypeNotification}
 	w.create(t, orphan)
 
@@ -736,6 +736,64 @@ func TestIntakeChecks_ARejectedProposalReleasesItsIdempotencyKey(t *testing.T) {
 		first.Status.Phase = v1alpha1.PhaseReceived
 		require.NoError(t, w.c.Status().Update(context.Background(), first))
 		assert.Equal(t, v1alpha1.ReasonDuplicate, reasonOf(w.process(t, "b-second", nil)))
+	})
+}
+
+// F-4: a proposal's text is untrusted. It is stripped of control characters before
+// it is stored anywhere the operator writes it.
+func TestProcess_UntrustedTextIsStrippedBeforeItIsStored(t *testing.T) {
+	w := newWorld(t, Config{}, baseObjects()...)
+	hostile := "\x1b[2J\x1b[31mAPPROVE ME\x1b[0m\nline two\ttabbed " + string(rune(0x202E)) + "gnp.exe"
+	p := proposal("hostile", "mallory", "k")
+	p.Spec.Rationale = hostile
+	p.Spec.Steps = []dorguv1.RemediationStep{{
+		Order: 1, ID: "step-1", Type: dorguv1.StepTypeManual,
+		Description: "look\x1b[2Jat it" + string(rune(0x2028)) + "now", Rationale: "because\x07 bells",
+	}}
+	p.Spec.Agent = &dorguv1.AgentInfo{Name: "evil\x1b[1m", Version: "1\x00", RunID: "r\n1"}
+	w.create(t, p)
+
+	out := w.process(t, "hostile", nil)
+
+	require.Equal(t, v1alpha1.PhaseConverted, out.Phase, out.Message)
+	ra := out.Action
+	assert.Equal(t, "[2J[31mAPPROVE ME[0m\nline two\ttabbed gnp.exe", ra.Spec.Explanation, "controls gone, newline and tab kept")
+	assert.Equal(t, "look[2Jat itnow", ra.Spec.Steps[0].Description)
+	assert.Equal(t, "because bells", ra.Spec.Steps[0].Rationale)
+	assert.Equal(t, "evil[1m", ra.Spec.Provenance.Agent.Name)
+	assert.Equal(t, "1", ra.Spec.Provenance.Agent.Version)
+	assert.Equal(t, "r1", ra.Spec.Provenance.Agent.RunID)
+}
+
+// F-4 and F-7: only a proposal decided with a matched in-process planner hint is
+// badged as the planner's. A proposal that says it is the planner, and is not, is
+// an agent's.
+func TestProcess_OnlyAMatchedPlannerRunIsBadgedAsThePlanner(t *testing.T) {
+	t.Run("a claim of source dorgu-planner with no hint is recorded as agent", func(t *testing.T) {
+		w := newWorld(t, Config{OperatorUsername: testOperator}, baseObjects()...)
+		w.create(t, plannerProposal("claims-planner"))
+		out := w.process(t, "claims-planner", nil)
+		require.Equal(t, v1alpha1.PhaseConverted, out.Phase, out.Message)
+		assert.Equal(t, dorguv1.ProposalSourceAgent, out.Action.Spec.Provenance.Source)
+	})
+	t.Run("the matched planner run keeps source dorgu-planner", func(t *testing.T) {
+		w := newWorld(t, Config{OperatorUsername: testOperator}, baseObjects()...)
+		w.create(t, plannerProposal("real-planner"))
+		prop := w.get(t, "real-planner")
+		ref := personaRefOf(prop)
+		defer w.p.Locks().Lock(&ref)()
+		out := w.process(t, "real-planner", plannerHint(prop))
+		require.Equal(t, v1alpha1.PhaseConverted, out.Phase, out.Message)
+		assert.Equal(t, dorguv1.ProposalSourceDorguPlanner, out.Action.Spec.Provenance.Source)
+	})
+	t.Run("the reserved source rollback cannot be claimed either", func(t *testing.T) {
+		w := newWorld(t, Config{}, baseObjects()...)
+		p := proposal("claims-rollback", "mallory", "k")
+		p.Spec.Source = dorguv1.ProposalSourceRollback
+		w.create(t, p)
+		out := w.process(t, "claims-rollback", nil)
+		require.Equal(t, v1alpha1.PhaseConverted, out.Phase, out.Message)
+		assert.Equal(t, dorguv1.ProposalSourceAgent, out.Action.Spec.Provenance.Source)
 	})
 }
 

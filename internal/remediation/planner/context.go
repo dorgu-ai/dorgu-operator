@@ -46,6 +46,29 @@ const (
 	kindApplicationPersona = "ApplicationPersona"
 )
 
+// ContextOption configures BuildContext.
+type ContextOption func(*contextOptions)
+
+type contextOptions struct{ trustedProposer string }
+
+// WithTrustedProposer names Dorgu's own planner's username (the operator's
+// ServiceAccount): the only proposer whose past explanations may be shown to the
+// model. Without it no explanation is shown.
+func WithTrustedProposer(username string) ContextOption {
+	return func(o *contextOptions) { o.trustedProposer = username }
+}
+
+// trustedExplanation reports whether a past action's explanation is the planner's
+// own words: its provenance names the planner as the source and the trusted proposer
+// as the proposer. The intake records source dorgu-planner only for a proposal it
+// decided with the planner's in-process hint, so an agent's text, an action with no
+// provenance, and an agent that merely names the operator all fail it.
+func trustedExplanation(ra *dorguv1.RemediationAction, trustedProposer string) bool {
+	prov := ra.Spec.Provenance
+	return trustedProposer != "" && prov != nil &&
+		prov.Source == dorguv1.ProposalSourceDorguPlanner && prov.Proposer.Username == trustedProposer
+}
+
 // BuildContext assembles a RemediationContext for the diagnosed incident by
 // loading the affected ApplicationPersona, the singleton ClusterPersona, the
 // recent IncidentMemory records for the same application, and the
@@ -62,7 +85,12 @@ func BuildContext(
 	c client.Client,
 	diag diagnosis.Diagnosis,
 	incident *dorguv1.IncidentMemory,
+	opts ...ContextOption,
 ) (*RemediationContext, error) {
+	var options contextOptions
+	for _, opt := range opts {
+		opt(&options)
+	}
 	if incident == nil {
 		return nil, fmt.Errorf("incident is required to build remediation context")
 	}
@@ -73,8 +101,9 @@ func BuildContext(
 	}
 
 	rc := &RemediationContext{
-		Diagnosis: diag,
-		Signals:   signalsFromDiagnosis(diag),
+		Diagnosis:       diag,
+		Signals:         signalsFromDiagnosis(diag),
+		TrustedProposer: options.trustedProposer,
 	}
 
 	appPersona, err := loadAppPersona(ctx, c, personaRef)
@@ -88,6 +117,13 @@ func BuildContext(
 	pastIncidents := loadPastIncidents(ctx, c, personaRef)
 	rc.PastIncidents = pastIncidents
 	rc.PastRemediations = loadPastRemediations(ctx, c, personaRef, pastIncidents)
+	// Defence in depth: the prompt builder refuses an untrusted explanation too, but
+	// nothing downstream should ever hold one.
+	for i := range rc.PastRemediations {
+		if !trustedExplanation(&rc.PastRemediations[i], rc.TrustedProposer) {
+			rc.PastRemediations[i].Spec.Explanation = ""
+		}
+	}
 
 	return rc, nil
 }

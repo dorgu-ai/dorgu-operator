@@ -55,7 +55,7 @@ func (p *Proposer) proposeWithPlanner(
 ) (*ProposalResult, error) {
 	workloadRef := pre.WorkloadRef
 
-	rc, err := planner.BuildContext(ctx, p.client, diag, incident)
+	rc, err := planner.BuildContext(ctx, p.client, diag, incident, planner.WithTrustedProposer(p.intake.OperatorUsername()))
 	if err != nil {
 		return nil, fmt.Errorf("building remediation context: %w", err)
 	}
