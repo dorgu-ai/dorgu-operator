@@ -32,6 +32,7 @@ import (
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
+	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate/gatetest"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation"
 )
 
@@ -41,10 +42,7 @@ import (
 func TestTicketV1_ApprovalWritesTheSpecHashAndTheApprover(t *testing.T) {
 	ra := lcRA("Approved")
 	rc, _ := lcController(t, []client.Object{lcPersonaObj(lcBaseline), lcIncidentObj(), ra.DeepCopy()})
-	want, err := ra.Spec.Hash()
-	if err != nil {
-		t.Fatal(err)
-	}
+	want := gatetest.ServedSpecHash(ra)
 
 	_, got := lcReconcile(t, rc, ra)
 

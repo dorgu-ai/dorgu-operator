@@ -115,22 +115,6 @@ func TestSpecHashVectors_OrderAndSpacingGiveTheSameHash(t *testing.T) {
 	}
 }
 
-func TestSpecHashVectors_TheTypedHashEqualsTheHashOfItsOwnJSON(t *testing.T) {
-	spec := hashTestSpec()
-	typed := mustHash(t, spec)
-	raw, err := json.Marshal(spec)
-	if err != nil {
-		t.Fatal(err)
-	}
-	fromRaw, err := SpecHashFromJSON(raw)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if typed != fromRaw {
-		t.Fatalf("typed hash %s != raw hash %s", typed, fromRaw)
-	}
-}
-
 func TestSpecHashFromJSON_RefusesWhatIsNotAJSONObject(t *testing.T) {
 	for name, raw := range map[string]string{
 		"empty":          ``,

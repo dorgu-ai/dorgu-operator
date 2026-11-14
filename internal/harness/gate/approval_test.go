@@ -25,11 +25,13 @@ import (
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
+	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate/gatetest"
 )
 
 // canaryOf turns a Deployment into a second one that also answers to the test
@@ -72,9 +74,36 @@ func proposedAction(mutate ...func(*dorguv1.RemediationAction)) *dorguv1.Remedia
 	return ra
 }
 
+// serve stores ra in the gate's reader, as the API server serves it, and returns
+// the specHash of that served spec (P2-D14). The gate hashes what its reader serves,
+// never the typed object it is handed, so a test that runs the gate on an in-memory
+// action first puts that action where the gate reads. Calling it again replaces the
+// stored one, which is how a test edits the spec between issue and apply.
+func serve(t *testing.T, g *Gate, ra *dorguv1.RemediationAction) string {
+	t.Helper()
+	store, ok := g.reader.(client.Client)
+	require.True(t, ok, "the gate's reader cannot be written to in a test")
+	ctx := context.Background()
+	stored := ra.DeepCopy()
+	stored.ResourceVersion = ""
+	var existing dorguv1.RemediationAction
+	switch err := store.Get(ctx, client.ObjectKeyFromObject(ra), &existing); {
+	case apierrors.IsNotFound(err):
+		require.NoError(t, store.Create(ctx, stored))
+	case err != nil:
+		require.NoError(t, err)
+	default:
+		stored.ResourceVersion = existing.ResourceVersion
+		require.NoError(t, store.Update(ctx, stored))
+	}
+	hash, err := g.ServedSpecHash(ctx, ra)
+	require.NoError(t, err)
+	return hash
+}
+
 func approvalRun(t *testing.T, g *Gate, ra *dorguv1.RemediationAction) *Decision {
 	t.Helper()
-	d, err := g.Run(context.Background(), ApprovalCandidate(ra), PhaseApprovalRecheck)
+	d, err := g.Run(context.Background(), ApprovalCandidate(ra, serve(t, g, ra)), PhaseApprovalRecheck)
 	require.NoError(t, err)
 	return d
 }
@@ -121,7 +150,8 @@ func TestM1_ApprovalRecheckRefusesAnOwnerCommandWhateverFinalSays(t *testing.T) 
 
 func TestM1_ApprovalIgnoresCallerFacts(t *testing.T) {
 	g := standardGate(t)
-	cand := ApprovalCandidate(proposedAction())
+	ra := proposedAction()
+	cand := ApprovalCandidate(ra, serve(t, g, ra))
 	cand.Facts = Facts{AdvisoryAllowed: true, TargetPath: ResourcePathCPU}
 
 	d, err := g.Run(context.Background(), cand, PhaseApprovalRecheck)
@@ -486,11 +516,7 @@ func ticketedAction(mutate ...func(*dorguv1.RemediationAction)) *dorguv1.Remedia
 	}
 	seal := func(ra *dorguv1.RemediationAction) {
 		if ra.Status.ApplyTicket != nil && ra.Status.ApplyTicket.SpecHash == specHashOfTheSpecAsCleared {
-			hash, err := ra.Spec.Hash()
-			if err != nil {
-				panic(err)
-			}
-			ra.Status.ApplyTicket.SpecHash = hash
+			ra.Status.ApplyTicket.SpecHash = gatetest.ServedSpecHash(ra)
 		}
 	}
 	mutators := append([]func(*dorguv1.RemediationAction){base}, mutate...)
@@ -499,6 +525,7 @@ func ticketedAction(mutate ...func(*dorguv1.RemediationAction)) *dorguv1.Remedia
 
 func checkTicket(t *testing.T, g *Gate, ra *dorguv1.RemediationAction) *TicketProblem {
 	t.Helper()
+	serve(t, g, ra)
 	problem, err := g.CheckTicket(context.Background(), ra)
 	require.NoError(t, err)
 	return problem

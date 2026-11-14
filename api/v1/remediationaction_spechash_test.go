@@ -19,6 +19,7 @@ package v1
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"regexp"
 	"strings"
 	"testing"
@@ -38,13 +39,34 @@ func hashTestSpec() RemediationActionSpec {
 	}
 }
 
+// typedSpecJSON is the JSON a client-go typed write of the spec sends. The
+// operator no longer hashes it (it hashes what the API server serves, P2-D14);
+// these tests use it only as a stand-in for a served document.
+func typedSpecJSON(t *testing.T, spec RemediationActionSpec) []byte {
+	t.Helper()
+	raw, err := json.Marshal(spec)
+	if err != nil {
+		t.Fatalf("encoding the spec: %v", err)
+	}
+	return raw
+}
+
 func mustHash(t *testing.T, spec RemediationActionSpec) string {
 	t.Helper()
-	h, err := spec.Hash()
+	h, err := SpecHashFromJSON(typedSpecJSON(t, spec))
 	if err != nil {
-		t.Fatalf("Hash: %v", err)
+		t.Fatalf("SpecHashFromJSON: %v", err)
 	}
 	return h
+}
+
+func mustCanonical(t *testing.T, spec RemediationActionSpec) []byte {
+	t.Helper()
+	canonical, err := CanonicalSpecJSON(typedSpecJSON(t, spec))
+	if err != nil {
+		t.Fatalf("CanonicalSpecJSON: %v", err)
+	}
+	return canonical
 }
 
 func TestSpecHash_IsLowercaseHexSHA256(t *testing.T) {
@@ -56,10 +78,7 @@ func TestSpecHash_IsLowercaseHexSHA256(t *testing.T) {
 
 func TestSpecHash_IsTheSHA256OfTheDocumentedCanonicalEncoding(t *testing.T) {
 	spec := hashTestSpec()
-	canonical, err := spec.CanonicalJSON()
-	if err != nil {
-		t.Fatal(err)
-	}
+	canonical := mustCanonical(t, spec)
 	sum := sha256.Sum256(canonical)
 	if got, want := mustHash(t, spec), hex.EncodeToString(sum[:]); got != want {
 		t.Fatalf("hash = %s, want sha256(CanonicalJSON) = %s", got, want)
@@ -69,10 +88,7 @@ func TestSpecHash_IsTheSHA256OfTheDocumentedCanonicalEncoding(t *testing.T) {
 func TestSpecHash_CanonicalJSONHasSortedKeysAndNoWhitespace(t *testing.T) {
 	spec := hashTestSpec()
 	spec.Steps[0].Patch = &apiextensionsv1.JSON{Raw: []byte("{ \"spec\": {\"resources\": {\"requests\": {\"memory\": \"1Gi\"},\n \"limits\": {\"memory\": \"512Mi\"}}} }")}
-	canonical, err := spec.CanonicalJSON()
-	if err != nil {
-		t.Fatal(err)
-	}
+	canonical := mustCanonical(t, spec)
 	want := `"patch":{"spec":{"resources":{"limits":{"memory":"512Mi"},"requests":{"memory":"1Gi"}}}}`
 	if !strings.Contains(string(canonical), want) {
 		t.Fatalf("canonical JSON %s does not contain %s", canonical, want)
@@ -135,19 +151,56 @@ func TestSpecHash_IsDeterministic(t *testing.T) {
 func TestSpecHash_APatchThatIsNotJSONIsAnError(t *testing.T) {
 	spec := hashTestSpec()
 	spec.Steps[0].Patch = &apiextensionsv1.JSON{Raw: []byte(`{not json`)}
-	if _, err := spec.Hash(); err == nil {
-		t.Fatal("a spec with an unencodable patch must not hash")
+	if _, err := json.Marshal(spec); err == nil {
+		t.Fatal("a spec with an unencodable patch must not encode, so it cannot hash")
+	}
+	if _, err := SpecHashFromJSON([]byte(`{"patch":{not json}`)); err == nil {
+		t.Fatal("a document that is not JSON must not hash")
 	}
 }
 
 func TestSpecHash_DoesNotEscapeHTMLCharacters(t *testing.T) {
 	spec := hashTestSpec()
 	spec.Explanation = "a < b && c > d"
-	canonical, err := spec.CanonicalJSON()
-	if err != nil {
-		t.Fatal(err)
-	}
+	canonical := mustCanonical(t, spec)
 	if !strings.Contains(string(canonical), `"explanation":"a < b && c > d"`) {
 		t.Fatalf("canonical JSON escaped HTML characters: %s", canonical)
+	}
+}
+
+// Why the operator hashes the served document and never a typed struct (P2-D14,
+// C3 re-review N-1): a spec decoded into the Go types and encoded again is another
+// document for each of these inputs, so a client hashing the served spec would not
+// match a typed hash.
+func TestSpecHash_ATypedRoundTripIsNotTheServedDocument(t *testing.T) {
+	served := map[string]string{
+		"empty steps":      `{"steps":[]}`,
+		"empty safety":     `{"steps":[{"order":1,"id":"s","type":"manual","description":"d","autoExecutable":false,"trustLevel":0,"safety":[]}]}`,
+		"duration spelled": `{"rollback":{"enabled":true,"maxRetries":1,"healthCheckAfter":"5m"}}`,
+		"fractional time":  `{"workloadRef":{"kind":"Deployment","name":"w","namespace":"n","managedBy":"unknown","observedAt":"2026-11-14T10:00:00.123Z"}}`,
+		"offset time":      `{"workloadRef":{"kind":"Deployment","name":"w","namespace":"n","managedBy":"unknown","observedAt":"2026-11-14T15:30:00+05:30"}}`,
+	}
+	for name, doc := range served {
+		t.Run(name, func(t *testing.T) {
+			var typed RemediationActionSpec
+			if err := json.Unmarshal([]byte(doc), &typed); err != nil {
+				t.Fatal(err)
+			}
+			again, err := json.Marshal(typed)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fromServed, err := SpecHashFromJSON([]byte(doc))
+			if err != nil {
+				t.Fatal(err)
+			}
+			fromTyped, err := SpecHashFromJSON(again)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if fromServed == fromTyped {
+				t.Fatalf("expected the typed round trip of %s to differ from the served document", doc)
+			}
+		})
 	}
 }

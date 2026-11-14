@@ -388,7 +388,16 @@ func (r *RemediationController) handleApproved(ctx context.Context, logger logr.
 		return ctrl.Result{}, r.transitionToAcknowledged(ctx, action)
 	}
 
-	decision, err := r.Gate.Run(ctx, gate.ApprovalCandidate(action), gate.PhaseApprovalRecheck)
+	// The ticket binds the hash of the spec as the API server serves it now (P2-D14),
+	// read live: the typed object in hand is a Go view of it and hashes differently
+	// for empty arrays, durations and timestamps. A served spec newer than the one in
+	// hand (an edit this reconcile has not seen) is retried, so the hash is always of
+	// the spec the gate is about to clear.
+	specHash, err := r.Gate.ServedSpecHash(ctx, action)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("the spec of the approved action could not be read as served; nothing was applied, will retry: %w", err)
+	}
+	decision, err := r.Gate.Run(ctx, gate.ApprovalCandidate(action, specHash), gate.PhaseApprovalRecheck)
 	if err != nil {
 		// The gate could not decide (a read failed). Nothing is applied and the
 		// approval is retried; this is never treated as a pass. The error is

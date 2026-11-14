@@ -38,6 +38,7 @@ import (
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
 	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
+	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate/gatetest"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation"
 )
 
@@ -166,9 +167,7 @@ func lcRecordProposal(ra *dorguv1.RemediationAction) {
 			ExpiresAt:               metav1.NewTime(now.Add(gate.DefaultTicketTTL)),
 			ApprovedBy:              lcApprover,
 		}
-		if hash, err := ra.Spec.Hash(); err == nil {
-			ra.Status.ApplyTicket.SpecHash = hash
-		}
+		ra.Status.ApplyTicket.SpecHash = gatetest.ServedSpecHash(ra)
 		applied := metav1.NewTime(time.Now().Add(-11 * time.Minute))
 		if ra.Status.Phase != RemediationPhaseTicketed {
 			ra.Status.AppliedAt = &applied

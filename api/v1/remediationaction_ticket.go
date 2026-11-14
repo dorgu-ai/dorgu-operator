@@ -78,8 +78,11 @@ const (
 //  3. The hash is the SHA-256 of those UTF-8 bytes as 64 lowercase hexadecimal
 //     characters, with no prefix.
 //
-// Because JCS normalises numbers, a spec hashes the same as authored and as read
-// back from the API server. Golden vectors for every rule above are in
+// The operator hashes the spec it reads through an unstructured, uncached read of
+// the RemediationAction, at ticket issue and again at apply, so a client that
+// follows these steps on what it reads computes the operator's hash for any way the
+// object was written (kubectl create, server-side apply, the operator's own typed
+// write). Golden vectors for every rule above are in
 // testdata/spechash_vectors.json, and every implementation should run them.
 const SpecHashAlgorithm = "lowercase hex sha256 of the RFC 8785 (JCS) canonical JSON of the RemediationAction .spec as served by the API server"
 
@@ -127,33 +130,4 @@ func SpecHashFromMap(spec map[string]any) (string, error) {
 		return "", fmt.Errorf("encoding the spec: %w", err)
 	}
 	return SpecHashFromJSON(raw)
-}
-
-// CanonicalJSON is the canonical encoding of this typed spec: the JSON the API
-// server stores for it (this version's field names and omitempty rules),
-// canonicalised by CanonicalSpecJSON.
-//
-// The operator hashes the objects it reads through its own typed client, whose
-// JSON is the spec it wrote and the API server serves back. A client that reads
-// the served spec must use SpecHashFromJSON or SpecHashFromMap on it, never a
-// typed struct of its own. Any spec field added later must be omitempty (or a
-// pointer) so that existing specs keep their hash.
-func (s RemediationActionSpec) CanonicalJSON() ([]byte, error) {
-	raw, err := json.Marshal(s)
-	if err != nil {
-		return nil, fmt.Errorf("encoding the spec: %w", err)
-	}
-	return CanonicalSpecJSON(raw)
-}
-
-// Hash is ApplyTicket.SpecHash for this spec: SpecHashFromJSON of its JSON, which
-// equals SpecHashFromJSON of the spec as served. It errors when the spec cannot
-// be encoded (a patch that is not JSON), which a stored spec never is.
-func (s RemediationActionSpec) Hash() (string, error) {
-	canonical, err := s.CanonicalJSON()
-	if err != nil {
-		return "", err
-	}
-	sum := sha256.Sum256(canonical)
-	return hex.EncodeToString(sum[:]), nil
 }

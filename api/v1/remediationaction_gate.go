@@ -219,8 +219,9 @@ type ApplyTicket struct {
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
-	// SpecHash is the SHA-256 of the canonical encoding of spec at the moment the
-	// gate cleared it (RemediationActionSpec.Hash: 64 lowercase hex characters).
+	// SpecHash is the SHA-256 (64 lowercase hex characters) of the RFC 8785 (JCS)
+	// canonical JSON of the RemediationAction .spec as the API server served it at
+	// the moment the gate cleared it.
 	// Nothing is applied under the ticket once the spec no longer hashes to it.
 	// Absent on a v0 ticket, which is refused.
 	// +optional

@@ -107,7 +107,10 @@ func TestOwned_ApprovalRecheckLeavesNothingToApply(t *testing.T) {
 			_, c := lcController(t, []client.Object{lcPersonaObj(lcBaseline), lcIncidentObj(), ownedDeployment(owner), ra.DeepCopy()}, lcOOMSignal())
 			personaBefore, deploymentBefore := snapshot(t, c)
 
-			decision, err := gate.New(c, noiseLogger()).Run(context.Background(), gate.ApprovalCandidate(ra), gate.PhaseApprovalRecheck)
+			g := gate.New(c, noiseLogger())
+			specHash, err := g.ServedSpecHash(context.Background(), ra)
+			require.NoError(t, err)
+			decision, err := g.Run(context.Background(), gate.ApprovalCandidate(ra, specHash), gate.PhaseApprovalRecheck)
 
 			require.NoError(t, err)
 			require.True(t, decision.Allowed(), "an acknowledgement is not refused: %s", decision.SkipReason())

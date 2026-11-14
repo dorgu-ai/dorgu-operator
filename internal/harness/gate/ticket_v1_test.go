@@ -26,6 +26,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
+	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate/gatetest"
 )
 
 // Ticket v1 (P2-D9, task 2.6): the ticket binds the spec that was cleared
@@ -42,8 +43,7 @@ func issuedTicket(t *testing.T, g *Gate, ra *dorguv1.RemediationAction) *dorguv1
 
 func TestTicketV1_CarriesTheSpecHashTheApproverAndTheExpiry(t *testing.T) {
 	ra := proposedAction(func(ra *dorguv1.RemediationAction) { ra.Status.ApprovedBy = "alice@example.com" })
-	want, err := ra.Spec.Hash()
-	require.NoError(t, err)
+	want := gatetest.ServedSpecHash(ra)
 
 	ticket := issuedTicket(t, standardGate(t), ra)
 
@@ -151,8 +151,7 @@ func TestTicketV1_RefusalsAtApplyAreEnumerated(t *testing.T) {
 			ra.Status.ApplyTicket.SpecHash = "0000000000000000000000000000000000000000000000000000000000000000"
 		}, guardrail: GuardrailSpecChanged},
 		"hash in upper case is not the hash": {mutate: func(ra *dorguv1.RemediationAction) {
-			hash, _ := ra.Spec.Hash()
-			ra.Status.ApplyTicket.SpecHash = upper(hash)
+			ra.Status.ApplyTicket.SpecHash = upper(gatetest.ServedSpecHash(ra))
 		}, guardrail: GuardrailSpecChanged},
 	}
 	for name, tc := range cases {

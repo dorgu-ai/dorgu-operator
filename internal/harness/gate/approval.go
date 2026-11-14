@@ -84,10 +84,10 @@ const kubeControllerManager = "kube-controller-manager"
 // when it proposed (status.gate from a Proposal run that cleared) and that the
 // spec is still the generation it cleared (the Proposed condition). Nothing the
 // author of the spec controls can supply, widen or skip those (M2).
-func ApprovalCandidate(action *dorguv1.RemediationAction) Candidate {
-	// A spec that cannot be hashed leaves specHash empty, and no ticket is issued
-	// for it (Decision.Ticket).
-	specHash, _ := action.Spec.Hash()
+//
+// specHash is the hash of the spec as the API server serves it (Gate.ServedSpecHash),
+// never of the typed struct (P2-D14). An empty one issues no ticket (Decision.Ticket).
+func ApprovalCandidate(action *dorguv1.RemediationAction, specHash string) Candidate {
 	cand := Candidate{
 		approvedBy:  strings.TrimSpace(action.Status.ApprovedBy),
 		specHash:    specHash,
@@ -109,8 +109,8 @@ func ApprovalCandidate(action *dorguv1.RemediationAction) Candidate {
 // compares the live cluster to is the approval re-check's own (status.gate with
 // phase ApprovalRecheck), which is what the operator wrote when it issued the
 // ticket. The Proposed condition still has to pin the current spec generation.
-func TicketCandidate(action *dorguv1.RemediationAction) Candidate {
-	cand := ApprovalCandidate(action)
+func TicketCandidate(action *dorguv1.RemediationAction, specHash string) Candidate {
+	cand := ApprovalCandidate(action, specHash)
 	cand.prior, cand.priorGuard, cand.priorProblem = operatorRecord(action, PhaseApprovalRecheck)
 	return cand
 }
@@ -300,7 +300,11 @@ func (g *Gate) checkTicket(ctx context.Context, action *dorguv1.RemediationActio
 	if action.Status.ApprovedAt == nil || action.Status.ApprovedAt.IsZero() {
 		return &TicketProblem{GuardrailNotApproved, "the action has no approval on record (status.approvedAt), so a ticket on it was not issued for an approval"}, nil
 	}
-	if problem := ticketSpecProblem(ticket, action); problem != nil {
+	servedHash, problem, err := g.ticketSpecProblem(ctx, ticket, action)
+	if err != nil {
+		return nil, err
+	}
+	if problem != nil {
 		return problem, nil
 	}
 	if problem := ticketPatchProblem(ticket); problem != "" {
@@ -313,14 +317,14 @@ func (g *Gate) checkTicket(ctx context.Context, action *dorguv1.RemediationActio
 		return &TicketProblem{GuardrailNoProposalRecord, "the apply ticket is not bound to a workload"}, nil
 	}
 
-	problem, err := g.workloadMoved(ctx, action)
+	problem, err = g.workloadMoved(ctx, action)
 	if err != nil {
 		return nil, err
 	}
 	if problem != nil {
 		return problem, nil
 	}
-	return g.rederiveTicket(ctx, action)
+	return g.rederiveTicket(ctx, action, servedHash)
 }
 
 // ticketFieldsProblem requires every field ticket v1 added or relies on. The
@@ -351,17 +355,24 @@ func ticketFieldsProblem(ticket *dorguv1.ApplyTicket) *TicketProblem {
 }
 
 // ticketSpecProblem refuses a ticket whose specHash is not the hash of the spec
-// the action has now. The ticket was cleared for one spec; any edit since, to any
-// field of any step, is a different plan that no human approved.
-func ticketSpecProblem(ticket *dorguv1.ApplyTicket, action *dorguv1.RemediationAction) *TicketProblem {
-	now, err := action.Spec.Hash()
-	if err != nil {
-		return &TicketProblem{GuardrailSpecChanged, "the spec can no longer be hashed, so it cannot be shown to be the one the ticket was issued for"}
+// the API server serves now (a live read, P2-D14). The ticket was cleared for one
+// spec; any edit since, to any field of any step, is a different plan that no human
+// approved. It returns the served hash so the re-derivation uses the same one. An
+// error means the API server could not be read.
+func (g *Gate) ticketSpecProblem(ctx context.Context, ticket *dorguv1.ApplyTicket, action *dorguv1.RemediationAction) (string, *TicketProblem, error) {
+	now, err := g.ServedSpecHash(ctx, action)
+	switch {
+	case errors.Is(err, ErrSpecMoved):
+		return "", &TicketProblem{GuardrailSpecChanged, "the spec was edited after this action was read, so what is in the spec is not what was approved"}, nil
+	case err != nil && errors.Is(err, ErrSpecUnhashable):
+		return "", &TicketProblem{GuardrailSpecChanged, "the spec can no longer be hashed, so it cannot be shown to be the one the ticket was issued for"}, nil
+	case err != nil:
+		return "", nil, err
 	}
 	if now != ticket.SpecHash {
-		return &TicketProblem{GuardrailSpecChanged, "the spec was changed after the ticket was issued (its hash is no longer the ticket's specHash), so what is in the spec is not what was approved"}
+		return "", &TicketProblem{GuardrailSpecChanged, "the spec was changed after the ticket was issued (its hash is no longer the ticket's specHash), so what is in the spec is not what was approved"}, nil
 	}
-	return nil
+	return now, nil, nil
 }
 
 // ticketTimingProblem checks the ticket's own clock fields: it has an issue time
@@ -386,10 +397,10 @@ func (g *Gate) ticketTimingProblem(ticket *dorguv1.ApplyTicket) *TicketProblem {
 
 // rederiveTicket runs ApprovalRecheck again on live state and requires that it
 // would issue the very ticket on the action.
-func (g *Gate) rederiveTicket(ctx context.Context, action *dorguv1.RemediationAction) (*TicketProblem, error) {
+func (g *Gate) rederiveTicket(ctx context.Context, action *dorguv1.RemediationAction, specHash string) (*TicketProblem, error) {
 	// Not Run: this is one Apply decision, counted by CheckTicket, and not also an
 	// approval re-check of its own.
-	decision, err := g.evaluate(ctx, TicketCandidate(action), PhaseApprovalRecheck, MetricPhaseApply)
+	decision, err := g.evaluate(ctx, TicketCandidate(action, specHash), PhaseApprovalRecheck, MetricPhaseApply)
 	if err != nil {
 		return nil, err
 	}

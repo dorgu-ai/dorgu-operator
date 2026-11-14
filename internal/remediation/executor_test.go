@@ -35,6 +35,7 @@ import (
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
+	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate/gatetest"
 )
 
 // testDeployment is the live workload the executor tests' tickets are bound to.
@@ -69,6 +70,19 @@ func newTestExecutor(objs ...client.Object) *Executor {
 		WithStatusSubresource(&dorguv1.RemediationAction{}, &dorguv1.ApplicationPersona{}).
 		Build()
 	return NewExecutor(c, gate.New(c, logr.Discard()), logr.Discard())
+}
+
+// applyServed stores the action where the gate reads it (the gate hashes the spec
+// the API server serves, P2-D14, not the object in hand) and applies it.
+func applyServed(t *testing.T, e *Executor, action *dorguv1.RemediationAction) error {
+	t.Helper()
+	stored := action.DeepCopy()
+	stored.ResourceVersion = ""
+	stored.Status = dorguv1.RemediationActionStatus{} // only the spec is hashed
+	if err := e.client.Create(context.Background(), stored); err != nil {
+		t.Fatalf("serving the action: %v", err)
+	}
+	return e.Apply(context.Background(), action)
 }
 
 // baseRemediationAction is a Ticketed action: approved, re-checked, and holding
@@ -132,11 +146,7 @@ func baseRemediationAction() *dorguv1.RemediationAction {
 		},
 	}
 	// The ticket binds the spec as it stands when the gate clears it.
-	hash, err := ra.Spec.Hash()
-	if err != nil {
-		panic(err)
-	}
-	ra.Status.ApplyTicket.SpecHash = hash
+	ra.Status.ApplyTicket.SpecHash = gatetest.ServedSpecHash(ra)
 	return ra
 }
 
@@ -174,7 +184,7 @@ func TestExecutor_Apply_ValidPatch(t *testing.T) {
 
 	executor := newTestExecutor(persona)
 
-	if err := executor.Apply(context.Background(), action); err != nil {
+	if err := applyServed(t, executor, action); err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
 
@@ -200,7 +210,7 @@ func TestExecutor_Apply_AppliesTheTicketNotTheSpecAction(t *testing.T) {
 	persona := baseApplicationPersona()
 	executor := newTestExecutor(persona)
 
-	if err := executor.Apply(context.Background(), baseRemediationAction()); err != nil {
+	if err := applyServed(t, executor, baseRemediationAction()); err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
 
@@ -276,7 +286,7 @@ func TestExecutor_Apply_RefusesWithoutAValidTicket(t *testing.T) {
 			action := baseRemediationAction()
 			tt.mutate(action)
 
-			err := executor.Apply(context.Background(), action)
+			err := applyServed(t, executor, action)
 			var precondition *PreconditionError
 			if !errors.As(err, &precondition) {
 				t.Fatalf("expected a PreconditionError (nothing written), got %v", err)
@@ -300,7 +310,7 @@ func TestExecutor_Apply_WithoutAGateAppliesNothing(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(baseApplicationPersona(), testDeployment()).Build()
 	executor := NewExecutor(c, nil, logr.Discard())
 
-	err := executor.Apply(context.Background(), baseRemediationAction())
+	err := applyServed(t, executor, baseRemediationAction())
 
 	var precondition *PreconditionError
 	if !errors.As(err, &precondition) {
@@ -319,7 +329,7 @@ func TestExecutor_Apply_AnUnreadableWorkloadIsARefusalNotAPass(t *testing.T) {
 		}})
 	executor := NewExecutor(broken, gate.New(broken, logr.Discard()), logr.Discard())
 
-	err := executor.Apply(context.Background(), baseRemediationAction())
+	err := applyServed(t, executor, baseRemediationAction())
 
 	var precondition *PreconditionError
 	if !errors.As(err, &precondition) {
@@ -339,7 +349,7 @@ func TestExecutor_Apply_MissingPersona(t *testing.T) {
 	// No persona in the client.
 	executor := newTestExecutor()
 
-	err := executor.Apply(context.Background(), action)
+	err := applyServed(t, executor, action)
 	var precondition *PreconditionError
 	if !errors.As(err, &precondition) {
 		t.Fatalf("expected a PreconditionError for a missing persona, got %v", err)
@@ -359,7 +369,7 @@ func TestExecutor_Apply_PersonaBeingDeleted(t *testing.T) {
 
 	executor := newTestExecutor(persona)
 
-	err := executor.Apply(context.Background(), action)
+	err := applyServed(t, executor, action)
 	if err == nil {
 		t.Fatal("expected error for persona being deleted")
 	}

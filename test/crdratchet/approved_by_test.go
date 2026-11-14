@@ -23,6 +23,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -31,6 +32,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
+	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
 )
 
 // F-3: status.approvedBy has the bound of the ticket's copy, so an approval the
@@ -52,10 +54,13 @@ func TestApprovedBy_TheStatusFieldHasTheTicketsBound(t *testing.T) {
 }
 
 // The hash a ticket records is the hash of the spec as the API server serves it
-// (P2-D14): the typed spec the operator reads and the unstructured spec a CLI or
-// dashboard reads must give one value, defaults and normalised numbers included.
-func TestSpecHash_TheTypedSpecAndTheServedSpecHashAlike(t *testing.T) {
+// (P2-D14), with defaults the server added and numbers normalised by JCS, and it
+// equals the hash of what the author wrote for an object the operator marshalled
+// itself. (Client-written objects that diverge from their typed form are covered in
+// served_hash_test.go.)
+func TestSpecHash_TheOperatorsOwnWriteHashesLikeTheServedSpec(t *testing.T) {
 	c := startEnv(t, filepath.Join("..", "..", "config", "crd", "bases"))
+	g := gate.New(c, logr.Discard(), gate.WithReader(c))
 	ctx := context.Background()
 	ra := remediation("hash-served", "kubectl get pods")
 	ra.Spec.Steps = append(ra.Spec.Steps, dorguv1.RemediationStep{
@@ -69,7 +74,7 @@ func TestSpecHash_TheTypedSpecAndTheServedSpecHashAlike(t *testing.T) {
 
 	typed := &dorguv1.RemediationAction{}
 	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(ra), typed))
-	typedHash, err := typed.Spec.Hash()
+	issued, err := g.ServedSpecHash(ctx, typed)
 	require.NoError(t, err)
 
 	served := &unstructured.Unstructured{}
@@ -80,7 +85,7 @@ func TestSpecHash_TheTypedSpecAndTheServedSpecHashAlike(t *testing.T) {
 	servedHash, err := dorguv1.SpecHashFromMap(spec)
 	require.NoError(t, err)
 
-	assert.Equal(t, servedHash, typedHash,
+	assert.Equal(t, servedHash, issued,
 		"the operator and a client reading the served spec must compute the same specHash")
 	// What the author wrote differs from what is stored (1.0 is 1, the big integer
 	// is a double), and the canonical form does not care.
