@@ -76,6 +76,12 @@ func (p *Processor) Claimed(key client.ObjectKey) bool {
 //
 // An error means nothing final was decided and the caller should retry.
 func (p *Processor) Process(ctx context.Context, key client.ObjectKey, hint *Hint) (*Outcome, error) {
+	// A closed intake decides nothing: not even a status is written, so a proposal
+	// waits exactly as it was written until the intake opens.
+	if f := p.Blocked(); f != nil {
+		return nil, &NotReadyError{Failure: *f}
+	}
+
 	unlockProposal, err := p.lockProposal(ctx, key)
 	if err != nil {
 		return nil, err

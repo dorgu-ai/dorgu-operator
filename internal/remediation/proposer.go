@@ -147,7 +147,11 @@ func NewProposer(c client.Client, g *gate.Gate, logger logr.Logger, opts ...Prop
 		opt(p)
 	}
 	if p.intake == nil {
-		p.intake = intake.New(intake.Config{Client: c, Gate: g, Logger: logger})
+		// A Proposer built without an intake is a test's. Production wiring always
+		// passes WithIntake, with the operator's real identity (cmd/health_pipeline.go).
+		p.intake = intake.New(intake.Config{
+			Client: c, Gate: g, OperatorUsername: intake.TestOperatorUsername, Logger: logger,
+		})
 	}
 	return p
 }
@@ -237,6 +241,13 @@ func skipped(dec *gate.Decision) *ProposalResult {
 func (p *Proposer) Propose(ctx context.Context, diag diagnosis.Diagnosis, incident *dorguv1.IncidentMemory) (*ProposalResult, error) {
 	if diag.PersonaRef == nil {
 		return proposerSkip("diagnosis has no persona reference", SkipNoPersonaRef, nil), nil
+	}
+	// A closed intake (the operator does not know who it is, or a CRD it writes is
+	// missing or stale) means nothing can be recorded, so nothing is planned: no gate
+	// run, no model call, no proposal. Detection carries on; the ClusterPersona says why.
+	if f := p.intake.Blocked(); f != nil {
+		return proposerSkip(fmt.Sprintf("the proposal intake is closed (%s): %s", f.Reason, f.Message),
+			SkipIntakeClosed, nil), nil
 	}
 	unlock, err := p.lockPersona(ctx, diag.PersonaRef)
 	if err != nil {

@@ -58,6 +58,13 @@ rules:
   - apiGroups: ["dorgu.io"]
     resources: ["remediationproposals/status"]
     verbs: ["get", "update", "patch"]
+  # The proposal intake's preflight reads exactly two CRDs, by name, to check that
+  # the RemediationProposal CRD is installed and that the RemediationAction CRD has
+  # spec.provenance. Without this the intake stays closed (fail closed).
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    resourceNames: ["remediationactions.dorgu.io", "remediationproposals.dorgu.io"]
+    verbs: ["get"]
   # DorguEvent CRD (event pipeline). `delete` is the retention and cap cleaner
   # pruning dorgu's own records, which without it grew without bound in etcd. It
   # is scoped to dorgu.io/dorguevents and to no workload kind, so the published

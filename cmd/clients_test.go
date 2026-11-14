@@ -27,8 +27,10 @@ import (
 
 	"github.com/go-logr/logr"
 	appsv1 "k8s.io/api/apps/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
@@ -70,7 +72,9 @@ func TestNewClusterClients_OnlyTheIntakeClientCanCreateActions(t *testing.T) {
 func TestBuildHealthPipeline_ComponentsAreGuardedAndTheIntakeStillCreates(t *testing.T) {
 	t.Setenv(intake.ServiceAccountEnv, "dorgu-operator")
 	scheme := runtime.NewScheme()
-	for _, add := range []func(*runtime.Scheme) error{dorguv1.AddToScheme, dorguv1alpha1.AddToScheme, appsv1.AddToScheme} {
+	for _, add := range []func(*runtime.Scheme) error{
+		dorguv1.AddToScheme, dorguv1alpha1.AddToScheme, appsv1.AddToScheme, apiextensionsv1.AddToScheme,
+	} {
 		if err := add(scheme); err != nil {
 			t.Fatal(err)
 		}
@@ -89,8 +93,11 @@ func TestBuildHealthPipeline_ComponentsAreGuardedAndTheIntakeStillCreates(t *tes
 		Status: dorguv1.IncidentMemoryStatus{Phase: "Detected"},
 	}
 	raw := fake.NewClientBuilder().WithScheme(scheme).WithObjects(persona, incident).
+		WithObjects(installedCRDs()...).
 		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
-	p := buildHealthPipeline(newClusterClients(raw), raw, operatorConfig{}, testOperatorNS, logr.Discard())
+	setup := newIntakeSetup(raw, testOperatorNS, logr.Discard())
+	setup.Preflight.Run(context.Background())
+	p := buildHealthPipeline(newClusterClients(raw), raw, operatorConfig{}, testOperatorNS, setup, logr.Discard())
 
 	diag := diagnosis.Diagnosis{
 		Summary: "OOMKilled detected", Confidence: 0.85, Category: "resource", Severity: detection.SeverityCritical,
@@ -133,4 +140,30 @@ func TestMain_CallsGetClientOnlyToBuildTheGuardedClients(t *testing.T) {
 		t.Fatalf("main.go must call GetClient() exactly once, as newClusterClients(mgr.GetClient()); found %q", calls)
 	}
 	// And nothing hands the raw client to a component under another name.
+}
+
+// installedCRDs are the two CRDs the intake's preflight reads, as a current
+// installation has them.
+func installedCRDs() []client.Object {
+	crd := func(name, version string, spec ...string) client.Object {
+		props := map[string]apiextensionsv1.JSONSchemaProps{}
+		for _, p := range spec {
+			props[p] = apiextensionsv1.JSONSchemaProps{Type: "object"}
+		}
+		return &apiextensionsv1.CustomResourceDefinition{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+			Spec: apiextensionsv1.CustomResourceDefinitionSpec{Versions: []apiextensionsv1.CustomResourceDefinitionVersion{{
+				Name: version, Served: true, Storage: true,
+				Schema: &apiextensionsv1.CustomResourceValidation{OpenAPIV3Schema: &apiextensionsv1.JSONSchemaProps{
+					Type: "object", Properties: map[string]apiextensionsv1.JSONSchemaProps{
+						"spec": {Type: "object", Properties: props}}}},
+			}}},
+			Status: apiextensionsv1.CustomResourceDefinitionStatus{Conditions: []apiextensionsv1.CustomResourceDefinitionCondition{
+				{Type: apiextensionsv1.Established, Status: apiextensionsv1.ConditionTrue}}},
+		}
+	}
+	return []client.Object{
+		crd(intake.ProposalCRDName, "v1alpha1", "steps"),
+		crd(intake.ActionCRDName, "v1", "provenance", "steps"),
+	}
 }

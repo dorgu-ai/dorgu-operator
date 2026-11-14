@@ -25,6 +25,15 @@ rules:
   - list
   - watch
 - apiGroups:
+  - apiextensions.k8s.io
+  resourceNames:
+  - remediationactions.dorgu.io
+  - remediationproposals.dorgu.io
+  resources:
+  - customresourcedefinitions
+  verbs:
+  - get
+- apiGroups:
   - apps
   resources:
   - deployments

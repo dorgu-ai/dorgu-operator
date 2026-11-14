@@ -128,6 +128,9 @@ func newWorld(t *testing.T, cfg Config, objs ...client.Object) *world {
 	})
 	w := &world{c: c, open: &fakeOpener{incident: incident("opened", "ProposerReported")}}
 	cfg.Client, cfg.Logger = c, logr.Discard()
+	if cfg.OperatorUsername == "" {
+		cfg.OperatorUsername = TestOperatorUsername
+	}
 	if cfg.Gate == nil {
 		cfg.Gate = gate.New(c, logr.Discard())
 	}
@@ -163,20 +166,13 @@ func baseObjects() []client.Object {
 
 func TestNew_Defaults(t *testing.T) {
 	p := New(Config{Logger: logr.Discard()})
-	assert.Equal(t, DefaultOperatorUsername, p.OperatorUsername())
+	assert.Empty(t, p.OperatorUsername(), "an unknown username is never defaulted")
+	assert.NotNil(t, p.Blocked(), "and the intake is closed")
 	assert.Equal(t, DefaultRejectedTTL, p.RejectedTTL())
 	assert.NotNil(t, p.Locks())
 	assert.WithinDuration(t, time.Now(), p.Now(), time.Second)
 	assert.Equal(t, DefaultRateLimit, p.rateLimit)
 	assert.Equal(t, DefaultRateWindow, p.rateWindow)
-}
-
-func TestOperatorUsername(t *testing.T) {
-	t.Setenv(ServiceAccountEnv, "")
-	assert.Equal(t, "", OperatorUsername("dorgu-system"), "no service account name: unknown")
-	t.Setenv(ServiceAccountEnv, "dorgu-operator")
-	assert.Equal(t, "", OperatorUsername(""), "no namespace: unknown")
-	assert.Equal(t, "system:serviceaccount:dorgu-system:dorgu-operator", OperatorUsername("dorgu-system"))
 }
 
 func TestProcess_MissingAndDeletedProposalsAreNoOps(t *testing.T) {

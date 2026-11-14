@@ -64,9 +64,10 @@ const (
 	DefaultLockTimeout = 10 * time.Minute
 )
 
-// DefaultOperatorUsername is the username used for the operator when it cannot
-// build one from its own namespace and ServiceAccount.
-const DefaultOperatorUsername = "system:serviceaccount:dorgu-system:dorgu-operator"
+// TestOperatorUsername is a username for tests that need an operator identity. No
+// production code reads it: an operator that cannot work out its own username
+// closes the intake instead of using one (OperatorUsername, OperatorIdentityCheck).
+const TestOperatorUsername = "system:serviceaccount:dorgu-system:dorgu-operator"
 
 // Config configures a Processor.
 type Config struct {
@@ -89,8 +90,13 @@ type Config struct {
 	Locks *Locks
 
 	// OperatorUsername is the operator's own Kubernetes username. Dorgu's planner
-	// proposes as this user (P2-D3).
+	// proposes as this user (P2-D3). Empty means unknown, and the intake is then
+	// closed: it is never defaulted.
 	OperatorUsername string
+
+	// Preflight says whether the intake is open. Nil means there is nothing to
+	// check. The same Preflight is shared with the planner (Blocked).
+	Preflight *Preflight
 
 	// RateLimit, RateWindow and RejectedTTL default to the Default* constants.
 	RateLimit   int
@@ -115,6 +121,7 @@ type Processor struct {
 	incidents IncidentOpener
 	locks     *Locks
 	username  string
+	preflight *Preflight
 
 	rateLimit   int
 	rateWindow  time.Duration
@@ -139,6 +146,7 @@ func New(cfg Config) *Processor {
 		incidents:   cfg.Incidents,
 		locks:       cfg.Locks,
 		username:    cfg.OperatorUsername,
+		preflight:   cfg.Preflight,
 		rateLimit:   cfg.RateLimit,
 		rateWindow:  cfg.RateWindow,
 		rejectedTTL: cfg.RejectedTTL,
@@ -153,8 +161,8 @@ func New(cfg Config) *Processor {
 	if p.locks == nil {
 		p.locks = NewLocks()
 	}
-	if p.username == "" {
-		p.username = DefaultOperatorUsername
+	if p.preflight == nil {
+		p.preflight = NewPreflight(cfg.Logger)
 	}
 	if p.rateLimit <= 0 {
 		p.rateLimit = DefaultRateLimit
@@ -174,8 +182,22 @@ func New(cfg Config) *Processor {
 	return p
 }
 
-// OperatorUsername is the username Dorgu's planner proposes as.
+// OperatorUsername is the username Dorgu's planner proposes as. It is empty when
+// the operator does not know it, in which case Blocked is not nil.
 func (p *Processor) OperatorUsername() string { return p.username }
+
+// Blocked says why the intake is closed, or nil when it is open. While it is closed
+// Process converts nothing and the planner must not plan: the operator's identity is
+// unknown, or a CRD it writes is missing or stale (see Preflight).
+func (p *Processor) Blocked() *Failure {
+	if p.username == "" {
+		return &Failure{
+			Check: "operator-identity", Reason: ReasonOperatorIdentityUnknown,
+			Message: "the operator does not know its own ServiceAccount username",
+		}
+	}
+	return p.preflight.Blocked()
+}
 
 // Locks returns the per-persona locks, for the planner to share.
 func (p *Processor) Locks() *Locks { return p.locks }

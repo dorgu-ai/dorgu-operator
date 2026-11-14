@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -33,6 +34,11 @@ import (
 // claimedRecheck is how long the reconciler waits before looking again at a
 // proposal the planner is converting itself in process.
 const claimedRecheck = 5 * time.Second
+
+// closedIntakeRecheck is how long the reconciler waits before looking again at a
+// proposal while the intake is closed (see intake.Preflight). The preflight
+// re-runs every minute, so a shorter wait only repeats the answer.
+const closedIntakeRecheck = 30 * time.Second
 
 // ProposalReconciler is the operator's intake: it decides every
 // RemediationProposal, and is the only code that turns one into a
@@ -74,6 +80,14 @@ func (r *ProposalReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 
 	out, err := r.Processor.Process(ctx, req.NamespacedName, nil)
+	var notReady *intake.NotReadyError
+	if errors.As(err, &notReady) {
+		// Not an error: nothing is decided and nothing is written until the intake
+		// opens. The preflight has already said why, loudly, once.
+		logger.V(1).Info("the proposal intake is closed; the proposal waits",
+			"reason", notReady.Failure.Reason)
+		return ctrl.Result{RequeueAfter: closedIntakeRecheck}, nil
+	}
 	if err != nil {
 		logger.Error(err, "could not decide the proposal; will retry")
 		return ctrl.Result{}, fmt.Errorf("deciding proposal %s: %w", req.NamespacedName, err)

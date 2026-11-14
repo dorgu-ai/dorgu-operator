@@ -191,7 +191,7 @@ func TestPropose_AFailedActionWriteLeavesNoProposalAndNoAction(t *testing.T) {
 		},
 	})
 	g := gate.New(c, testLogger())
-	p := NewProposer(c, g, testLogger(), WithIntake(intake.New(intake.Config{Client: c, Gate: g, Logger: testLogger()})))
+	p := NewProposer(c, g, testLogger(), WithIntake(intake.New(intake.Config{Client: c, Gate: g, OperatorUsername: operatorUser, Logger: testLogger()})))
 
 	result, err := p.Propose(context.Background(),
 		newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical),
@@ -262,4 +262,43 @@ func TestRationaleOf(t *testing.T) {
 		long[i] = 'é'
 	}
 	assert.Len(t, []rune(rationaleOf(string(long))), dorguv1alpha1.MaxRationaleLength, "counted in characters, as the API server counts")
+}
+
+// F-8 and F-9: while the intake is closed (the operator does not know who it is, or a
+// CRD it writes is missing or stale) the proposer neither plans nor proposes. Nothing
+// is spent on a model, no proposal is stored, and the skip says why.
+func TestPropose_AClosedIntakePlansNothingAndProposesNothing(t *testing.T) {
+	pf := intake.NewPreflight(testLogger(), intake.StaticCheck("action-provenance", intake.ReasonActionProvenanceMissing,
+		errors.New("apply dorgu.io_remediationactions.yaml")))
+	pf.Run(context.Background())
+	p, c := proposerWorld(t, func(cfg *intake.Config) { cfg.Preflight = pf }, "my-app")
+	counting := &countingPlanner{}
+	p.planner = counting
+
+	result, err := p.Propose(context.Background(),
+		newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical),
+		newTestIncident(defaultNamespace, "oom-closed", "my-app", "OOMKilled"))
+
+	require.NoError(t, err)
+	assert.False(t, result.Proposed)
+	assert.Equal(t, SkipIntakeClosed, result.Reason)
+	assert.Equal(t, StagePropose, result.Stage)
+	assert.Contains(t, result.SkipReason, intake.ReasonActionProvenanceMissing)
+	assert.Zero(t, counting.calls, "the planner was not asked: no model call is spent on a plan that cannot be recorded")
+	assert.Empty(t, proposals(t, c), "no proposal is stored")
+}
+
+func TestPropose_AnIntakeWithNoOperatorUsernameProposesNothing(t *testing.T) {
+	base := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(newTestPersona(defaultNamespace, "my-app")).Build()
+	g := gate.New(base, testLogger())
+	p := NewProposer(base, g, testLogger(), WithIntake(intake.New(intake.Config{Client: base, Gate: g, Logger: testLogger()})))
+
+	result, err := p.Propose(context.Background(),
+		newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical),
+		newTestIncident(defaultNamespace, "oom-nouser", "my-app", "OOMKilled"))
+
+	require.NoError(t, err)
+	assert.False(t, result.Proposed)
+	assert.Equal(t, SkipIntakeClosed, result.Reason)
+	assert.Contains(t, result.SkipReason, intake.ReasonOperatorIdentityUnknown)
 }

@@ -21,11 +21,13 @@ import (
 	"crypto/tls"
 	"fmt"
 	"os"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/discovery"
@@ -58,8 +60,13 @@ func init() {
 
 	utilruntime.Must(dorguv1.AddToScheme(scheme))
 	utilruntime.Must(dorguv1alpha1.AddToScheme(scheme))
+	// CustomResourceDefinitions are read (two of them, by name) by the intake's preflight.
+	utilruntime.Must(apiextensionsv1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
+
+// preflightTimeout bounds the first run of the intake preflight at startup.
+const preflightTimeout = 30 * time.Second
 
 func main() {
 	cfg := parseFlags()
@@ -164,6 +171,24 @@ func main() {
 	// without it) depend on the answer.
 	operatorNS := operatorNamespace()
 
+	// The proposal intake's preflight: the operator's own identity, the RemediationProposal
+	// CRD, and spec.provenance in the RemediationAction CRD. While any of them fails the
+	// intake is closed (nothing is converted, planned or proposed) and the operator says
+	// so on the ClusterPersona; detection and everything else carry on, and the operator
+	// does not crash-loop. The checks run once now, before anything is registered, and
+	// then every minute.
+	var intakeState intakeSetup
+	if cfg.enableHealthCheck {
+		intakeState = newIntakeSetup(mgr.GetAPIReader(), operatorNS, setupLog)
+		preflightCtx, cancelPreflight := context.WithTimeout(context.Background(), preflightTimeout)
+		intakeState.Preflight.Run(preflightCtx)
+		cancelPreflight()
+		if err := mgr.Add(intakeState.Preflight); err != nil {
+			setupLog.Error(err, "unable to add the intake preflight")
+			os.Exit(1)
+		}
+	}
+
 	// Create discovery client for ClusterPersona controller
 	discoveryClient, err := discovery.NewDiscoveryClientForConfig(restConfig)
 	if err != nil {
@@ -184,13 +209,17 @@ func main() {
 		setupLog.Info("Prometheus integration enabled", "url", cfg.prometheusURL)
 	}
 
-	if err := (&controller.ClusterPersonaReconciler{
+	clusterPersonaReconciler := &controller.ClusterPersonaReconciler{
 		Client:          clients.Guarded,
 		Scheme:          mgr.GetScheme(),
 		DiscoveryClient: discoveryClient,
 
 		OperatorNamespaceUnknown: operatorNS == "",
-	}).SetupWithManager(mgr); err != nil {
+	}
+	if intakeState.Preflight != nil {
+		clusterPersonaReconciler.IntakeReadiness = intakeState.Preflight
+	}
+	if err := clusterPersonaReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ClusterPersona")
 		os.Exit(1)
 	}
@@ -245,7 +274,7 @@ func main() {
 		// 1. Assemble the deny-list, diagnosis providers, AI planner and proposer.
 		// buildHealthPipeline is the one place they are wired together, and it is
 		// built first because detection reads the same deny-list the gate does.
-		pipeline := buildHealthPipeline(clients, mgr.GetAPIReader(), cfg, operatorNS, setupLog)
+		pipeline := buildHealthPipeline(clients, mgr.GetAPIReader(), cfg, operatorNS, intakeState, setupLog)
 		diagnosisEngine := pipeline.DiagnosisEngine
 
 		// 2. Create detection collectors. The pod collector skips the namespaces the
@@ -340,13 +369,21 @@ func main() {
 
 		// 8b. Register the proposal reconciler: the one intake for every
 		// RemediationProposal, and the only code that creates a RemediationAction.
-		if err := (&controller.ProposalReconciler{
-			Client:    clients.Guarded,
-			Processor: pipeline.Intake,
-		}).SetupWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "RemediationProposal")
-			os.Exit(1)
+		// It is registered as soon as the RemediationProposal CRD exists, which is
+		// now or, if the CRD has not been applied yet, whenever it is (a manager
+		// whose proposal cache cannot sync exits, so the operator must not register
+		// the controller early).
+		proposals := &lateRegistration{
+			log: setupLog,
+			register: func() error {
+				return (&controller.ProposalReconciler{
+					Client:    clients.Guarded,
+					Processor: pipeline.Intake,
+				}).SetupWithManager(mgr)
+			},
 		}
+		intakeState.Preflight.Subscribe(proposals.onChecks)
+		proposals.onChecks(intakeState.Preflight.Failures())
 
 		// 9. Register remediation controller (executor + verifier + rollback).
 		executor := remediation.NewExecutor(clients.Guarded, pipeline.Gate, setupLog)

@@ -59,7 +59,7 @@ func buildForTest(t *testing.T, cfg operatorConfig, operatorNS string) healthPip
 		t.Fatal(err)
 	}
 	c := fake.NewClientBuilder().WithScheme(scheme).Build()
-	return buildHealthPipeline(newClusterClients(c), c, cfg, operatorNS, logr.Discard())
+	return buildHealthPipeline(newClusterClients(c), c, cfg, operatorNS, newIntakeSetup(c, operatorNS, logr.Discard()), logr.Discard())
 }
 
 func aiProvider(t *testing.T, p healthPipeline) *diagnosis.AIProvider {
@@ -296,7 +296,7 @@ func TestNewPodCollector_SharesTheGatesDenyList(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(scheme).
 		WithObjects(cp, oomed("cert-manager"), oomed(testOperatorNS), oomed("kube-system"), oomed("shop")).Build()
 	cfg := operatorConfig{safetyExcludedNamespaces: []string{"gateway"}}
-	p := buildHealthPipeline(newClusterClients(c), c, cfg, testOperatorNS, logr.Discard())
+	p := buildHealthPipeline(newClusterClients(c), c, cfg, testOperatorNS, newIntakeSetup(c, testOperatorNS, logr.Discard()), logr.Discard())
 
 	signals, err := newPodCollector(c, p.Gate, logr.Discard()).Collect(context.Background())
 	if err != nil {
@@ -328,9 +328,28 @@ func TestBuildHealthPipeline_PlannerProposesAsTheOperatorServiceAccount(t *testi
 		t.Fatalf("planner username = %q, want %q", got, want)
 	}
 
+	// F-8: with no ServiceAccount known there is no username, and no default: the
+	// intake is closed and says why.
 	t.Setenv(intake.ServiceAccountEnv, "")
 	p = buildForTest(t, operatorConfig{}, testOperatorNS)
-	if got := p.Intake.OperatorUsername(); got != intake.DefaultOperatorUsername {
-		t.Fatalf("with no service account known the username is %q, want the default %q", got, intake.DefaultOperatorUsername)
+	if got := p.Intake.OperatorUsername(); got != "" {
+		t.Fatalf("with no service account known the username is %q, want none", got)
+	}
+	blocked := p.Intake.Blocked()
+	if blocked == nil || blocked.Reason != intake.ReasonOperatorIdentityUnknown {
+		t.Fatalf("the intake must be closed for an unknown operator identity, got %+v", blocked)
+	}
+}
+
+func TestBuildHealthPipeline_ABadServiceAccountNameClosesTheIntake(t *testing.T) {
+	t.Setenv(intake.ServiceAccountEnv, "Not A Name")
+	p := buildForTest(t, operatorConfig{}, testOperatorNS)
+	if blocked := p.Intake.Blocked(); blocked == nil || blocked.Reason != intake.ReasonOperatorIdentityUnknown {
+		t.Fatalf("a malformed OPERATOR_SERVICE_ACCOUNT must close the intake, got %+v", blocked)
+	}
+	t.Setenv(intake.ServiceAccountEnv, "dorgu-operator")
+	p = buildForTest(t, operatorConfig{}, "")
+	if blocked := p.Intake.Blocked(); blocked == nil {
+		t.Fatal("an unknown operator namespace must close the intake")
 	}
 }

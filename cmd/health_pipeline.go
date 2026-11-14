@@ -70,6 +70,7 @@ func buildHealthPipeline(
 	reader client.Reader,
 	cfg operatorConfig,
 	operatorNS string,
+	setup intakeSetup,
 	log logr.Logger,
 ) healthPipeline {
 	// c is the guarded client: nothing built here may create a RemediationAction
@@ -148,7 +149,8 @@ func buildHealthPipeline(
 		Reader:           reader,
 		Gate:             g,
 		Incidents:        &controller.ProposalIncidents{Client: c},
-		OperatorUsername: intake.OperatorUsername(operatorNS),
+		OperatorUsername: setup.Username,
+		Preflight:        setup.Preflight,
 		Logger:           log,
 	})
 
