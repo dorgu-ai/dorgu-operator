@@ -26,6 +26,11 @@ import (
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 )
 
+const (
+	managedByLabel = "app.kubernetes.io/managed-by"
+	helmManager    = "Helm"
+)
+
 // P2-D13: every verdict the Guardrails stage produces says where the limit it
 // applied came from, so the dashboard and `dorgu report` stop inferring it.
 //
@@ -133,18 +138,32 @@ func TestCeilingSource_RateLimit(t *testing.T) {
 		assert.Equal(t, dorguv1.CeilingSourceDefault, ceilingOf(t, d, GuardrailRateLimit))
 	})
 	t.Run("an unreadable policy", func(t *testing.T) {
-		g := newTestGate(t, failingListClient(t, isKind[*dorguv1.ClusterPersonaList]), WithProtectedNamespaces("dorgu-system"))
-		d := run(t, g, planCandidate(personaUpdateStep(memPatch("300Mi"))), PhaseProposal)
+		// The deny-list reads ClusterPersonas first: let that read pass and the rate
+		// limit's own read fail.
+		calls := 0
+		c := failingListClient(t, func(list clientObjectList) bool {
+			if !isKind[*dorguv1.ClusterPersonaList](list) {
+				return false
+			}
+			calls++
+			return calls > 1
+		}, persona("256Mi"), deployment("256Mi"))
+		d := run(t, newTestGate(t, c), planCandidate(personaUpdateStep(memPatch("300Mi"))), PhaseProposal)
+		assert.Equal(t, "refuse", verdictKind(d, GuardrailRateLimit))
+		assert.Equal(t, dorguv1.CeilingSourceClusterPersona, ceilingOf(t, d, GuardrailRateLimit))
 		assertEveryGuardrailsVerdictHasASource(t, d)
 	})
 }
 
 func TestCeilingSource_DenyList(t *testing.T) {
 	t.Run("built in: kube-system", func(t *testing.T) {
-		g := standardGate(t)
+		inKubeSystem := persona("256Mi")
+		inKubeSystem.Namespace = defaultKubeSystem
+		live := deployment("256Mi", func(d *appsv1.Deployment) { d.Namespace = defaultKubeSystem })
+		g := newTestGate(t, fakeClient(t, inKubeSystem, live))
 		cand := planCandidate(personaUpdateStep(memPatch("300Mi")))
-		cand.Target.Namespace = "kube-system"
-		cand.Namespace = "kube-system"
+		cand.Target.Namespace = defaultKubeSystem
+		cand.Namespace = defaultKubeSystem
 		d := run(t, g, cand, PhaseProposal)
 		assert.Equal(t, "refuse", verdictKind(d, GuardrailDenyList))
 		assert.Equal(t, dorguv1.CeilingSourceDefault, ceilingOf(t, d, GuardrailDenyList))
@@ -254,7 +273,7 @@ func TestCeilingSource_CompletenessAndLegacyActionVerdicts(t *testing.T) {
 	})
 	t.Run("a deployer-owned workload", func(t *testing.T) {
 		g := newTestGate(t, fakeClient(t, persona("512Mi"), deployment("512Mi", func(d *appsv1.Deployment) {
-			d.Labels["app.kubernetes.io/managed-by"] = "Helm"
+			d.Labels[managedByLabel] = helmManager
 			d.Annotations = map[string]string{"meta.helm.sh/release-name": "web"}
 		})))
 		cand := planCandidate(dorguv1.RemediationStep{Order: 1, ID: "m", Type: dorguv1.StepTypeManual, Description: "advice"})

@@ -123,35 +123,48 @@ func TestTicketV1_ARecordedTicketFromTheIssuerPassesCheckTicket(t *testing.T) {
 func TestTicketV1_RefusalsAtApplyAreEnumerated(t *testing.T) {
 	g := standardGate(t)
 	cases := map[string]struct {
-		mutate    func(*dorguv1.RemediationAction)
+		mutate    func(*dorguv1.RemediationAction) // applied to the fixture before the ticket is sealed
+		edit      func(*dorguv1.RemediationAction) // applied to the finished action: an edit after clearance
 		guardrail string
 	}{
-		"no specHash":   {func(ra *dorguv1.RemediationAction) { ra.Status.ApplyTicket.SpecHash = "" }, GuardrailTicketIncomplete},
-		"no approvedBy": {func(ra *dorguv1.RemediationAction) { ra.Status.ApplyTicket.ApprovedBy = "" }, GuardrailTicketIncomplete},
-		"no expiresAt":  {func(ra *dorguv1.RemediationAction) { ra.Status.ApplyTicket.ExpiresAt = metav1.Time{} }, GuardrailTicketIncomplete},
-		"no issuedAt":   {func(ra *dorguv1.RemediationAction) { ra.Status.ApplyTicket.IssuedAt = nil }, GuardrailTicketIncomplete},
-		"expired": {func(ra *dorguv1.RemediationAction) {
+		"no specHash":   {mutate: func(ra *dorguv1.RemediationAction) { ra.Status.ApplyTicket.SpecHash = "" }, guardrail: GuardrailTicketIncomplete},
+		"no approvedBy": {mutate: func(ra *dorguv1.RemediationAction) { ra.Status.ApplyTicket.ApprovedBy = "" }, guardrail: GuardrailTicketIncomplete},
+		"no expiresAt":  {mutate: func(ra *dorguv1.RemediationAction) { ra.Status.ApplyTicket.ExpiresAt = metav1.Time{} }, guardrail: GuardrailTicketIncomplete},
+		"no issuedAt":   {mutate: func(ra *dorguv1.RemediationAction) { ra.Status.ApplyTicket.IssuedAt = nil }, guardrail: GuardrailTicketIncomplete},
+		"expired": {mutate: func(ra *dorguv1.RemediationAction) {
 			ra.Status.ApplyTicket.ExpiresAt = metav1.NewTime(fixedNow.Add(-time.Second))
-		}, GuardrailTicketExpired},
-		"expired exactly now": {func(ra *dorguv1.RemediationAction) {
+		}, guardrail: GuardrailTicketExpired},
+		"expired exactly now": {mutate: func(ra *dorguv1.RemediationAction) {
 			ra.Status.ApplyTicket.ExpiresAt = metav1.NewTime(fixedNow)
-		}, GuardrailTicketExpired},
-		"spec edited after clearance": {func(ra *dorguv1.RemediationAction) {
+		}, guardrail: GuardrailTicketExpired},
+		"spec edited after clearance": {edit: func(ra *dorguv1.RemediationAction) {
 			ra.Spec.Explanation = "someone edited the explanation"
-		}, GuardrailSpecChanged},
-		"patch in the spec edited after clearance": {func(ra *dorguv1.RemediationAction) {
+		}, guardrail: GuardrailSpecChanged},
+		"patch in the spec edited after clearance": {edit: func(ra *dorguv1.RemediationAction) {
 			ra.Spec.Steps[0].Patch = memPatch("1Gi")
-		}, GuardrailSpecChanged},
-		"hash of another spec": {func(ra *dorguv1.RemediationAction) {
+		}, guardrail: GuardrailSpecChanged},
+		"step added after clearance": {edit: func(ra *dorguv1.RemediationAction) {
+			ra.Spec.Steps = append(ra.Spec.Steps, dorguv1.RemediationStep{Order: 2, ID: "extra", Type: dorguv1.StepTypeManual, Description: "x"})
+		}, guardrail: GuardrailSpecChanged},
+		"hash of another spec": {mutate: func(ra *dorguv1.RemediationAction) {
 			ra.Status.ApplyTicket.SpecHash = "0000000000000000000000000000000000000000000000000000000000000000"
-		}, GuardrailSpecChanged},
-		"hash in upper case is not the hash": {func(ra *dorguv1.RemediationAction) {
-			ra.Status.ApplyTicket.SpecHash = upper(ra.Status.ApplyTicket.SpecHash)
-		}, GuardrailSpecChanged},
+		}, guardrail: GuardrailSpecChanged},
+		"hash in upper case is not the hash": {mutate: func(ra *dorguv1.RemediationAction) {
+			hash, _ := ra.Spec.Hash()
+			ra.Status.ApplyTicket.SpecHash = upper(hash)
+		}, guardrail: GuardrailSpecChanged},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			problem := checkTicket(t, g, ticketedAction(tc.mutate))
+			ra := ticketedAction(func(ra *dorguv1.RemediationAction) {
+				if tc.mutate != nil {
+					tc.mutate(ra)
+				}
+			})
+			if tc.edit != nil {
+				tc.edit(ra)
+			}
+			problem := checkTicket(t, g, ra)
 			require.NotNil(t, problem, "the ticket must be refused")
 			assert.Equal(t, tc.guardrail, problem.Guardrail, problem.Reason)
 		})
@@ -172,9 +185,9 @@ func upper(s string) string {
 // integrity failure is the more serious of the two.
 func TestTicketV1_ASpecChangeOutranksExpiry(t *testing.T) {
 	ra := ticketedAction(func(ra *dorguv1.RemediationAction) {
-		ra.Spec.Explanation = "edited"
 		ra.Status.ApplyTicket.ExpiresAt = metav1.NewTime(fixedNow.Add(-time.Hour))
 	})
+	ra.Spec.Explanation = "edited"
 
 	problem := checkTicket(t, standardGate(t), ra)
 

@@ -54,6 +54,7 @@ func (g *Gate) NamespaceDenied(ctx context.Context, namespace string) *Violation
 		return &Violation{
 			Rule:    RuleDenyList,
 			Message: "no deny list is configured, so the namespace cannot be cleared",
+			Source:  dorguv1.CeilingSourceDefault,
 		}
 	}
 
@@ -62,6 +63,7 @@ func (g *Gate) NamespaceDenied(ctx context.Context, namespace string) *Violation
 		return &Violation{
 			Rule:    RuleDenyList,
 			Message: "namespace could not be determined, so the deny list cannot clear it",
+			Source:  dorguv1.CeilingSourceDefault,
 		}
 	}
 	// The operator could not learn its own namespace, so the deny-list cannot say
@@ -70,10 +72,11 @@ func (g *Gate) NamespaceDenied(ctx context.Context, namespace string) *Violation
 		return &Violation{
 			Rule:    RuleOperatorNamespace,
 			Message: "the operator's own namespace is unknown, so no namespace can be cleared",
+			Source:  dorguv1.CeilingSourceDefault,
 		}
 	}
 
-	denied, why, err := g.listed(ctx, namespace)
+	denied, why, source, err := g.listed(ctx, namespace)
 	if err != nil {
 		// Logged loudly: while this persists (lost RBAC, missing CRD) every AI call
 		// and proposal is refused, and that must not be silent.
@@ -84,10 +87,11 @@ func (g *Gate) NamespaceDenied(ctx context.Context, namespace string) *Violation
 			// Fixed text: the message becomes a SkipReason that may be persisted or
 			// shown, and the raw API error stays in the log above.
 			Message: fmt.Sprintf("namespace %s: deny-list could not be read, treating namespace as protected", namespace),
+			Source:  dorguv1.CeilingSourceClusterPersona,
 		}
 	}
 	if denied {
-		return &Violation{Rule: RuleDenyList, Message: why}
+		return &Violation{Rule: RuleDenyList, Message: why, Source: source}
 	}
 	return nil
 }
@@ -115,7 +119,7 @@ func (g *Gate) NamespaceExcluded(ctx context.Context, namespace string) (bool, e
 	if namespace == "" {
 		return false, nil
 	}
-	denied, _, err := g.listed(ctx, namespace)
+	denied, _, _, err := g.listed(ctx, namespace)
 	if err != nil {
 		g.logUnreadable("excludeNamespaces", err, "cannot read ClusterPersona excludeNamespaces; detection cannot tell which namespaces to skip",
 			"namespace", namespace)
@@ -125,22 +129,23 @@ func (g *Gate) NamespaceExcluded(ctx context.Context, namespace string) (bool, e
 }
 
 // listed reports whether a normalized, non-empty namespace is on the deny list,
-// and why. It is the one reading of the list: the protected set first, then the
-// ClusterPersona policy.
-func (g *Gate) listed(ctx context.Context, namespace string) (denied bool, why string, err error) {
+// why, and which side of the list it is on (CeilingSourceDefault for the protected
+// set, CeilingSourceClusterPersona for the policy). It is the one reading of the
+// list: the protected set first, then the ClusterPersona policy.
+func (g *Gate) listed(ctx context.Context, namespace string) (denied bool, why, source string, err error) {
 	// Always deny kube-system, the operator's own namespace and any namespace the
 	// installer protected.
 	if slices.Contains(g.protected, namespace) {
-		return true, fmt.Sprintf("namespace %s is in the protected deny list", namespace), nil
+		return true, fmt.Sprintf("namespace %s is in the protected deny list", namespace), dorguv1.CeilingSourceDefault, nil
 	}
 	excluded, err := g.excludedNamespaces(ctx)
 	if err != nil {
-		return false, "", err
+		return false, "", dorguv1.CeilingSourceClusterPersona, err
 	}
 	if slices.Contains(excluded, namespace) {
-		return true, fmt.Sprintf("namespace %s is excluded by ClusterPersona policy", namespace), nil
+		return true, fmt.Sprintf("namespace %s is excluded by ClusterPersona policy", namespace), dorguv1.CeilingSourceClusterPersona, nil
 	}
-	return false, "", nil
+	return false, "", dorguv1.CeilingSourceDefault, nil
 }
 
 // excludedNamespaces reads excluded namespaces from all ClusterPersonas.

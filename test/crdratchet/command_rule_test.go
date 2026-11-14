@@ -34,7 +34,7 @@ import (
 // the second check.
 
 func TestCommandRule_AcceptsASingleLineKubectlInvocation(t *testing.T) {
-	_, c := startEnv(t, filepath.Join("..", "..", "config", "crd", "bases"))
+	c := startEnv(t, filepath.Join("..", "..", "config", "crd", "bases"))
 	ctx := context.Background()
 
 	for i, command := range []string{
@@ -57,7 +57,7 @@ func TestCommandRule_AcceptsASingleLineKubectlInvocation(t *testing.T) {
 }
 
 func TestCommandRule_RejectsEveryShellMetacharacterAndNewline(t *testing.T) {
-	_, c := startEnv(t, filepath.Join("..", "..", "config", "crd", "bases"))
+	c := startEnv(t, filepath.Join("..", "..", "config", "crd", "bases"))
 	ctx := context.Background()
 
 	forbidden := map[string]string{
@@ -93,7 +93,7 @@ func TestCommandRule_RejectsEveryShellMetacharacterAndNewline(t *testing.T) {
 }
 
 func TestCommandRule_AppliesToEveryStep(t *testing.T) {
-	_, c := startEnv(t, filepath.Join("..", "..", "config", "crd", "bases"))
+	c := startEnv(t, filepath.Join("..", "..", "config", "crd", "bases"))
 	ra := remediation("second-step", "kubectl get pods")
 	ra.Spec.Steps = append(ra.Spec.Steps, dorguv1.RemediationStep{
 		Order: 2, ID: "s2", Type: dorguv1.StepTypeManual, Description: "x", Command: "kubectl get pods | sh",
@@ -106,7 +106,7 @@ func TestCommandRule_AppliesToEveryStep(t *testing.T) {
 }
 
 func TestCommandRule_ASanitizedCommandAlwaysPassesTheCRD(t *testing.T) {
-	_, c := startEnv(t, filepath.Join("..", "..", "config", "crd", "bases"))
+	c := startEnv(t, filepath.Join("..", "..", "config", "crd", "bases"))
 	ctx := context.Background()
 
 	// SanitizeStepCommand is what the planner runs a model's command through. Whatever

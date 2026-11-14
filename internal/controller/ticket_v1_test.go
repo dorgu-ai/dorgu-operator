@@ -50,7 +50,7 @@ func TestTicketV1_ApprovalWritesTheSpecHashAndTheApprover(t *testing.T) {
 	if ticket.SpecHash != want {
 		t.Errorf("ticket.specHash = %q, want %q", ticket.SpecHash, want)
 	}
-	if ticket.ApprovedBy != "alice@example.com" {
+	if ticket.ApprovedBy != lcApprover {
 		t.Errorf("ticket.approvedBy = %q, want the status.approvedBy at approval", ticket.ApprovedBy)
 	}
 	if ticket.IssuedAt == nil || !ticket.ExpiresAt.Time.Equal(ticket.IssuedAt.Add(15*time.Minute)) {

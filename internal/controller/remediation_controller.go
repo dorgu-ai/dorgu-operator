@@ -497,6 +497,22 @@ func (r *RemediationController) expirePredatingGate(ctx context.Context, action 
 	return nil
 }
 
+// expireTicket settles an action whose ticket ran out before it was applied as
+// Expired with the reason TicketExpired. Like every Expired it is terminal, nothing
+// was applied, and it is neither a rejection nor a failure: no cooldown holds the
+// application, and the operator proposes again if the problem persists. The Event
+// and the count are reportApplyRefusal's, as for every other refused ticket.
+func (r *RemediationController) expireTicket(ctx context.Context, action *dorguv1.RemediationAction, detail string) error {
+	message := "The apply ticket expired before it was applied, so nothing was applied (" + detail + "). " +
+		"It is not a rejection and not a failure and starts no cooldown; the operator proposes again if the problem persists."
+	action.Status.Phase = RemediationPhaseExpired
+	setCondition(&action.Status.Conditions, ConditionExpired, metav1.ConditionTrue, dorguv1.ReasonTicketExpired, message)
+	if err := r.Status().Update(ctx, action); err != nil {
+		return fmt.Errorf("updating status to Expired: %w", err)
+	}
+	return nil
+}
+
 // handleTicketed applies the apply ticket: exactly its patch, and only when the
 // gate confirms the ticket still stands (present, unexpired, same workload).
 func (r *RemediationController) handleTicketed(ctx context.Context, logger logr.Logger, action *dorguv1.RemediationAction) (ctrl.Result, error) {
@@ -513,7 +529,22 @@ func (r *RemediationController) handleTicketed(ctx context.Context, logger logr.
 			setCondition(&action.Status.Conditions, dorguv1.ConditionGateRefused, metav1.ConditionTrue,
 				gate.ReasonEnum(precondition.Guardrail), precondition.Reason)
 			message := fmt.Sprintf("%v; nothing was applied", err)
-			if err := r.transitionToFailedWithReason(ctx, action, dorguv1.ReasonPreconditionRejected, message); err != nil {
+			if precondition.Guardrail == gate.GuardrailTicketExpired {
+				// A ticket that ran out is not a failed remediation: it ends Expired, with
+				// the reason TicketExpired, and starts no cooldown.
+				if err := r.expireTicket(ctx, action, precondition.Reason); err != nil {
+					return ctrl.Result{}, err
+				}
+				r.reportApplyRefusal(action, precondition.Guardrail, message)
+				return ctrl.Result{}, nil
+			}
+			failureReason := dorguv1.ReasonPreconditionRejected
+			if precondition.Guardrail == gate.GuardrailSpecChanged {
+				// The spec is no longer the one the ticket was issued for. Failed, with the
+				// reason SpecChanged, so a client tells it from any other refusal.
+				failureReason = dorguv1.ReasonSpecChanged
+			}
+			if err := r.transitionToFailedWithReason(ctx, action, failureReason, message); err != nil {
 				return ctrl.Result{}, err
 			}
 			r.reportApplyRefusal(action, precondition.Guardrail, message)

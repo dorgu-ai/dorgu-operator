@@ -49,8 +49,13 @@ type RemediationActionSpec struct {
 	// Steps is the ordered remediation plan and the only plan: the operator's
 	// approval re-check turns its persona-update steps into the apply ticket, and
 	// the ticket is exactly what is applied.
+	//
+	// At most 64 steps. The bound exists so the API server can price the step
+	// command rule (a regular expression over every step's command): without one
+	// it estimates a plan of tens of thousands of steps and refuses the rule.
 	// +optional
 	// +listType=atomic
+	// +kubebuilder:validation:MaxItems=64
 	Steps []RemediationStep `json:"steps,omitempty"`
 
 	// PlanSource records how the plan was produced.
@@ -228,7 +233,7 @@ type RemediationActionDetail struct {
 // which preserves the operator's non-negotiable guarantee that it never writes
 // workloads. See ValidateAutoExecutable.
 // +kubebuilder:validation:XValidation:rule="!self.autoExecutable || self.type == 'persona-update'",message="only persona-update steps may be autoExecutable"
-// +kubebuilder:validation:XValidation:rule="!has(self.command) || self.command.startsWith('kubectl ')",message="step command must be a kubectl invocation"
+// +kubebuilder:validation:XValidation:rule="!has(self.command) || (self.command.startsWith('kubectl ') && !self.command.matches('[;|&$`()<>\\n\\r]'))",message="step command must be a single-line kubectl invocation with none of ; | & $ ` ( ) < > or a newline"
 type RemediationStep struct {
 	// Order is the 1-based execution order of this step within the plan.
 	// +kubebuilder:validation:Minimum=1

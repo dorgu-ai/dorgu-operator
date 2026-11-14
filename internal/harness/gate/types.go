@@ -38,6 +38,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -192,6 +193,18 @@ const (
 	// GuardrailClusterUnreadable: the live cluster could not be read to check the
 	// ticket, so it is not honoured (fail closed).
 	GuardrailClusterUnreadable = "cluster-unreadable"
+
+	// Reasons added with ticket v1 (P2-D9).
+	//
+	// GuardrailNoApprover: the approval names nobody (status.approvedBy is empty), so
+	// no ticket is issued. An approval is a person's decision; one that cannot say
+	// whose it was is not one the gate acts on.
+	GuardrailNoApprover = "no-approver"
+
+	// GuardrailTicketIncomplete: a ticket lacks specHash, approvedBy, issuedAt or
+	// expiresAt. At issue it means the spec could not be hashed; at apply it is a v0
+	// ticket, written before ticket v1, which is refused rather than honoured.
+	GuardrailTicketIncomplete = "ticket-incomplete"
 )
 
 // Safety rule names. They are the Rule of a Violation and the Guardrail of the
@@ -267,6 +280,12 @@ type Candidate struct {
 	prior        *dorguv1.GateObserved
 	priorProblem string
 	priorGuard   string
+
+	// approvedBy and specHash are the approver recorded in status and the hash of
+	// the spec being cleared, the two facts ticket v1 binds. Like prior they are set
+	// only by ApprovalCandidate.
+	approvedBy string
+	specHash   string
 }
 
 // Facts are diagnosis- and incident-derived inputs. Nothing here is model text.
@@ -339,12 +358,19 @@ type Decision struct {
 	// EvaluatedAt is when the gate ran.
 	EvaluatedAt metav1.Time
 
-	// refusing is the first refusing verdict.
-	refusing *dorguv1.GateVerdict
+	// refusing is the first refusing verdict, and refusingIdx its index in Verdicts.
+	refusing    *dorguv1.GateVerdict
+	refusingIdx int
 
 	// ownerAdvisory is set by the Ownership stage at approval when the workload is
 	// owned by a deployer and the plan still carried an auto-executable step.
 	ownerAdvisory bool
+
+	// approvedBy, specHash and ticketTTL are what Ticket binds into the ticket: the
+	// approver and spec hash of the candidate, and the gate's ticket lifetime.
+	approvedBy string
+	specHash   string
+	ticketTTL  time.Duration
 }
 
 // AdvisoryByOwnership reports whether the plan, as approved, applies nothing because a
@@ -404,7 +430,7 @@ func (d *Decision) Status() *dorguv1.GateStatus {
 }
 
 // add records a verdict and folds it into the overall result.
-func (d *Decision) add(stage, guardrail, verdict, reason string, numbers map[string]string) {
+func (d *Decision) add(stage, guardrail, verdict, reason string, numbers map[string]string) verdictRef {
 	v := dorguv1.GateVerdict{
 		Stage:     stage,
 		Guardrail: guardrail,
@@ -413,6 +439,7 @@ func (d *Decision) add(stage, guardrail, verdict, reason string, numbers map[str
 		Numbers:   numbers,
 	}
 	d.Verdicts = append(d.Verdicts, v)
+	ref := verdictRef{d: d, i: len(d.Verdicts) - 1}
 
 	switch verdict {
 	case dorguv1.GateVerdictRefuse:
@@ -420,24 +447,43 @@ func (d *Decision) add(stage, guardrail, verdict, reason string, numbers map[str
 		if d.refusing == nil {
 			refusal := v
 			d.refusing = &refusal
+			d.refusingIdx = ref.i
 		}
 	case dorguv1.GateVerdictClamp:
 		if d.Result != ResultRefuse {
 			d.Result = ResultClamp
 		}
 	}
+	return ref
 }
 
-func (d *Decision) pass(stage, guardrail, reason string, numbers map[string]string) {
-	d.add(stage, guardrail, dorguv1.GateVerdictPass, reason, numbers)
+func (d *Decision) pass(stage, guardrail, reason string, numbers map[string]string) verdictRef {
+	return d.add(stage, guardrail, dorguv1.GateVerdictPass, reason, numbers)
 }
 
-func (d *Decision) clamp(stage, guardrail, reason string, numbers map[string]string) {
-	d.add(stage, guardrail, dorguv1.GateVerdictClamp, reason, numbers)
+func (d *Decision) clamp(stage, guardrail, reason string, numbers map[string]string) verdictRef {
+	return d.add(stage, guardrail, dorguv1.GateVerdictClamp, reason, numbers)
 }
 
-func (d *Decision) refuse(stage, guardrail, reason string, numbers map[string]string) {
-	d.add(stage, guardrail, dorguv1.GateVerdictRefuse, reason, numbers)
+func (d *Decision) refuse(stage, guardrail, reason string, numbers map[string]string) verdictRef {
+	return d.add(stage, guardrail, dorguv1.GateVerdictRefuse, reason, numbers)
+}
+
+// verdictRef is the verdict pass, clamp or refuse has just recorded. The callers
+// that ignore it are unchanged; the Guardrails stage uses From to say where the
+// verdict's limit came from, as in d.refuse(...).From(source).
+type verdictRef struct {
+	d *Decision
+	i int
+}
+
+// From records the ceiling source (dorguv1.CeilingSource*) on the verdict, and on
+// the copy kept as the decision's refusal when this is it.
+func (r verdictRef) From(source string) {
+	r.d.Verdicts[r.i].CeilingSource = source
+	if r.d.refusing != nil && r.d.refusingIdx == r.i {
+		r.d.refusing.CeilingSource = source
+	}
 }
 
 // maxReasonLength matches the CRD's bound on a verdict reason.
@@ -471,6 +517,10 @@ type Violation struct {
 	// BlastRadius carries a blast-radius violation as numbers, set only for
 	// RuleBlastRadius.
 	BlastRadius *BlastRadiusViolation
+
+	// Source is where the limit that was breached came from (dorguv1.CeilingSource*).
+	// Set for the deny-list; the verdict records it.
+	Source string
 }
 
 // BlastRadiusViolation is a blast-radius refusal expressed as its inputs.

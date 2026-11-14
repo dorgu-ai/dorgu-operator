@@ -80,7 +80,7 @@ func remediation(name, command string) *dorguv1.RemediationAction {
 	}
 }
 
-func startEnv(t *testing.T, crdDir string) (*envtest.Environment, client.Client) {
+func startEnv(t *testing.T, crdDir string) client.Client {
 	t.Helper()
 	env := &envtest.Environment{CRDDirectoryPaths: []string{crdDir}, ErrorIfCRDPathMissing: true}
 	cfg, err := env.Start()
@@ -88,7 +88,7 @@ func startEnv(t *testing.T, crdDir string) (*envtest.Environment, client.Client)
 	t.Cleanup(func() { _ = env.Stop() })
 	c, err := client.New(cfg, client.Options{Scheme: scheme(t)})
 	require.NoError(t, err)
-	return env, c
+	return c
 }
 
 // upgradeCRD replaces the served schema with the one in config/crd/bases, the way
@@ -118,7 +118,7 @@ func upgradeCRD(t *testing.T, c client.Client) {
 }
 
 func TestRatchet_AnOldStyleActionStaysUpdatableAfterTheCRDIsTightened(t *testing.T) {
-	_, c := startEnv(t, filepath.Join("testdata"))
+	c := startEnv(t, filepath.Join("testdata"))
 	ctx := context.Background()
 
 	for name, command := range oldStyleCommands {

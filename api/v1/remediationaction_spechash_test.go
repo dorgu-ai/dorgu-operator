@@ -77,9 +77,10 @@ func TestSpecHash_CanonicalJSONHasSortedKeysAndNoWhitespace(t *testing.T) {
 	if !strings.Contains(string(canonical), want) {
 		t.Fatalf("canonical JSON %s does not contain %s", canonical, want)
 	}
-	for _, b := range canonical {
-		if b == ' ' || b == '\n' || b == '\t' {
-			t.Fatalf("canonical JSON contains whitespace: %s", canonical)
+	// Whitespace inside a string value is data; between tokens it must not exist.
+	for _, between := range []string{`": `, `, "`, "{ ", " }", "[ ", " ]", "\n", "\t"} {
+		if strings.Contains(string(canonical), between) {
+			t.Fatalf("canonical JSON has whitespace between tokens (%q): %s", between, canonical)
 		}
 	}
 }
@@ -124,7 +125,7 @@ func TestSpecHash_ChangesWhenAnythingInTheSpecChanges(t *testing.T) {
 
 func TestSpecHash_IsDeterministic(t *testing.T) {
 	first := mustHash(t, hashTestSpec())
-	for i := 0; i < 20; i++ {
+	for i := range 20 {
 		if got := mustHash(t, hashTestSpec()); got != first {
 			t.Fatalf("run %d: %s != %s", i, got, first)
 		}
