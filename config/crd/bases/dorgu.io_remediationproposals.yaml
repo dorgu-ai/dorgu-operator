@@ -1,0 +1,514 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.0
+  name: remediationproposals.dorgu.io
+spec:
+  group: dorgu.io
+  names:
+    kind: RemediationProposal
+    listKind: RemediationProposalList
+    plural: remediationproposals
+    shortNames:
+    - rprop
+    singular: remediationproposal
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .spec.proposer.username
+      name: Proposer
+      type: string
+    - jsonPath: .status.remediationActionRef.name
+      name: Action
+      type: string
+    - jsonPath: .status.rejection.reason
+      name: Reason
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          RemediationProposal is a request for a change. Anything may propose; the
+          operator's gate decides whether the proposal becomes a RemediationAction, and a
+          human approves that action.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              RemediationProposalSpec is what a proposer asks for. It is immutable: a proposer
+              that wants something else writes a new proposal.
+            properties:
+              agent:
+                description: Agent is informational detail about the agent behind
+                  the proposal.
+                properties:
+                  name:
+                    description: Name of the agent or tool.
+                    maxLength: 128
+                    type: string
+                  runID:
+                    description: RunID identifies the agent run that produced the
+                      proposal.
+                    maxLength: 128
+                    type: string
+                  version:
+                    description: Version of the agent or tool.
+                    maxLength: 64
+                    type: string
+                type: object
+              evidence:
+                description: Evidence references what the proposer looked at.
+                items:
+                  description: |-
+                    EvidenceRef points at something the proposer looked at: an object, a metric,
+                    a log. It is a reference, never the evidence itself.
+                  properties:
+                    kind:
+                      description: Kind of the referenced thing, for example "Pod"
+                        or "PrometheusQuery".
+                      maxLength: 63
+                      minLength: 1
+                      type: string
+                    name:
+                      description: Name or identifier of the referenced thing.
+                      maxLength: 253
+                      minLength: 1
+                      type: string
+                    namespace:
+                      description: Namespace of the referenced thing, when it has
+                        one.
+                      maxLength: 63
+                      type: string
+                  required:
+                  - kind
+                  - name
+                  type: object
+                maxItems: 20
+                type: array
+                x-kubernetes-list-type: atomic
+              idempotencyKey:
+                description: |-
+                  IdempotencyKey makes a retried proposal harmless. A proposal with the same
+                  proposer and key as an earlier one in the same namespace is rejected as a
+                  duplicate, and does not become a second RemediationAction.
+                maxLength: 253
+                minLength: 1
+                type: string
+              incidentRef:
+                description: |-
+                  IncidentRef is the IncidentMemory this proposal answers. When absent, the
+                  operator creates an incident for the proposal. When present, the incident
+                  must exist.
+                properties:
+                  name:
+                    description: Name of the IncidentMemory.
+                    type: string
+                  namespace:
+                    description: Namespace of the IncidentMemory.
+                    type: string
+                required:
+                - name
+                - namespace
+                type: object
+              proposer:
+                description: Proposer is who wrote this proposal.
+                properties:
+                  username:
+                    description: Username is the authenticated Kubernetes username
+                      of the proposer.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                required:
+                - username
+                type: object
+              rationale:
+                description: |-
+                  Rationale is why the proposer wants this. It is UNTRUSTED plain text: it is
+                  shown to people as machine-written text, and no decision, guardrail or branch
+                  in the operator reads it.
+                maxLength: 4000
+                minLength: 1
+                type: string
+              rollbackOf:
+                description: |-
+                  RollbackOf is RESERVED for a ticketed rollback of a RemediationAction. The
+                  operator does not honour it yet: a proposal that sets it is rejected with
+                  reason NotYetSupported.
+                properties:
+                  name:
+                    description: Name of the RemediationAction.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+              source:
+                default: agent
+                description: |-
+                  Source says what kind of proposer this is: "dorgu-planner" for Dorgu's own
+                  planner, "agent" (the default) for anything external. It is recorded and
+                  reported; no decision reads it.
+                pattern: ^[a-z][a-z0-9-]{0,62}$
+                type: string
+              steps:
+                description: |-
+                  Steps is the ordered plan, in the same typed schema as a RemediationAction.
+                  The operator's gate validates every step and may narrow or refuse the plan. A
+                  proposal with no steps is refused by the gate; the field is optional only
+                  because a rollback proposal derives its own steps.
+                items:
+                  description: |-
+                    RemediationStep is a single ordered action within a multi-step remediation plan.
+
+                    Step-safety invariant: only persona-update steps may be AutoExecutable. All
+                    other step types are advisory — recorded for a human/CLI/platform to apply —
+                    which preserves the operator's non-negotiable guarantee that it never writes
+                    workloads. See ValidateAutoExecutable.
+                  properties:
+                    autoExecutable:
+                      description: |-
+                        AutoExecutable indicates the operator may apply this step without external
+                        action. v1 invariant: this is true ONLY for persona-update steps.
+                      type: boolean
+                    command:
+                      description: |-
+                        Command is a ready-to-run kubectl command that carries out this advisory
+                        step, when a single command can. It exists so a correct diagnosis turns
+                        into an actual fix instead of prose the reader has to translate.
+
+                        It is never executed: not by the operator (which never writes workloads)
+                        and not by the CLI. It is printed for a human to read, check, and run.
+                        Because it can originate from a model, it is filtered through
+                        SanitizeStepCommand before being persisted: anything that is not a
+                        single-line kubectl invocation free of shell metacharacters is dropped.
+                      maxLength: 1024
+                      type: string
+                    description:
+                      description: Description is a human-readable summary of the
+                        action.
+                      type: string
+                    id:
+                      description: ID is a stable, per-plan identifier for the step.
+                      type: string
+                    order:
+                      description: Order is the 1-based execution order of this step
+                        within the plan.
+                      format: int32
+                      minimum: 1
+                      type: integer
+                    patch:
+                      description: Patch is the JSON merge patch to apply to the Persona
+                        spec (persona-update steps).
+                      x-kubernetes-preserve-unknown-fields: true
+                    prePatchState:
+                      description: PrePatchState is the snapshot of fields before
+                        the patch, for rollback.
+                      x-kubernetes-preserve-unknown-fields: true
+                    rationale:
+                      description: Rationale explains why this step is proposed (AI
+                        reasoning).
+                      type: string
+                    risk:
+                      description: Risk is the assessed risk level of applying this
+                        step.
+                      enum:
+                      - low
+                      - medium
+                      - high
+                      type: string
+                    safety:
+                      description: |-
+                        Safety records what Dorgu's guardrails decided about this step, one entry
+                        per field they ruled on. It is structured so a client can render the
+                        verdict, filter on it, or alert on it.
+
+                        It exists because the verdict used to be a string prefix on Rationale, next
+                        to the model's own account of the same change. A reader then saw the
+                        guardrail's arithmetic presented as part of the model's reasoning, and in
+                        clean-room run #4 saw it directly beside the model's claim that a 16x
+                        change was "well within a 2x ceiling". A guardrail's verdict is Dorgu's
+                        alone.
+                      items:
+                        description: |-
+                          StepSafety is one guardrail verdict on one field of a step.
+
+                          Every string in it is written by Dorgu from its own arithmetic. No part of it
+                          comes from a model, and no model is asked to characterise it.
+                        properties:
+                          baseline:
+                            description: |-
+                              Baseline is the value the guardrail measured against: the live workload's
+                              value when it could be read, the persona's otherwise. Empty when the rule
+                              did not measure a change (a derived patch has nothing to compare).
+                            type: string
+                          field:
+                            description: Field is the persona-spec path ruled on,
+                              e.g. "spec.resources.limits.memory".
+                            type: string
+                          maxRatio:
+                            description: MaxRatio is the largest multiple the guardrail
+                              allows, e.g. "2.0x".
+                            type: string
+                          message:
+                            description: Message is Dorgu's one-line rendering of
+                              the verdict, ready to print.
+                            type: string
+                          permitted:
+                            description: |-
+                              Permitted is the value that will actually be applied for this field, and
+                              is exactly what the step's patch carries. Empty means nothing will be
+                              applied for this field.
+                            type: string
+                          ratio:
+                            description: Ratio is the requested change as a multiple
+                              of Baseline, e.g. "16.0x".
+                            type: string
+                          requested:
+                            description: |-
+                              Requested is the value the plan asked for. Empty when the plan named a
+                              change without giving a value.
+                            type: string
+                          rule:
+                            description: Rule identifies the guardrail that ruled.
+                            enum:
+                            - blast-radius
+                            - plan-validation
+                            - absent-field
+                            type: string
+                          verdict:
+                            description: Verdict is what happened to the requested
+                              value.
+                            enum:
+                            - clamped
+                            - rejected
+                            - derived
+                            type: string
+                        required:
+                        - field
+                        - message
+                        - rule
+                        - verdict
+                        type: object
+                      type: array
+                      x-kubernetes-list-type: atomic
+                    type:
+                      description: Type classifies the step action.
+                      enum:
+                      - persona-update
+                      - workload-apply
+                      - restart
+                      - scale
+                      - config-change
+                      - manual
+                      type: string
+                  required:
+                  - autoExecutable
+                  - description
+                  - id
+                  - order
+                  - type
+                  type: object
+                  x-kubernetes-validations:
+                  - message: only persona-update steps may be autoExecutable
+                    rule: '!self.autoExecutable || self.type == ''persona-update'''
+                  - message: step command must be a kubectl invocation
+                    rule: '!has(self.command) || self.command.startsWith(''kubectl
+                      '')'
+                maxItems: 64
+                type: array
+                x-kubernetes-list-type: atomic
+              target:
+                description: Target is what the proposal changes.
+                properties:
+                  kind:
+                    description: Kind of the target. Only ApplicationPersona can carry
+                      an applied change.
+                    enum:
+                    - ApplicationPersona
+                    - ClusterPersona
+                    type: string
+                  name:
+                    description: Name of the target.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                  namespace:
+                    description: |-
+                      Namespace of the target. It must equal the proposal's own namespace. A CRD
+                      validation rule cannot read metadata.namespace, so the operator enforces this
+                      (a proposal that breaks it is Rejected at Intake with TargetNamespaceMismatch)
+                      and an admission policy can enforce it at the API server.
+                    maxLength: 63
+                    minLength: 1
+                    type: string
+                required:
+                - kind
+                - name
+                - namespace
+                type: object
+            required:
+            - idempotencyKey
+            - proposer
+            - rationale
+            - target
+            type: object
+            x-kubernetes-validations:
+            - message: 'spec is immutable: write a new proposal instead'
+              rule: self == oldSelf
+          status:
+            description: RemediationProposalStatus is the operator's answer.
+            properties:
+              conditions:
+                description: Conditions carry the human-readable message for the phase.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              incidentRef:
+                description: |-
+                  IncidentRef is the incident the proposal is answered against: the one the
+                  proposal named, or the one the operator created for it.
+                properties:
+                  name:
+                    description: Name of the IncidentMemory.
+                    type: string
+                  namespace:
+                    description: Namespace of the IncidentMemory.
+                    type: string
+                required:
+                - name
+                - namespace
+                type: object
+              observedGeneration:
+                description: ObservedGeneration is the proposal generation the operator
+                  last decided.
+                format: int64
+                type: integer
+              phase:
+                description: Phase is Received, Converted or Rejected.
+                enum:
+                - Received
+                - Converted
+                - Rejected
+                type: string
+              rejection:
+                description: Rejection is set when Phase is Rejected.
+                properties:
+                  reason:
+                    description: |-
+                      Reason is a machine-readable token. At Intake it is one of RateLimited,
+                      DuplicateIdempotencyKey, IncidentNotFound, NotYetSupported or
+                      TargetNamespaceMismatch. At a gate stage it is the guardrail that refused.
+                    maxLength: 63
+                    type: string
+                  stage:
+                    description: |-
+                      Stage is "Intake" for a refusal before the gate, or the gate stage that
+                      refused: Validate, Ground, Ownership, Guardrails, ModePolicy or DedupCooldown.
+                    maxLength: 63
+                    type: string
+                required:
+                - reason
+                - stage
+                type: object
+              remediationActionRef:
+                description: |-
+                  RemediationActionRef names the RemediationAction this proposal became. It is
+                  set when Phase is Converted.
+                properties:
+                  name:
+                    description: Name of the RemediationAction.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

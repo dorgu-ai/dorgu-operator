@@ -180,6 +180,67 @@ spec:
                 description: PlanSummary is the AI root-cause / plan explanation for
                   the ordered plan.
                 type: string
+              provenance:
+                description: |-
+                  Provenance records which RemediationProposal this action was converted from
+                  and who proposed it. The operator writes it and it is immutable: it can be
+                  neither added to an action that has none nor changed once set. An action
+                  without provenance predates v0.14 and is treated as proposed by the operator
+                  ServiceAccount.
+                properties:
+                  agent:
+                    description: Agent is informational detail about the agent behind
+                      the proposal.
+                    properties:
+                      name:
+                        description: Name of the agent or tool.
+                        maxLength: 128
+                        type: string
+                      runID:
+                        description: RunID identifies the agent run that produced
+                          the proposal.
+                        maxLength: 128
+                        type: string
+                      version:
+                        description: Version of the agent or tool.
+                        maxLength: 64
+                        type: string
+                    type: object
+                  proposal:
+                    description: Proposal is the name of the RemediationProposal,
+                      in the action's namespace.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                  proposer:
+                    description: Proposer is who wrote the proposal.
+                    properties:
+                      username:
+                        description: Username is the authenticated Kubernetes username
+                          of the proposer.
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                    required:
+                    - username
+                    type: object
+                  requestedBy:
+                    description: |-
+                      RequestedBy is the human on whose behalf the proposal was made, when one
+                      exists. A ticketed rollback records its requester here.
+                    maxLength: 253
+                    type: string
+                  source:
+                    description: Source is the proposal's source (see the ProposalSource*
+                      constants).
+                    maxLength: 63
+                    minLength: 1
+                    type: string
+                required:
+                - proposal
+                - proposer
+                - source
+                type: object
               rollback:
                 description: Rollback configures automatic rollback behavior.
                 properties:
@@ -479,6 +540,11 @@ spec:
             - personaRef
             - trustLevel
             type: object
+            x-kubernetes-validations:
+            - message: spec.provenance is written by the operator when it converts
+                a proposal and cannot be added or changed
+              rule: 'has(oldSelf.provenance) ? (has(self.provenance) && self.provenance
+                == oldSelf.provenance) : !has(self.provenance)'
           status:
             description: Status defines the observed state of RemediationAction.
             properties:
