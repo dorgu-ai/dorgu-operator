@@ -27,7 +27,7 @@ operator    operator     operator     you       CLI     operator   IncidentMemor
                          Steps[])      approve) workload) rollback)
 ```
 
-1. **Detect** — the health check reconciler runs every 60 seconds and gathers signals: node conditions, pod failures (OOMKilled, CrashLoopBackOff, ImagePullBackOff), resource saturation, control plane component health, and optionally container-level usage from metrics-server.
+1. **Detect** — the health check reconciler runs every 60 seconds and gathers signals: node conditions, pod failures (OOMKilled, CrashLoopBackOff, ImagePullBackOff), resource saturation, control plane component health, and optionally container-level usage from metrics-server. A container held back by its own CPU limit is a `CPUThrottling` signal (see [CPU throttling detection](#cpu-throttling-detection)).
 2. **Diagnose** — deterministic rules produce a root cause with a confidence score (0.0–1.0). With an Anthropic key configured, AI enhances the diagnosis. An **IncidentMemory** CRD records it.
 3. **Propose** — the remediation proposer emits a **RemediationAction**: an explanation, a pre-patch snapshot, a JSON merge patch against a Persona spec, and — with `aiRemediation.enabled` — an ordered `Steps[]` plan from the AI planner. Deterministic rules remain the floor; AI never replaces them.
 4. **Approve** — the action sits in `Pending`. Nothing happens until a human runs `dorgu remediation approve`.
@@ -123,6 +123,40 @@ Remediation phases: `Pending` → `Approved` → `Applying` → `Verifying` → 
 
 ---
 
+## CPU throttling detection
+
+A container that is throttled by its own CPU limit is slow without being down, so nothing restarts and nothing is killed. Dorgu detects it from one of two sources and proposes raising that container's CPU limit, through the same gate as every other proposal.
+
+| Source | Signal fires when | Needs |
+|--------|-------------------|-------|
+| `metrics.k8s.io` (default) | a container's CPU usage is at or above **95% of its CPU limit for 3 consecutive health-check cycles** | metrics-server, and a CPU limit on the container |
+| Prometheus (optional, wins when set) | `rate(container_cpu_cfs_throttled_periods_total[5m]) / rate(container_cpu_cfs_periods_total[5m])` is **25% or more** | a Prometheus-compatible endpoint that scrapes cAdvisor, in `spec.metrics.prometheus.url` |
+
+```yaml
+apiVersion: dorgu.io/v1
+kind: ClusterPersona
+metadata:
+  name: dorgu-cluster
+spec:
+  name: dorgu-cluster
+  metrics:
+    prometheus:
+      url: http://prometheus-server.monitoring:9090   # http or https only
+```
+
+- The URL must be `http` or `https`, with no credentials, query string or fragment. The operator queries `<url>/api/v1/query` with a 10 second timeout, follows no redirect, reads at most 4 MiB and treats the answer as untrusted.
+- The only RBAC it needs is `get` and `list` on `pods.metrics.k8s.io`. Dorgu never asks for `nodes/proxy` or any other way to reach a kubelet.
+- Only containers that have a CPU limit are counted. The proposal raises the **live** limit by 25% (50% at critical severity), never introduces a limit the workload does not have, and is bounded by the gate's 2x ceiling.
+- **If neither source is available, detection is off and says so.** The ClusterPersona carries the condition `CPUThrottlingDetection` and the field `status.cpuThrottlingDetection` (`enabled`, `source`, `reason`, `message`):
+
+  ```bash
+  kubectl get clusterpersona dorgu-cluster -o jsonpath='{.status.cpuThrottlingDetection}'
+  ```
+
+  Reasons: `MetricsServerActive`, `PrometheusActive`, `PrometheusUnreachable` (fell back to metrics-server), `NoMetricsSource`, `MetricsServerDisabled`, `MetricsSourceLost`, `MetricsReadFailed`. A source that was never there is not an error; a source that exists and cannot be read is, so a verification never reads "healthy" because the metrics were unreachable.
+
+---
+
 ## CRDs
 
 All five live in API group `dorgu.io/v1`.
@@ -154,8 +188,8 @@ Source-of-truth split: the CLI and GitOps own `spec` (desired intent); the opera
 | Missing | Effect |
 |---------|--------|
 | No Anthropic key | Detection and diagnosis run fully rule-based. The proposer uses the deterministic path. Nothing else changes. |
-| No metrics-server | Saturation signals degrade (usage-based detection is unavailable). **OOM detection is unaffected** — it reads pod termination state, not metrics. |
-| No Prometheus | Resource baseline learning is skipped. |
+| No metrics-server | Saturation signals degrade (usage-based detection is unavailable) and **CPU throttling detection is off** unless a Prometheus URL is set; the ClusterPersona status says so. **OOM detection is unaffected** — it reads pod termination state, not metrics. |
+| No Prometheus | Resource baseline learning is skipped. CPU throttling detection falls back to `metrics.k8s.io` usage. |
 | No ArgoCD | Sync/health fields on Persona status stay empty. |
 
 ### Install with Helm (recommended)
