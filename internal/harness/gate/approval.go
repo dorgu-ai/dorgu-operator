@@ -41,6 +41,13 @@ import (
 // measured.
 const DefaultTicketTTL = 15 * time.Minute
 
+// TicketClockSkew is how far in the future a ticket's issuedAt may be before the
+// gate refuses it. The ticket is stamped by the operator's clock and read by the
+// operator's clock, so any real skew is between replicas; two minutes is the
+// allowance the dorgu CLI already applies to the same field. Without a bound, a
+// ticket dated in the future is "unexpired" until then and expiry is off for it.
+const TicketClockSkew = 2 * time.Minute
+
 // DorguFieldManager is the field manager the dorgu CLI patches a Deployment
 // under. A write by it is the approved change itself, not somebody else moving
 // the workload under the ticket. It is matched exactly: "Dorgu", "dorgu-gitops"
@@ -354,11 +361,15 @@ func ticketSpecProblem(ticket *dorguv1.ApplyTicket, action *dorguv1.RemediationA
 	return nil
 }
 
-// ticketTimingProblem checks the ticket's own clock fields: it has an issue time,
-// has not expired, and was not given a lifetime beyond what the gate hands out.
+// ticketTimingProblem checks the ticket's own clock fields: it has an issue time
+// that is not in the future, has not expired, and was not given a lifetime beyond what the gate hands out.
 func (g *Gate) ticketTimingProblem(ticket *dorguv1.ApplyTicket) *TicketProblem {
 	if ticket.IssuedAt == nil || ticket.IssuedAt.IsZero() {
 		return &TicketProblem{GuardrailTicket, "the apply ticket carries no issue time"}
+	}
+	if ticket.IssuedAt.Sub(g.now()) > TicketClockSkew {
+		return &TicketProblem{GuardrailTicket,
+			fmt.Sprintf("the apply ticket is dated in the future (issued %s), beyond the %s of clock skew allowed", ticket.IssuedAt.UTC().Format(time.RFC3339), TicketClockSkew)}
 	}
 	if ticket.ExpiresAt.IsZero() || !g.now().Before(ticket.ExpiresAt.Time) {
 		return &TicketProblem{GuardrailTicketExpired,

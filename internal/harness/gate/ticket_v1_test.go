@@ -230,3 +230,46 @@ func TestTicketV1_NewGuardrailsAreInTheMetricCatalog(t *testing.T) {
 	assert.Contains(t, applyReasons(), GuardrailTicketIncomplete)
 	assert.Contains(t, applyReasons(), GuardrailSpecChanged)
 }
+
+// F-10: a ticket dated in the future is "unexpired" until then, which switches
+// expiry off for it. The operator refuses one beyond the same two minute skew
+// allowance the CLI uses.
+func TestF10_AFutureDatedTicketIsRefused(t *testing.T) {
+	g := standardGate(t)
+	future := ticketedAction(func(ra *dorguv1.RemediationAction) {
+		issued := metav1.NewTime(fixedNow.Add(time.Hour))
+		ra.Status.ApplyTicket.IssuedAt = &issued
+		ra.Status.ApplyTicket.ExpiresAt = metav1.NewTime(issued.Add(DefaultTicketTTL))
+	})
+	problem := checkTicket(t, g, future)
+	require.NotNil(t, problem, "a ticket issued an hour from now must be refused")
+	assert.Equal(t, GuardrailTicket, problem.Guardrail, problem.Reason)
+	assert.Contains(t, problem.Reason, "future")
+}
+
+func TestF10_ClockSkewWithinTheAllowanceIsHonoured(t *testing.T) {
+	assert.Equal(t, 2*time.Minute, TicketClockSkew, "the allowance matches the CLI's")
+	g := standardGate(t)
+	for name, offset := range map[string]time.Duration{
+		"a second ahead":     time.Second,
+		"inside the margin":  TicketClockSkew - time.Second,
+		"exactly the margin": TicketClockSkew,
+	} {
+		t.Run(name, func(t *testing.T) {
+			ra := ticketedAction(func(ra *dorguv1.RemediationAction) {
+				issued := metav1.NewTime(fixedNow.Add(offset))
+				ra.Status.ApplyTicket.IssuedAt = &issued
+				ra.Status.ApplyTicket.ExpiresAt = metav1.NewTime(issued.Add(DefaultTicketTTL))
+			})
+			assert.Nil(t, checkTicket(t, g, ra))
+		})
+	}
+	beyond := ticketedAction(func(ra *dorguv1.RemediationAction) {
+		issued := metav1.NewTime(fixedNow.Add(TicketClockSkew + time.Second))
+		ra.Status.ApplyTicket.IssuedAt = &issued
+		ra.Status.ApplyTicket.ExpiresAt = metav1.NewTime(issued.Add(DefaultTicketTTL))
+	})
+	problem := checkTicket(t, g, beyond)
+	require.NotNil(t, problem)
+	assert.Equal(t, GuardrailTicket, problem.Guardrail)
+}
