@@ -99,11 +99,19 @@ func actionName(prop *v1alpha1.RemediationProposal) string {
 	return fmt.Sprintf("ra-%s-%s", persona, suffix)
 }
 
-// hintMatches reports whether a hint describes this proposal: the draft names the
-// proposal's target and carries exactly its steps. A hint that does not is stale or
-// wrong and is not used.
-func hintMatches(h *Hint, prop *v1alpha1.RemediationProposal) bool {
-	if h == nil || h.Draft == nil {
+// hintMatches reports whether a hint describes this proposal, and so may shape the
+// action: it was issued for this very object (same UID, so a proposal deleted and
+// recreated under the same name inherits nothing), it is the planner's own
+// (the operator's username, source dorgu-planner, idempotency key and proposal name
+// equal the draft's), and its draft names the proposal's target, incident and
+// exactly its steps. A hint that does not is stale or wrong and is not used.
+func hintMatches(h *Hint, prop *v1alpha1.RemediationProposal, operatorUsername string) bool {
+	if h == nil || h.Draft == nil || h.ProposalUID != prop.UID {
+		return false
+	}
+	if operatorUsername == "" || prop.Spec.Proposer.Username != operatorUsername ||
+		prop.Spec.Source != dorguv1.ProposalSourceDorguPlanner ||
+		prop.Spec.IdempotencyKey != prop.Name || h.Draft.Name != prop.Name {
 		return false
 	}
 	d := h.Draft
@@ -112,6 +120,9 @@ func hintMatches(h *Hint, prop *v1alpha1.RemediationProposal) bool {
 		persona.Namespace = d.Namespace
 	}
 	if d.Namespace != prop.Namespace || persona != personaRefOf(prop) {
+		return false
+	}
+	if prop.Spec.IncidentRef == nil || *prop.Spec.IncidentRef != d.Spec.IncidentRef {
 		return false
 	}
 	return stepsEqual(d.Spec.Steps, prop.Spec.Steps)

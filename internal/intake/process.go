@@ -110,7 +110,7 @@ func (p *Processor) Process(ctx context.Context, key client.ObjectKey, hint *Hin
 	// is believed; it never decides whether the lock is taken, or a mismatched hint
 	// would wait forever on the lock its own caller holds.
 	callerLocked := hint != nil && hint.PersonaLocked
-	if !hintMatches(hint, &prop) {
+	if !hintMatches(hint, &prop, p.username) {
 		hint = nil
 	}
 
@@ -256,22 +256,20 @@ func (p *Processor) convert(
 		return p.reject(ctx, prop, incident, stage, guardrail, dec, dec.SkipReason())
 	}
 
-	record := dec
-	if hint != nil && hint.Decision != nil && dec.Result == gate.ResultPass {
-		// The planner's run is the one that narrowed this plan, so it is the record.
-		// Run again over the finished plan it passes, with nothing left to say.
-		record = hint.Decision
-	} else {
+	// status.gate is the record to trust, so it records this run: the one that
+	// authorised the creation. A planner's earlier decision over the same plan is
+	// never substituted for it.
+	if hint == nil || dec.Result != gate.ResultPass {
 		InstallDecision(draft, dec)
 		draft.Spec.Action = dorguv1.RemediationActionDetail{Type: dorguv1.ActionTypeNotification}
 	}
 	draft.Spec.Provenance = provenanceFor(prop)
 
-	action, err := p.createAction(ctx, draft, record)
+	action, err := p.createAction(ctx, draft, dec)
 	if err != nil {
 		return nil, err
 	}
-	return p.converted(ctx, prop, incident, action, record)
+	return p.converted(ctx, prop, incident, action, dec)
 }
 
 // existingAction finds the action an earlier attempt already created for this

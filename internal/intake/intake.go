@@ -36,6 +36,7 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
@@ -185,9 +186,15 @@ func (p *Processor) Now() time.Time { return p.now() }
 // handed over in process because none of it belongs on the proposal's spec. It
 // exists so a planner-written action is exactly what the planner shaped. The
 // Processor still runs the gate over the proposal's own steps and trusts nothing
-// in the Hint for the decision: a Hint whose draft does not match the proposal is
-// ignored.
+// in the Hint for the decision: a Hint that does not match the proposal (see
+// hintMatches) is ignored, and status.gate always records the Processor's own gate
+// run, never the planner's.
 type Hint struct {
+	// ProposalUID is the UID the API server gave the proposal the planner created.
+	// The hint applies to that object only, so a proposal deleted and recreated
+	// under the same name does not inherit the planner's confidence and plan.
+	ProposalUID types.UID
+
 	// Draft is the action the planner shaped. Its spec carries what a bare proposal
 	// cannot: confidence, plan source, workload record and so on.
 	Draft *dorguv1.RemediationAction
@@ -200,9 +207,4 @@ type Hint struct {
 	// it can never wait on a lock its own caller holds. It is a statement about the
 	// caller, not about the hint: it applies even when the hint does not match.
 	PersonaLocked bool
-
-	// Decision is the planner's last gate decision over the draft. When the intake's
-	// own run agrees (a plain Pass), it is what status.gate records, because it is
-	// the run that narrowed the plan.
-	Decision *gate.Decision
 }

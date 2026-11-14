@@ -120,7 +120,9 @@ func newWorld(t *testing.T, cfg Config, objs ...client.Object) *world {
 	var clock atomic.Int64
 	c := interceptor.NewClient(base, interceptor.Funcs{
 		Create: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
-			obj.SetCreationTimestamp(metav1.NewTime(time.Unix(1_700_000_000+clock.Add(1), 0)))
+			n := clock.Add(1)
+			obj.SetCreationTimestamp(metav1.NewTime(time.Unix(1_700_000_000+n, 0)))
+			obj.SetUID(types.UID(fmt.Sprintf("uid-%d", n)))
 			return cl.Create(ctx, obj, opts...)
 		},
 	})
@@ -339,30 +341,123 @@ func TestProcess_AMismatchedHintIsIgnored(t *testing.T) {
 	assert.Equal(t, "look at the heap", out.Action.Spec.Steps[0].Description)
 }
 
-func TestProcess_AMatchingHintKeepsThePlannersShape(t *testing.T) {
-	w := newWorld(t, Config{OperatorUsername: testOperator}, baseObjects()...)
-	w.create(t, proposal("p-hint", "alice", "k"))
-	prop := w.get(t, "p-hint")
+// plannerProposal is a proposal as Dorgu's planner writes it.
+func plannerProposal(name string) *v1alpha1.RemediationProposal {
+	p := proposal(name, testOperator, name)
+	p.Spec.Source = dorguv1.ProposalSourceDorguPlanner
+	p.Spec.IncidentRef = &dorguv1.IncidentReference{Name: "inc", Namespace: testNS}
+	return p
+}
+
+// plannerHint is the hint the planner hands over for the stored proposal.
+func plannerHint(prop *v1alpha1.RemediationProposal) *Hint {
 	draft := derivedAction(prop, incident("inc", "ImagePullBackOff"))
-	draft.Name = "ra-planner-named"
+	draft.Name = prop.Name
 	draft.Spec.Confidence = "0.77"
 	draft.Spec.PlanSource = dorguv1.PlanSourceRuleBased
-	release := w.p.Claim(types.NamespacedName{Namespace: testNS, Name: "p-hint"})
-	assert.True(t, w.p.Claimed(types.NamespacedName{Namespace: testNS, Name: "p-hint"}))
+	return &Hint{
+		ProposalUID: prop.UID, Draft: draft, PersonaLocked: true,
+		Facts: gate.Facts{Incident: incident("not-stored", "ImagePullBackOff")},
+	}
+}
+
+func TestProcess_AMatchingHintKeepsThePlannersShape(t *testing.T) {
+	w := newWorld(t, Config{OperatorUsername: testOperator}, baseObjects()...)
+	w.create(t, plannerProposal("p-hint"))
+	prop := w.get(t, "p-hint")
+	hint := plannerHint(prop)
+	key := types.NamespacedName{Namespace: testNS, Name: "p-hint"}
+	release := w.p.Claim(key)
+	assert.True(t, w.p.Claimed(key))
 	defer release()
+	ref := personaRefOf(prop)
+	defer w.p.Locks().Lock(&ref)()
 
-	// The planner's record of its own decision: what status.gate keeps when the intake's run agrees.
-	planners, err := w.p.gate.Run(context.Background(), candidateFor(draft, gate.Facts{}), gate.PhaseProposal)
-	require.NoError(t, err)
-
-	out := w.process(t, "p-hint", &Hint{Draft: draft, Decision: planners,
-		Facts: gate.Facts{Incident: incident("not-stored", "ImagePullBackOff")}})
+	out := w.process(t, "p-hint", hint)
 
 	require.Equal(t, v1alpha1.PhaseConverted, out.Phase, out.Message)
-	assert.Equal(t, "ra-planner-named", out.Action.Name)
+	assert.Equal(t, "p-hint", out.Action.Name)
 	assert.Equal(t, "0.77", out.Action.Spec.Confidence)
-	assert.Same(t, planners, out.Decision, "the planner's own decision is the record")
 	assert.Equal(t, "not-stored", w.get(t, "p-hint").Status.IncidentRef.Name, "an incident the planner passes in need not be re-read")
+}
+
+// F-12: status.gate is the record to trust, so it is the intake's own run.
+func TestProcess_StatusGateRecordsTheIntakesOwnRun(t *testing.T) {
+	w := newWorld(t, Config{OperatorUsername: testOperator}, baseObjects()...)
+	w.create(t, plannerProposal("p-hint"))
+	prop := w.get(t, "p-hint")
+	hint := plannerHint(prop)
+	ref := personaRefOf(prop)
+	defer w.p.Locks().Lock(&ref)()
+
+	out := w.process(t, "p-hint", hint)
+
+	require.Equal(t, v1alpha1.PhaseConverted, out.Phase, out.Message)
+	require.NotNil(t, out.Decision)
+	var stored dorguv1.RemediationAction
+	require.NoError(t, w.c.Get(context.Background(), types.NamespacedName{Namespace: testNS, Name: "p-hint"}, &stored))
+	assert.Equal(t, out.Decision.Status().EvaluatedAt.Unix(), stored.Status.Gate.EvaluatedAt.Unix(), "the record is the run that authorised creation")
+	assert.Equal(t, out.Decision.Status().Verdicts, stored.Status.Gate.Verdicts)
+}
+
+// F-12: the hint is bound to the proposal it was issued for, and to the planner.
+func TestHintMatches_IsBoundToTheProposalAndThePlanner(t *testing.T) {
+	prop := plannerProposal("p")
+	prop.UID = "uid-1"
+	good := func() *Hint { h := plannerHint(prop); return h }
+	require.True(t, hintMatches(good(), prop, testOperator))
+
+	tests := []struct {
+		name   string
+		mutate func(*Hint, *v1alpha1.RemediationProposal) string // returns the operator username to test with
+	}{
+		{"nil hint", func(h *Hint, _ *v1alpha1.RemediationProposal) string { *h = Hint{}; return testOperator }},
+		{"another proposal under the same name (UID)", func(h *Hint, _ *v1alpha1.RemediationProposal) string {
+			h.ProposalUID = "uid-other"
+			return testOperator
+		}},
+		{"not the operator's username", func(_ *Hint, p *v1alpha1.RemediationProposal) string {
+			p.Spec.Proposer.Username = "mallory"
+			return testOperator
+		}},
+		{"operator username unknown", func(*Hint, *v1alpha1.RemediationProposal) string { return "" }},
+		{"not the planner's source", func(_ *Hint, p *v1alpha1.RemediationProposal) string {
+			p.Spec.Source = dorguv1.ProposalSourceAgent
+			return testOperator
+		}},
+		{"idempotency key is not the proposal name", func(_ *Hint, p *v1alpha1.RemediationProposal) string {
+			p.Spec.IdempotencyKey = "other"
+			return testOperator
+		}},
+		{"draft has another name", func(h *Hint, _ *v1alpha1.RemediationProposal) string {
+			h.Draft.Name = "other"
+			return testOperator
+		}},
+		{"different incident", func(_ *Hint, p *v1alpha1.RemediationProposal) string {
+			p.Spec.IncidentRef = &dorguv1.IncidentReference{Name: "elsewhere", Namespace: testNS}
+			return testOperator
+		}},
+		{"no incident", func(_ *Hint, p *v1alpha1.RemediationProposal) string {
+			p.Spec.IncidentRef = nil
+			return testOperator
+		}},
+		{"different target", func(_ *Hint, p *v1alpha1.RemediationProposal) string {
+			p.Spec.Target.Name = "db"
+			return testOperator
+		}},
+		{"different steps", func(h *Hint, _ *v1alpha1.RemediationProposal) string {
+			h.Draft.Spec.Steps[0].Description = "other"
+			return testOperator
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := prop.DeepCopy()
+			h := good()
+			user := tt.mutate(h, p)
+			assert.False(t, hintMatches(h, p, user))
+		})
+	}
 }
 
 func TestClaim_ReleaseLetsGo(t *testing.T) {

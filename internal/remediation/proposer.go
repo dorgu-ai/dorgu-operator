@@ -469,7 +469,7 @@ func (p *Proposer) persist(
 		return nil, fmt.Errorf("%w: creating RemediationProposal: %w", errPersistFailed, err)
 	}
 
-	out, err := p.intake.Process(ctx, key, &intake.Hint{Draft: action, Facts: facts, Decision: dec, PersonaLocked: true})
+	out, err := p.intake.Process(ctx, key, &intake.Hint{ProposalUID: proposal.UID, Draft: action, Facts: facts, PersonaLocked: true})
 	if err == nil && out == nil {
 		err = errors.New("the proposal disappeared before it was decided")
 	}
