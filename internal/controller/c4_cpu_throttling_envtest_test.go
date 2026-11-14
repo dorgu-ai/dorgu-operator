@@ -197,11 +197,14 @@ var _ = Describe("CPU throttling on a real API server (C4)", func() {
 			Expect(actions()).To(HaveLen(1))
 
 			// The metrics API was served and now is not. That is a collector that could not
-			// look (B2b), so the engine reports an incomplete cycle and nothing is closed on
-			// its silence. The incident is kept open and nothing new is invented.
+			// look (B2b), scoped to its family: the engine does not call the whole cycle
+			// incomplete, it says CPUThrottling is blind, and nothing about it is closed on
+			// the silence. The incident is kept open and nothing new is invented.
 			metrics.present = false
 			_, collectErr := engine.CollectAll(bg)
-			Expect(detection.IsPartial(collectErr)).To(BeTrue(), "the lost source reaches the engine as a failed collector")
+			Expect(collectErr).NotTo(HaveOccurred(), "a CPU source outage is not a whole-cycle failure")
+			Expect(engine.SignalBlind(detection.SignalCPUThrottling)).To(BeTrue(), "the lost source blinds its family")
+			Expect(engine.SignalBlind(detection.SignalOOMKilled)).To(BeFalse(), "and no other")
 			r.reconcile(bg)
 			Expect(incidents()).To(HaveLen(1))
 			Expect(incidents()[0].Status.Phase).NotTo(Equal(PhaseResolved))

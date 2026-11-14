@@ -184,6 +184,9 @@ type HealthCheckReconciler struct {
 	// decides from the cache but confirms against this before it deletes. Nil reads
 	// through Client.
 	APIReader client.Reader
+
+	// incompleteLog rate-limits the "signal collection incomplete" line.
+	incompleteLog detection.LogThrottle
 }
 
 // Start begins the health check reconciliation loop. Blocks until ctx is cancelled.
@@ -249,7 +252,7 @@ func (r *HealthCheckReconciler) runCycle(ctx context.Context) {
 			return
 		}
 		incomplete = true
-		r.Logger.Error(err, "signal collection incomplete: open incidents are kept and none are resolved this cycle")
+		r.logIncomplete(err)
 	}
 
 	// 2. Split the signals by application before diagnosing anything. Diagnosis
@@ -287,6 +290,24 @@ func (r *HealthCheckReconciler) runCycle(ctx context.Context) {
 	if err := r.pruneResolved(ctx, time.Now()); err != nil {
 		logFailure(r.Logger, err, "failed to prune Resolved incidents")
 	}
+}
+
+// logIncomplete reports a partial collection at ERROR once per distinct error, then at
+// most once per detection.LogRepeatInterval at ERROR with the count it held back, and at
+// V(1) in between. The engine already logs each failing collector on the same terms, so
+// a sustained failure is not a second ERROR line every cycle on top of it.
+func (r *HealthCheckReconciler) logIncomplete(err error) {
+	const msg = "signal collection incomplete: open incidents are kept and none are resolved this cycle"
+	ok, held := r.incompleteLog.Allow(err.Error(), time.Now())
+	if !ok {
+		r.Logger.V(1).Info(msg, "error", err.Error())
+		return
+	}
+	if held > 0 {
+		r.Logger.Error(err, msg, "cyclesSinceLastLog", held)
+		return
+	}
+	r.Logger.Error(err, msg)
 }
 
 // processGroup diagnoses one application's signals in isolation and records the

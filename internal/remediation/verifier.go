@@ -19,6 +19,7 @@ package remediation
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/go-logr/logr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -42,6 +43,9 @@ type Verifier struct {
 	detection *detection.Engine
 	client    client.Client
 	logger    logr.Logger
+
+	// failureLog rate-limits the ERROR line for a detection failure that persists.
+	failureLog detection.LogThrottle
 }
 
 // NewVerifier creates a new Verifier.
@@ -62,7 +66,7 @@ func (v *Verifier) Verify(ctx context.Context, action *dorguv1.RemediationAction
 	// that would have seen it. Fail closed. Unknown retries end in a rollback.
 	signals, err := v.detection.CollectAll(ctx)
 	if err != nil {
-		v.logger.Error(err, "detection engine failed during verification")
+		v.logCollectionFailure(err)
 		return VerificationUnknown, fmt.Errorf("collecting signals: %w", err)
 	}
 
@@ -80,6 +84,16 @@ func (v *Verifier) Verify(ctx context.Context, action *dorguv1.RemediationAction
 		// matched" would read as Healthy. Say we do not know instead.
 		v.logger.Error(err, "cannot identify the persona to verify")
 		return VerificationUnknown, err
+	}
+
+	// 2b. The collector that alone observes the original signal's family may be
+	// failing, have no source, or not have looked yet (the operator just restarted).
+	// Its silence is not "cleared". This is scoped to the family: a CPU metrics outage
+	// leaves the verification of every other fix as it was.
+	if v.detection.SignalBlind(detection.SignalType(originalSignal)) {
+		v.logger.Info("cannot verify: the source that observes this signal cannot look right now",
+			"signal", originalSignal, "persona", fmt.Sprintf("%s/%s", personaNamespace, personaName))
+		return VerificationUnknown, fmt.Errorf("the source that observes %s cannot look, so a quiet cycle proves nothing", originalSignal)
 	}
 
 	// 3. Check if the original signal is still present for this persona.
@@ -104,6 +118,22 @@ func (v *Verifier) Verify(ctx context.Context, action *dorguv1.RemediationAction
 		"persona", fmt.Sprintf("%s/%s", personaNamespace, personaName),
 	)
 	return VerificationHealthy, nil
+}
+
+// logCollectionFailure logs a detection failure at ERROR once per distinct error and
+// then at most once per detection.LogRepeatInterval; a retrying verification would
+// otherwise repeat the engine's own line.
+func (v *Verifier) logCollectionFailure(err error) {
+	ok, held := v.failureLog.Allow(err.Error(), time.Now())
+	if !ok {
+		v.logger.V(1).Info("detection engine failed during verification", "error", err.Error())
+		return
+	}
+	if held > 0 {
+		v.logger.Error(err, "detection engine failed during verification", "failuresSinceLastLog", held)
+		return
+	}
+	v.logger.Error(err, "detection engine failed during verification")
 }
 
 // verificationSubject names the persona whose signals decide the verdict.
