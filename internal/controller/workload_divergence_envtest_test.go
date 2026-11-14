@@ -74,7 +74,7 @@ var _ = Describe("a field deleted under a ticket", func() {
 			Status: dorguv1.RemediationActionStatus{ApplyTicket: &dorguv1.ApplyTicket{
 				WorkloadUID: string(deploy.UID), Container: personaName,
 				ObservedResourceVersion: deploy.ResourceVersion, ObservedGeneration: deploy.Generation,
-				IssuedAt: &issued, ExpiresAt: metav1.NewTime(issued.Add(gate.TicketTTL)),
+				IssuedAt: &issued, ExpiresAt: metav1.NewTime(issued.Add(gate.DefaultTicketTTL)),
 			}},
 		}
 		g := envtestGate(logr.Discard())

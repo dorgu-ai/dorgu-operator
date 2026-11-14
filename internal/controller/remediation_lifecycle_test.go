@@ -144,6 +144,7 @@ func lcRecordProposal(ra *dorguv1.RemediationAction) {
 	if ra.Status.Phase == RemediationPhaseApproved {
 		approved := metav1.NewTime(time.Now().Add(-time.Second))
 		ra.Status.ApprovedAt = &approved
+		ra.Status.ApprovedBy = "alice@example.com"
 	}
 
 	switch ra.Status.Phase {
@@ -151,6 +152,7 @@ func lcRecordProposal(ra *dorguv1.RemediationAction) {
 		ra.Status.Gate.Phase = string(gate.PhaseApprovalRecheck)
 		approved := metav1.NewTime(time.Now().Add(-time.Second))
 		ra.Status.ApprovedAt = &approved
+		ra.Status.ApprovedBy = "alice@example.com"
 		ra.Status.Gate.PrePatchState = &apiextensionsv1.JSON{Raw: []byte(`{"spec":{"resources":{"limits":{"memory":"256Mi"}}}}`)}
 		ra.Status.Gate.Observed.LiveValues = &dorguv1.ObservedResources{Limits: &dorguv1.ResourceValues{Memory: lcBaseline}}
 		ra.Status.ApplyTicket = &dorguv1.ApplyTicket{
@@ -158,7 +160,11 @@ func lcRecordProposal(ra *dorguv1.RemediationAction) {
 			Patch:                   &apiextensionsv1.JSON{Raw: []byte(`{"spec":{"resources":{"limits":{"memory":"512Mi"}}}}`)},
 			ObservedResourceVersion: lcDeploymentRV,
 			IssuedAt:                &now,
-			ExpiresAt:               metav1.NewTime(now.Add(gate.TicketTTL)),
+			ExpiresAt:               metav1.NewTime(now.Add(gate.DefaultTicketTTL)),
+			ApprovedBy:              "alice@example.com",
+		}
+		if hash, err := ra.Spec.Hash(); err == nil {
+			ra.Status.ApplyTicket.SpecHash = hash
 		}
 		applied := metav1.NewTime(time.Now().Add(-11 * time.Minute))
 		if ra.Status.Phase != RemediationPhaseTicketed {

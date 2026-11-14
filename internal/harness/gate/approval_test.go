@@ -55,6 +55,7 @@ func proposedAction(mutate ...func(*dorguv1.RemediationAction)) *dorguv1.Remedia
 		Status: dorguv1.RemediationActionStatus{
 			Phase:      "Approved",
 			ApprovedAt: &approved,
+			ApprovedBy: "alice@example.com",
 			Gate: &dorguv1.GateStatus{
 				Phase: string(PhaseProposal), Result: string(ResultPass), EvaluatedAt: now,
 				Observed: priorObservation("uid-1"),
@@ -213,7 +214,7 @@ func TestApproval_ACleanProposalPassesAndIssuesATicket(t *testing.T) {
 	assert.Equal(t, "42", ticket.ObservedResourceVersion)
 	assert.Equal(t, testPersona, ticket.Container)
 	assert.Equal(t, "384Mi", PatchLeafValues(ticket.Patch.Raw)[memLimit])
-	assert.True(t, ticket.ExpiresAt.Time.Equal(fixedNow.Add(TicketTTL)))
+	assert.True(t, ticket.ExpiresAt.Time.Equal(fixedNow.Add(DefaultTicketTTL)))
 	assert.NotEmpty(t, ticket.Verdicts)
 }
 
@@ -430,9 +431,14 @@ func ticketedAction(mutate ...func(*dorguv1.RemediationAction)) *dorguv1.Remedia
 	return proposedAction(append([]func(*dorguv1.RemediationAction){func(ra *dorguv1.RemediationAction) {
 		issued := metav1.NewTime(fixedNow)
 		ra.Status.Phase = "Ticketed"
+		specHash, err := ra.Spec.Hash()
+		if err != nil {
+			panic(err)
+		}
 		ra.Status.ApplyTicket = &dorguv1.ApplyTicket{
 			WorkloadUID: "uid-1", Container: testPersona, Patch: memPatch("384Mi"),
-			ObservedResourceVersion: "42", IssuedAt: &issued, ExpiresAt: metav1.NewTime(fixedNow.Add(TicketTTL)),
+			ObservedResourceVersion: "42", IssuedAt: &issued, ExpiresAt: metav1.NewTime(fixedNow.Add(DefaultTicketTTL)),
+			SpecHash: specHash, ApprovedBy: ra.Status.ApprovedBy,
 		}
 		// What the approval re-check recorded when it issued the ticket.
 		ra.Status.Gate = &dorguv1.GateStatus{

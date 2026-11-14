@@ -117,7 +117,7 @@ func TestObserve_GuardrailVerdictsAreCounted(t *testing.T) {
 func TestObserve_AnExpiredTicketHasItsOwnReason(t *testing.T) {
 	expired := ticketedAction(func(ra *dorguv1.RemediationAction) {
 		ra.Status.ApplyTicket.ExpiresAt.Time = fixedNow.Add(-time.Minute)
-		ra.Status.ApplyTicket.IssuedAt.Time = fixedNow.Add(-time.Minute - TicketTTL)
+		ra.Status.ApplyTicket.IssuedAt.Time = fixedNow.Add(-time.Minute - DefaultTicketTTL)
 	})
 	before := decisions(t, MetricPhaseApply, StageTicket, "refuse", GuardrailTicketExpired)
 
