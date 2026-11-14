@@ -11,8 +11,10 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+	"unicode"
 
 	"github.com/stretchr/testify/require"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -420,4 +422,197 @@ func TestRemediationStepCRD_CarriesStructuredSafety(t *testing.T) {
 	require.ElementsMatch(t,
 		[]string{SafetyVerdictClamped, SafetyVerdictRejected, SafetyVerdictDerived},
 		readEnum("verdict"))
+}
+
+// MaxPlanSteps is what the gate enforces; the CRD's maxItems is what the API server
+// enforces. They are one number, and the marker cannot read a constant.
+func TestMaxPlanSteps_IsTheCRDMaxItemsOfSpecSteps(t *testing.T) {
+	raw, err := os.ReadFile("../../config/crd/bases/dorgu.io_remediationactions.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var crd struct {
+		Spec struct {
+			Versions []struct {
+				Schema struct {
+					OpenAPIV3Schema struct {
+						Properties struct {
+							Spec struct {
+								Properties struct {
+									Steps struct {
+										MaxItems int `json:"maxItems"`
+									} `json:"steps"`
+								} `json:"properties"`
+							} `json:"spec"`
+						} `json:"properties"`
+					} `json:"openAPIV3Schema"`
+				} `json:"schema"`
+			} `json:"versions"`
+		} `json:"spec"`
+	}
+	if err := yaml.Unmarshal(raw, &crd); err != nil {
+		t.Fatal(err)
+	}
+	if len(crd.Spec.Versions) == 0 {
+		t.Fatal("the CRD has no versions")
+	}
+	if got := crd.Spec.Versions[0].Schema.OpenAPIV3Schema.Properties.Spec.Properties.Steps.MaxItems; got != MaxPlanSteps {
+		t.Fatalf("CRD spec.steps maxItems = %d, MaxPlanSteps = %d", got, MaxPlanSteps)
+	}
+}
+
+// F-7 and N-3: every control character, DEL, the Unicode line and paragraph
+// separators, and every Unicode format character (category Cf: bidi overrides and
+// isolates, zero-width characters, the byte order mark, the tag characters) are
+// refused, wherever they sit in the command. They let a command rewrite the line a
+// human reads (ESC sequences, a right-to-left override that reorders it), hide text
+// (zero-width) or break it (NEL, VT, FF, U+2028, U+2029).
+func isRefusedInCommand(r rune) bool {
+	return r <= 0x1f || (r >= 0x7f && r <= 0x9f) || r == 0x2028 || r == 0x2029 || unicode.Is(unicode.Cf, r)
+}
+
+// commandCodePoints is every code point the API server rule and SanitizeStepCommand
+// are compared on: the C3 review's U+0000 to U+2100 and three more, every Cf code
+// point of the Unicode tables (U+00AD, U+0600 to U+0605, U+200B to U+200F, U+202A to
+// U+202E, U+2060 to U+2064, U+2066 to U+206F, U+FEFF, U+FFF9 to U+FFFB, U+E0001, the
+// tag characters U+E0020 to U+E007F and others above U+2100), and the neighbours of
+// those ranges that are not Cf, which must stay accepted.
+func commandCodePoints() []rune {
+	var points []rune
+	for r := rune(0); r <= 0x2100; r++ {
+		if r >= 0xd800 && r <= 0xdfff {
+			continue // surrogates are not characters
+		}
+		points = append(points, r)
+	}
+	points = append(points, 0xfeff, 0xfffd, 0x1f600)
+	for _, rng := range unicode.Cf.R16 {
+		for r := rune(rng.Lo); r <= rune(rng.Hi); r += rune(rng.Stride) {
+			points = append(points, r)
+		}
+	}
+	for _, rng := range unicode.Cf.R32 {
+		for r := rune(rng.Lo); r <= rune(rng.Hi); r += rune(rng.Stride) {
+			points = append(points, r)
+		}
+	}
+	// Neighbours that are not format characters: a space, an unassigned point, an
+	// object replacement character, a language tag block edge, a private use point.
+	points = append(points, 0x200a, 0x2065, 0xfff8, 0xfffc, 0xe0000, 0xe0080, 0xe000, 0xf8ff, 0x10ffff)
+	return slices.Compact(slices.Sorted(slices.Values(points)))
+}
+
+func TestSanitizeStepCommand_RejectsControlAndLineBreakCharacters(t *testing.T) {
+	for _, r := range commandCodePoints() {
+		in := "kubectl get pods" + string(r) + "x"
+		got := SanitizeStepCommand(in)
+		if isRefusedInCommand(r) {
+			if got != "" {
+				t.Errorf("U+%04X was accepted in %q", r, in)
+			}
+			continue
+		}
+		// Only the shell metacharacters otherwise refuse a command.
+		if strings.ContainsRune(stepCommandForbidden, r) {
+			if got != "" {
+				t.Errorf("%q was accepted", in)
+			}
+			continue
+		}
+		if got != in {
+			t.Errorf("U+%04X was refused: %q -> %q", r, in, got)
+		}
+	}
+}
+
+// N-3: the format characters a reader cannot see, by name. The list is written out,
+// not taken from the Unicode tables, so a table that changed could not shrink it.
+func TestSanitizeStepCommand_NamedFormatCharacters(t *testing.T) {
+	for name, r := range map[string]rune{
+		"soft hyphen": 0xad, "arabic number sign": 0x600, "arabic letter mark": 0x61c,
+		"zero width space": 0x200b, "zero width non-joiner": 0x200c, "zero width joiner": 0x200d,
+		"left-to-right mark": 0x200e, "right-to-left mark": 0x200f,
+		"LRE": 0x202a, "RLE": 0x202b, "PDF": 0x202c, "LRO": 0x202d, "RLO": 0x202e,
+		"word joiner": 0x2060, "invisible times": 0x2062, "invisible separator": 0x2063,
+		"LRI": 0x2066, "RLI": 0x2067, "FSI": 0x2068, "PDI": 0x2069,
+		"byte order mark": 0xfeff, "interlinear annotation anchor": 0xfff9,
+		"language tag": 0xe0001, "tag latin a": 0xe0041, "cancel tag": 0xe007f,
+	} {
+		if got := SanitizeStepCommand("kubectl get pods " + string(r) + "-o wide"); got != "" {
+			t.Errorf("%s (U+%04X) was accepted: %q", name, r, got)
+		}
+	}
+	// Trojan Source: a right-to-left override that reorders what a human reads.
+	if got := SanitizeStepCommand("kubectl get pods -n \u202eevil\u202c shop"); got != "" {
+		t.Errorf("a bidi override was accepted: %q", got)
+	}
+	// Ordinary non-ASCII text and visible spaces are not format characters.
+	for _, ok := range []string{"kubectl get pods -l 'app=café'", "kubectl get pods -l 'app=日本語'", "kubectl get pods\u00a0-n shop"} {
+		if SanitizeStepCommand(ok) == "" {
+			t.Errorf("%q was refused", ok)
+		}
+	}
+}
+
+func TestSanitizeStepCommand_NamedControlCharacters(t *testing.T) {
+	for name, r := range map[string]rune{
+		"NUL": 0x00, "BEL": 0x07, "backspace": 0x08, "tab": 0x09, "VT": 0x0b, "FF": 0x0c,
+		"ESC": 0x1b, "DEL": 0x7f, "NEL": 0x85, "CSI": 0x9b, "line separator": 0x2028, "paragraph separator": 0x2029,
+	} {
+		if got := SanitizeStepCommand("kubectl get pods " + string(r) + "-o wide"); got != "" {
+			t.Errorf("%s was accepted: %q", name, got)
+		}
+	}
+	// A terminal escape sequence is the case the rule exists for.
+	if got := SanitizeStepCommand("kubectl get pods \x1b[2K\rkubectl get nodes"); got != "" {
+		t.Errorf("an escape sequence was accepted: %q", got)
+	}
+	// Surrounding whitespace is still trimmed, as before, and ordinary text passes.
+	if got := SanitizeStepCommand("  kubectl get pods -n shop \n"); got != "kubectl get pods -n shop" {
+		t.Errorf("surrounding whitespace: %q", got)
+	}
+	if got := SanitizeStepCommand("kubectl get pods -l 'app=café' -o jsonpath={.items[0].metadata.name}"); got == "" {
+		t.Error("printable non-ASCII text was refused")
+	}
+}
+
+// MaxApprovedByLength is what the gate enforces on the approver; the CRD's maxLength
+// is what the API server enforces, on the field the approver writes and on the
+// ticket's copy. One number.
+func TestMaxApprovedByLength_IsTheCRDMaxLengthOfBothApprovedByFields(t *testing.T) {
+	raw, err := os.ReadFile("../../config/crd/bases/dorgu.io_remediationactions.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var crd map[string]any
+	if err := yaml.Unmarshal(raw, &crd); err != nil {
+		t.Fatal(err)
+	}
+	walk := func(path ...string) any {
+		var cur any = crd
+		for _, key := range path {
+			m, ok := cur.(map[string]any)
+			if !ok {
+				t.Fatalf("no %q on the way to %v", key, path)
+			}
+			cur = m[key]
+		}
+		return cur
+	}
+	status := []string{"spec", "versions"}
+	versions, ok := walk(status...).([]any)
+	if !ok || len(versions) == 0 {
+		t.Fatal("the CRD has no versions")
+	}
+	root := versions[0].(map[string]any)["schema"].(map[string]any)["openAPIV3Schema"].(map[string]any)["properties"].(map[string]any)["status"].(map[string]any)["properties"].(map[string]any)
+	fields := map[string]any{
+		"status.approvedBy":             root["approvedBy"],
+		"status.applyTicket.approvedBy": root["applyTicket"].(map[string]any)["properties"].(map[string]any)["approvedBy"],
+	}
+	for name, field := range fields {
+		got, _ := field.(map[string]any)["maxLength"].(float64)
+		if int(got) != MaxApprovedByLength {
+			t.Errorf("%s maxLength = %v, MaxApprovedByLength = %d", name, got, MaxApprovedByLength)
+		}
+	}
 }

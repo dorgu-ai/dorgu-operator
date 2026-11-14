@@ -20,7 +20,7 @@ func TestRereview_ApprovalAndTicketCandidatesDoNotReadTheIncident_Characterizati
 	ra := &dorguv1.RemediationAction{}
 	ra.Spec.IncidentRef = dorguv1.IncidentReference{Name: "im-shop-api-readinessnotready-f4653f1c2af7", Namespace: "shop"}
 
-	for name, cand := range map[string]Candidate{"approval": ApprovalCandidate(ra), "ticket": TicketCandidate(ra)} {
+	for name, cand := range map[string]Candidate{"approval": ApprovalCandidate(ra, "h"), "ticket": TicketCandidate(ra, "h")} {
 		assert.Nil(t, cand.Facts.Incident, name+": no incident object")
 		assert.Empty(t, cand.Facts.PrimarySignal, name+": no signal")
 		assert.Empty(t, cand.Facts.Severity, name+": no severity")

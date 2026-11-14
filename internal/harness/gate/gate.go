@@ -67,6 +67,10 @@ type Gate struct {
 	// closed (R12).
 	operatorNamespaceUnknown bool
 
+	// ticketTTL is how long a ticket this gate issues stays valid, and the longest
+	// life it honours at apply. Always positive (see WithTicketTTL).
+	ticketTTL time.Duration
+
 	now    func() time.Time
 	stages []Stage
 
@@ -112,6 +116,25 @@ func WithReader(r client.Reader) Option {
 	return func(g *Gate) { g.reader = r }
 }
 
+// WithTicketTTL sets how long an apply ticket stays valid. A zero or negative
+// value is ignored and leaves the default (DefaultTicketTTL): a ticket that expires
+// before it is issued would turn every approval into a refusal.
+func WithTicketTTL(ttl time.Duration) Option {
+	return func(g *Gate) {
+		if ttl > 0 {
+			g.ticketTTL = ttl
+		}
+	}
+}
+
+// TicketTTL is how long a ticket issued by this gate stays valid.
+func (g *Gate) TicketTTL() time.Duration {
+	if g == nil || g.ticketTTL <= 0 {
+		return DefaultTicketTTL
+	}
+	return g.ticketTTL
+}
+
 // WithClock replaces the clock, for tests.
 func WithClock(now func() time.Time) Option {
 	return func(g *Gate) { g.now = now }
@@ -123,6 +146,7 @@ func New(c client.Client, logger logr.Logger, opts ...Option) *Gate {
 		client:    c,
 		logger:    logger.WithName("gate"),
 		protected: []string{defaultKubeSystem},
+		ticketTTL: DefaultTicketTTL,
 		now:       time.Now,
 		logLimit:  newLogLimiter(unreadableLogInterval),
 	}
@@ -186,6 +210,7 @@ func (g *Gate) evaluate(ctx context.Context, cand Candidate, phase Phase, metric
 	}
 
 	d := newDecision(&cand, phase, metav1.NewTime(g.now()))
+	d.ticketTTL = g.TicketTTL()
 	for _, stage := range g.stages {
 		started := time.Now()
 		err := stage.Run(ctx, &cand, d)
@@ -214,6 +239,9 @@ func newDecision(cand *Candidate, phase Phase, now metav1.Time) *Decision {
 		Phase:       phase,
 		Result:      ResultPass,
 		EvaluatedAt: now,
+		approvedBy:  cand.approvedBy,
+		specHash:    cand.specHash,
+		ticketTTL:   DefaultTicketTTL,
 		Action:      *cand.Action.DeepCopy(),
 		Verify: dorguv1.RemediationRollbackSpec{
 			Enabled:          true,

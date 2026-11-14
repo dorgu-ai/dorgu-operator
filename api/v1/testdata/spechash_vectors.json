@@ -1,0 +1,74 @@
+{
+  "description": "Golden vectors for RemediationAction specHash (P2-D14): sha256 (lowercase hex) of the RFC 8785 canonical JSON of .spec. Each vector gives the spec as the API server could serve it, the exact canonical text, and the hash of that text. The canonical text was written by hand from the RFC, and the hash computed with an independent tool, not with this repository.",
+  "vectors": [    {
+      "name": "minimal",
+      "note": "smallest spec that carries a persona-update step",
+      "spec": {"incidentRef":{"name":"inc-1","namespace":"shop"},"personaRef":{"kind":"ApplicationPersona","name":"web","namespace":"shop"},"trustLevel":0,"action":{"type":"notification"},"explanation":"raise the memory limit","confidence":"0.9","steps":[{"order":1,"id":"s1","type":"persona-update","description":"raise memory","autoExecutable":true,"patch":{"spec":{"resources":{"limits":{"memory":"512Mi"}}}}}]},
+      "canonical": "{\"action\":{\"type\":\"notification\"},\"confidence\":\"0.9\",\"explanation\":\"raise the memory limit\",\"incidentRef\":{\"name\":\"inc-1\",\"namespace\":\"shop\"},\"personaRef\":{\"kind\":\"ApplicationPersona\",\"name\":\"web\",\"namespace\":\"shop\"},\"steps\":[{\"autoExecutable\":true,\"description\":\"raise memory\",\"id\":\"s1\",\"order\":1,\"patch\":{\"spec\":{\"resources\":{\"limits\":{\"memory\":\"512Mi\"}}}},\"type\":\"persona-update\"}],\"trustLevel\":0}",
+      "sha256": "b7c60370ca581cbe4cf07330f8cd47340263cc0ac8b4b451c41af5f0f3290438"
+    },
+    {
+      "name": "key-order-and-whitespace-are-ignored",
+      "note": "same document as 'nested-patches' written with other key order and whitespace must give the same canonical text; see the pair in the test",
+      "spec": { "steps" : [ { "patch" : { "spec" : { "resources" : { "requests" : { "cpu" : "250m" } , "limits" : { "memory" : "1Gi" , "cpu" : "1" } } } } , "order" : 1 , "id" : "a" } ] , "explanation" : "x" },
+      "canonical": "{\"explanation\":\"x\",\"steps\":[{\"id\":\"a\",\"order\":1,\"patch\":{\"spec\":{\"resources\":{\"limits\":{\"cpu\":\"1\",\"memory\":\"1Gi\"},\"requests\":{\"cpu\":\"250m\"}}}}}]}",
+      "sha256": "264445fda3eda64d485d8d49bd1046b9789eb3f6b51bd82b360aaf5c3c5cfcb5"
+    },
+    {
+      "name": "nested-patches",
+      "note": "arrays, null (merge-patch delete), booleans and empty containers inside patches",
+      "spec": {"explanation":"x","steps":[{"id":"a","order":1,"patch":{"spec":{"env":[{"name":"B","value":"2"},{"name":"A","value":"1"}],"removed":null,"flag":false,"empty":{},"list":[]}},"prePatchState":{"spec":{"flag":true}}}]},
+      "canonical": "{\"explanation\":\"x\",\"steps\":[{\"id\":\"a\",\"order\":1,\"patch\":{\"spec\":{\"empty\":{},\"env\":[{\"name\":\"B\",\"value\":\"2\"},{\"name\":\"A\",\"value\":\"1\"}],\"flag\":false,\"list\":[],\"removed\":null}},\"prePatchState\":{\"spec\":{\"flag\":true}}}]}",
+      "sha256": "8b8b087d341af44f9b08ef4430d70573c722eba29cdb6f2edd860c72678ca608"
+    },
+    {
+      "name": "unicode-text",
+      "note": "non-ASCII is written as itself, in UTF-8",
+      "spec": {"explanation":"caf\u00e9 \u00fcber \u65e5\u672c\u8a9e \ud83d\ude00 \u00df","planSummary":"\u0645\u0631\u062d\u0628\u0627"},
+      "canonical": "{\"explanation\":\"caf\u00e9 \u00fcber \u65e5\u672c\u8a9e \ud83d\ude00 \u00df\",\"planSummary\":\"\u0645\u0631\u062d\u0628\u0627\"}",
+      "sha256": "ac74dffdec0585dbfa9db3def6dad9aad978dce32716acc58dc2ddff038833be"
+    },
+    {
+      "name": "escapes",
+      "note": "only the quote, the backslash and the control characters below U+0020 are escaped; everything else, DEL, NEL, U+2028, U+2029 and the HTML characters, is literal",
+      "spec": {"explanation":"q\" b\\ s/ \b\f\n\r\t \u0000 \u0001 \u001f \u007f \u0085 \u2028 \u2029 < > & \u00a0 \ufeff"},
+      "canonical": "{\"explanation\":\"q\\\" b\\\\ s/ \\b\\f\\n\\r\\t \\u0000 \\u0001 \\u001f \u007f \u0085 \u2028 \u2029 < > & \u00a0 \ufeff\"}",
+      "sha256": "083cb2fb290ce2317662b2590927399b0177e8789b13f2ad7f0afa21d6411c68"
+    },
+    {
+      "name": "keys-sort-by-utf16-code-units",
+      "note": "U+1F600 (surrogates D83D DE00) sorts before U+E000 under UTF-16, after it under UTF-8 or code point order; also non-ASCII against ASCII keys",
+      "spec": {"patch":{"\ue000":1,"\ud83d\ude00":2,"z":3,"\u00e9":4,"A":5,"a":6,"":7,"\uffff":8}},
+      "canonical": "{\"patch\":{\"\":7,\"A\":5,\"a\":6,\"z\":3,\"\u00e9\":4,\"\ud83d\ude00\":2,\"\ue000\":1,\"\uffff\":8}}",
+      "sha256": "7343aafaa1f1f3b4e3d2986c9dd343926d2865ba1b519134e0144e9a7a4c0acc"
+    },
+    {
+      "name": "numbers",
+      "note": "ES6 number formatting (RFC 8785 section 3.2.2.3) of numbers as written in a patch",
+      "spec": {"patch":{"a":1.0,"b":1e3,"c":12345678901234567890,"d":0.000001,"e":1e-7,"f":-0,"g":4.5,"h":1E30,"i":100000000000000000000,"j":1e21,"k":0.5e1,"l":-1.50,"m":0.1,"n":123456789012,"o":1e-6,"p":333333333.33333329,"q":5e-324,"r":2e-3}},
+      "canonical": "{\"patch\":{\"a\":1,\"b\":1000,\"c\":12345678901234567000,\"d\":0.000001,\"e\":1e-7,\"f\":0,\"g\":4.5,\"h\":1e+30,\"i\":100000000000000000000,\"j\":1e+21,\"k\":5,\"l\":-1.5,\"m\":0.1,\"n\":123456789012,\"o\":0.000001,\"p\":333333333.3333333,\"q\":5e-324,\"r\":0.002}}",
+      "sha256": "7ef82781f4de358858e810763fdf4ee6b403bcc398f7765a83ca3357af019c63"
+    },
+    {
+      "name": "with-provenance",
+      "note": "a spec carrying C1's provenance: provenance is inside .spec and therefore hashed",
+      "spec": {"incidentRef":{"name":"inc-1","namespace":"shop"},"personaRef":{"kind":"ApplicationPersona","name":"web","namespace":"shop"},"trustLevel":0,"action":{"type":"notification"},"explanation":"x","confidence":"0.9","provenance":{"proposal":"p-1","proposer":{"username":"system:serviceaccount:dorgu-system:dorgu-operator"},"source":"dorgu-planner"},"steps":[{"order":1,"id":"s1","type":"manual","description":"look","autoExecutable":false,"command":"kubectl get pods -n shop"}]},
+      "canonical": "{\"action\":{\"type\":\"notification\"},\"confidence\":\"0.9\",\"explanation\":\"x\",\"incidentRef\":{\"name\":\"inc-1\",\"namespace\":\"shop\"},\"personaRef\":{\"kind\":\"ApplicationPersona\",\"name\":\"web\",\"namespace\":\"shop\"},\"provenance\":{\"proposal\":\"p-1\",\"proposer\":{\"username\":\"system:serviceaccount:dorgu-system:dorgu-operator\"},\"source\":\"dorgu-planner\"},\"steps\":[{\"autoExecutable\":false,\"command\":\"kubectl get pods -n shop\",\"description\":\"look\",\"id\":\"s1\",\"order\":1,\"type\":\"manual\"}],\"trustLevel\":0}",
+      "sha256": "bcd40319172eb7422b124306da9e018120b7b51c8c736c3bc952dba01fab3ddd"
+    },
+    {
+      "name": "without-provenance",
+      "note": "the same spec as 'with-provenance' without the field: a different hash",
+      "spec": {"incidentRef":{"name":"inc-1","namespace":"shop"},"personaRef":{"kind":"ApplicationPersona","name":"web","namespace":"shop"},"trustLevel":0,"action":{"type":"notification"},"explanation":"x","confidence":"0.9","steps":[{"order":1,"id":"s1","type":"manual","description":"look","autoExecutable":false,"command":"kubectl get pods -n shop"}]},
+      "canonical": "{\"action\":{\"type\":\"notification\"},\"confidence\":\"0.9\",\"explanation\":\"x\",\"incidentRef\":{\"name\":\"inc-1\",\"namespace\":\"shop\"},\"personaRef\":{\"kind\":\"ApplicationPersona\",\"name\":\"web\",\"namespace\":\"shop\"},\"steps\":[{\"autoExecutable\":false,\"command\":\"kubectl get pods -n shop\",\"description\":\"look\",\"id\":\"s1\",\"order\":1,\"type\":\"manual\"}],\"trustLevel\":0}",
+      "sha256": "2ffcb81739a9af7e5fa3eb8bf775d697662c3e504a595284ef33a120630e04fe"
+    },
+    {
+      "name": "empty-object",
+      "note": "an empty spec",
+      "spec": {},
+      "canonical": "{}",
+      "sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    }
+  ]
+}

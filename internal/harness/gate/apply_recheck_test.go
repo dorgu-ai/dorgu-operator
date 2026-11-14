@@ -152,7 +152,7 @@ func TestF1_ATicketWithoutAnIssueTimeIsRefused(t *testing.T) {
 	problem := checkTicket(t, standardGate(t), forged)
 
 	require.NotNil(t, problem)
-	assert.Equal(t, GuardrailTicket, problem.Guardrail)
+	assert.Equal(t, GuardrailTicketIncomplete, problem.Guardrail)
 }
 
 // --- F6: the ticket carries the observed generation and the issue time ------------

@@ -25,6 +25,16 @@ import (
 // RemediationAction Spec types
 // ============================================================================
 
+// MaxApprovedByLength is the most characters status.approvedBy and
+// status.applyTicket.approvedBy may hold: the maxLength of both. The kubebuilder
+// marker cannot read a constant, so a test pins them together.
+const MaxApprovedByLength = 253
+
+// MaxPlanSteps is the most steps a plan may have: the maxItems of spec.steps.
+// The kubebuilder marker cannot read a constant, so a test pins the two together.
+// The gate refuses a longer plan (too-many-steps) before anything is created.
+const MaxPlanSteps = 64
+
 // RemediationActionSpec defines the desired state of RemediationAction.
 type RemediationActionSpec struct {
 	// IncidentRef references the IncidentMemory that triggered this remediation.
@@ -49,8 +59,13 @@ type RemediationActionSpec struct {
 	// Steps is the ordered remediation plan and the only plan: the operator's
 	// approval re-check turns its persona-update steps into the apply ticket, and
 	// the ticket is exactly what is applied.
+	//
+	// At most 64 steps. The bound exists so the API server can price the step
+	// command rule (a regular expression over every step's command): without one
+	// it estimates a plan of tens of thousands of steps and refuses the rule.
 	// +optional
 	// +listType=atomic
+	// +kubebuilder:validation:MaxItems=64
 	Steps []RemediationStep `json:"steps,omitempty"`
 
 	// PlanSource records how the plan was produced.
@@ -228,7 +243,7 @@ type RemediationActionDetail struct {
 // which preserves the operator's non-negotiable guarantee that it never writes
 // workloads. See ValidateAutoExecutable.
 // +kubebuilder:validation:XValidation:rule="!self.autoExecutable || self.type == 'persona-update'",message="only persona-update steps may be autoExecutable"
-// +kubebuilder:validation:XValidation:rule="!has(self.command) || self.command.startsWith('kubectl ')",message="step command must be a kubectl invocation"
+// +kubebuilder:validation:XValidation:rule="!has(self.command) || (self.command.startsWith('kubectl ') && !self.command.matches(r'[;|&$`()<>\\p{Cc}\\p{Cf}\\x{2028}\\x{2029}]'))",message="step command must be a single-line kubectl invocation with none of ; | & $ ` ( ) < > and no control, line-break or invisible format character"
 type RemediationStep struct {
 	// Order is the 1-based execution order of this step within the plan.
 	// +kubebuilder:validation:Minimum=1
@@ -445,8 +460,11 @@ type RemediationActionStatus struct {
 	// +optional
 	Phase string `json:"phase,omitempty"`
 
-	// ApprovedBy identifies who approved the remediation.
+	// ApprovedBy identifies who approved the remediation. At most 253 characters,
+	// the same bound as the copy on the apply ticket, so an approval the ticket
+	// could not carry is refused where the approver writes it.
 	// +optional
+	// +kubebuilder:validation:MaxLength=253
 	ApprovedBy string `json:"approvedBy,omitempty"`
 
 	// ApprovedAt is when the remediation was approved.

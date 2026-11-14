@@ -38,6 +38,7 @@ import (
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
 	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
+	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate/gatetest"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation"
 )
 
@@ -66,6 +67,9 @@ func lcScheme(t *testing.T) *runtime.Scheme {
 	}
 	return s
 }
+
+// lcApprover is who approved the actions the fixtures hold.
+const lcApprover = "alice@example.com"
 
 func lcPersonaObj(memory string) *dorguv1.ApplicationPersona {
 	return &dorguv1.ApplicationPersona{
@@ -144,6 +148,7 @@ func lcRecordProposal(ra *dorguv1.RemediationAction) {
 	if ra.Status.Phase == RemediationPhaseApproved {
 		approved := metav1.NewTime(time.Now().Add(-time.Second))
 		ra.Status.ApprovedAt = &approved
+		ra.Status.ApprovedBy = lcApprover
 	}
 
 	switch ra.Status.Phase {
@@ -151,6 +156,7 @@ func lcRecordProposal(ra *dorguv1.RemediationAction) {
 		ra.Status.Gate.Phase = string(gate.PhaseApprovalRecheck)
 		approved := metav1.NewTime(time.Now().Add(-time.Second))
 		ra.Status.ApprovedAt = &approved
+		ra.Status.ApprovedBy = lcApprover
 		ra.Status.Gate.PrePatchState = &apiextensionsv1.JSON{Raw: []byte(`{"spec":{"resources":{"limits":{"memory":"256Mi"}}}}`)}
 		ra.Status.Gate.Observed.LiveValues = &dorguv1.ObservedResources{Limits: &dorguv1.ResourceValues{Memory: lcBaseline}}
 		ra.Status.ApplyTicket = &dorguv1.ApplyTicket{
@@ -158,8 +164,10 @@ func lcRecordProposal(ra *dorguv1.RemediationAction) {
 			Patch:                   &apiextensionsv1.JSON{Raw: []byte(`{"spec":{"resources":{"limits":{"memory":"512Mi"}}}}`)},
 			ObservedResourceVersion: lcDeploymentRV,
 			IssuedAt:                &now,
-			ExpiresAt:               metav1.NewTime(now.Add(gate.TicketTTL)),
+			ExpiresAt:               metav1.NewTime(now.Add(gate.DefaultTicketTTL)),
+			ApprovedBy:              lcApprover,
 		}
+		ra.Status.ApplyTicket.SpecHash = gatetest.ServedSpecHash(ra)
 		applied := metav1.NewTime(time.Now().Add(-11 * time.Minute))
 		if ra.Status.Phase != RemediationPhaseTicketed {
 			ra.Status.AppliedAt = &applied

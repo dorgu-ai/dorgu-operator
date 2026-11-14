@@ -35,6 +35,7 @@ import (
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
+	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate/gatetest"
 )
 
 // testDeployment is the live workload the executor tests' tickets are bound to.
@@ -71,13 +72,26 @@ func newTestExecutor(objs ...client.Object) *Executor {
 	return NewExecutor(c, gate.New(c, logr.Discard()), logr.Discard())
 }
 
+// applyServed stores the action where the gate reads it (the gate hashes the spec
+// the API server serves, P2-D14, not the object in hand) and applies it.
+func applyServed(t *testing.T, e *Executor, action *dorguv1.RemediationAction) error {
+	t.Helper()
+	stored := action.DeepCopy()
+	stored.ResourceVersion = ""
+	stored.Status = dorguv1.RemediationActionStatus{} // only the spec is hashed
+	if err := e.client.Create(context.Background(), stored); err != nil {
+		t.Fatalf("serving the action: %v", err)
+	}
+	return e.Apply(context.Background(), action)
+}
+
 // baseRemediationAction is a Ticketed action: approved, re-checked, and holding
 // the gate's ticket for a 256Mi -> 512Mi memory change. spec.action carries a
 // DIFFERENT value on purpose: the executor applies the ticket, never the spec.
 func baseRemediationAction() *dorguv1.RemediationAction {
 	issued := metav1.NewTime(time.Now())
 	approvedAt := metav1.NewTime(time.Now().Add(-time.Second))
-	return &dorguv1.RemediationAction{
+	ra := &dorguv1.RemediationAction{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-action",
 			Namespace: defaultNamespace,
@@ -108,6 +122,7 @@ func baseRemediationAction() *dorguv1.RemediationAction {
 		Status: dorguv1.RemediationActionStatus{
 			Phase:      phaseTicketed,
 			ApprovedAt: &approvedAt,
+			ApprovedBy: "alice@example.com",
 			// What the operator wrote on the way here: the Proposed condition at the
 			// spec generation, status.gate as the approval re-check that cleared, and
 			// the ticket the gate derives from steps[].
@@ -126,9 +141,13 @@ func baseRemediationAction() *dorguv1.RemediationAction {
 				ObservedResourceVersion: "42",
 				IssuedAt:                &issued,
 				ExpiresAt:               metav1.NewTime(issued.Add(5 * time.Minute)),
+				ApprovedBy:              "alice@example.com",
 			},
 		},
 	}
+	// The ticket binds the spec as it stands when the gate clears it.
+	ra.Status.ApplyTicket.SpecHash = gatetest.ServedSpecHash(ra)
+	return ra
 }
 
 // What the executor fixtures' ticket changes memory to, and the cpu limit nothing
@@ -165,7 +184,7 @@ func TestExecutor_Apply_ValidPatch(t *testing.T) {
 
 	executor := newTestExecutor(persona)
 
-	if err := executor.Apply(context.Background(), action); err != nil {
+	if err := applyServed(t, executor, action); err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
 
@@ -191,7 +210,7 @@ func TestExecutor_Apply_AppliesTheTicketNotTheSpecAction(t *testing.T) {
 	persona := baseApplicationPersona()
 	executor := newTestExecutor(persona)
 
-	if err := executor.Apply(context.Background(), baseRemediationAction()); err != nil {
+	if err := applyServed(t, executor, baseRemediationAction()); err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
 
@@ -218,6 +237,18 @@ func TestExecutor_Apply_RefusesWithoutAValidTicket(t *testing.T) {
 				a.Status.ApplyTicket.ExpiresAt = metav1.NewTime(time.Now().Add(-time.Second))
 			},
 			"expired",
+		},
+		"v0 ticket without a specHash": {
+			func(a *dorguv1.RemediationAction) { a.Status.ApplyTicket.SpecHash = "" },
+			"predates ticket v1",
+		},
+		"v0 ticket without approvedBy": {
+			func(a *dorguv1.RemediationAction) { a.Status.ApplyTicket.ApprovedBy = "" },
+			"predates ticket v1",
+		},
+		"spec edited after the ticket": {
+			func(a *dorguv1.RemediationAction) { a.Spec.Explanation = "edited after clearance" },
+			"spec",
 		},
 		"workload replaced": {
 			func(a *dorguv1.RemediationAction) { a.Status.ApplyTicket.WorkloadUID = "another-deployment" },
@@ -255,7 +286,7 @@ func TestExecutor_Apply_RefusesWithoutAValidTicket(t *testing.T) {
 			action := baseRemediationAction()
 			tt.mutate(action)
 
-			err := executor.Apply(context.Background(), action)
+			err := applyServed(t, executor, action)
 			var precondition *PreconditionError
 			if !errors.As(err, &precondition) {
 				t.Fatalf("expected a PreconditionError (nothing written), got %v", err)
@@ -279,7 +310,7 @@ func TestExecutor_Apply_WithoutAGateAppliesNothing(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(baseApplicationPersona(), testDeployment()).Build()
 	executor := NewExecutor(c, nil, logr.Discard())
 
-	err := executor.Apply(context.Background(), baseRemediationAction())
+	err := applyServed(t, executor, baseRemediationAction())
 
 	var precondition *PreconditionError
 	if !errors.As(err, &precondition) {
@@ -298,7 +329,7 @@ func TestExecutor_Apply_AnUnreadableWorkloadIsARefusalNotAPass(t *testing.T) {
 		}})
 	executor := NewExecutor(broken, gate.New(broken, logr.Discard()), logr.Discard())
 
-	err := executor.Apply(context.Background(), baseRemediationAction())
+	err := applyServed(t, executor, baseRemediationAction())
 
 	var precondition *PreconditionError
 	if !errors.As(err, &precondition) {
@@ -318,7 +349,7 @@ func TestExecutor_Apply_MissingPersona(t *testing.T) {
 	// No persona in the client.
 	executor := newTestExecutor()
 
-	err := executor.Apply(context.Background(), action)
+	err := applyServed(t, executor, action)
 	var precondition *PreconditionError
 	if !errors.As(err, &precondition) {
 		t.Fatalf("expected a PreconditionError for a missing persona, got %v", err)
@@ -338,7 +369,7 @@ func TestExecutor_Apply_PersonaBeingDeleted(t *testing.T) {
 
 	executor := newTestExecutor(persona)
 
-	err := executor.Apply(context.Background(), action)
+	err := applyServed(t, executor, action)
 	if err == nil {
 		t.Fatal("expected error for persona being deleted")
 	}

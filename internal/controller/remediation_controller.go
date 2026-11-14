@@ -25,6 +25,7 @@ import (
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/retry"
@@ -387,7 +388,16 @@ func (r *RemediationController) handleApproved(ctx context.Context, logger logr.
 		return ctrl.Result{}, r.transitionToAcknowledged(ctx, action)
 	}
 
-	decision, err := r.Gate.Run(ctx, gate.ApprovalCandidate(action), gate.PhaseApprovalRecheck)
+	// The ticket binds the hash of the spec as the API server serves it now (P2-D14),
+	// read live: the typed object in hand is a Go view of it and hashes differently
+	// for empty arrays, durations and timestamps. A served spec newer than the one in
+	// hand (an edit this reconcile has not seen) is retried, so the hash is always of
+	// the spec the gate is about to clear.
+	specHash, err := r.Gate.ServedSpecHash(ctx, action)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("the spec of the approved action could not be read as served; nothing was applied, will retry: %w", err)
+	}
+	decision, err := r.Gate.Run(ctx, gate.ApprovalCandidate(action, specHash), gate.PhaseApprovalRecheck)
 	if err != nil {
 		// The gate could not decide (a read failed). Nothing is applied and the
 		// approval is retried; this is never treated as a pass. The error is
@@ -422,6 +432,12 @@ func (r *RemediationController) handleApproved(ctx context.Context, logger logr.
 		fmt.Sprintf("the gate re-checked this approval on live state and issued an apply ticket valid until %s",
 			ticket.ExpiresAt.UTC().Format(time.RFC3339)))
 	if err := r.Status().Update(ctx, action); err != nil {
+		if apierrors.IsInvalid(err) {
+			// The API server validates the whole status and refuses this ticket. The same
+			// approval produces the same ticket, so a retry is refused the same way for
+			// ever: end it with a reason (F-3).
+			return ctrl.Result{}, r.refuseUnwritableTicket(ctx, logger, action, err)
+		}
 		return ctrl.Result{}, fmt.Errorf("updating status to Ticketed: %w", err)
 	}
 	r.reportTicketIssued(action, ticket)
@@ -432,6 +448,40 @@ func (r *RemediationController) handleApproved(ctx context.Context, logger logr.
 	logger.Info("approval cleared the gate on live state; ticket issued", "expiresAt", ticket.ExpiresAt)
 
 	return r.handleTicketed(ctx, logger, action)
+}
+
+// refuseUnwritableTicket ends an approval whose apply ticket the API server refused
+// to store (a validation error, which a retry cannot change). The action in hand
+// carries the rejected ticket and the Ticketed phase, so it is re-read first; the
+// action then ends Failed with GateRefusedAtApproval, no cooldown (nothing was
+// applied), and a GateRefused condition that says the ticket could not be stored.
+func (r *RemediationController) refuseUnwritableTicket(
+	ctx context.Context, logger logr.Logger, action *dorguv1.RemediationAction, writeErr error,
+) error {
+	var fresh dorguv1.RemediationAction
+	if err := r.Get(ctx, client.ObjectKeyFromObject(action), &fresh); err != nil {
+		return fmt.Errorf("re-reading the action after its ticket was refused: %w", err)
+	}
+	message := fmt.Sprintf("refused at approval (%s): the apply ticket could not be stored (%s); nothing was applied",
+		dorguv1.ReasonTicketUnwritable, truncateMessage(writeErr.Error(), 512))
+	logger.Info("the API server refused the apply ticket; ending the approval instead of retrying",
+		"error", writeErr.Error())
+
+	setCondition(&fresh.Status.Conditions, dorguv1.ConditionGateRefused, metav1.ConditionTrue,
+		dorguv1.ReasonTicketUnwritable, message)
+	if err := r.transitionToFailedWithReason(ctx, &fresh, dorguv1.ReasonGateRefusedAtApproval, message); err != nil {
+		return err
+	}
+	r.reportApprovalRefusal(&fresh, gate.StageGuardrails, message)
+	return nil
+}
+
+// truncateMessage bounds a message that quotes an API server error.
+func truncateMessage(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n-1] + "…"
 }
 
 // refuseAtApproval ends an approval the gate refused: Failed with the
@@ -497,6 +547,22 @@ func (r *RemediationController) expirePredatingGate(ctx context.Context, action 
 	return nil
 }
 
+// expireTicket settles an action whose ticket ran out before it was applied as
+// Expired with the reason TicketExpired. Like every Expired it is terminal, nothing
+// was applied, and it is neither a rejection nor a failure: no cooldown holds the
+// application, and the operator proposes again if the problem persists. The Event
+// and the count are reportApplyRefusal's, as for every other refused ticket.
+func (r *RemediationController) expireTicket(ctx context.Context, action *dorguv1.RemediationAction, detail string) error {
+	message := "The apply ticket expired before it was applied, so nothing was applied (" + detail + "). " +
+		"It is not a rejection and not a failure and starts no cooldown; the operator proposes again if the problem persists."
+	action.Status.Phase = RemediationPhaseExpired
+	setCondition(&action.Status.Conditions, ConditionExpired, metav1.ConditionTrue, dorguv1.ReasonTicketExpired, message)
+	if err := r.Status().Update(ctx, action); err != nil {
+		return fmt.Errorf("updating status to Expired: %w", err)
+	}
+	return nil
+}
+
 // handleTicketed applies the apply ticket: exactly its patch, and only when the
 // gate confirms the ticket still stands (present, unexpired, same workload).
 func (r *RemediationController) handleTicketed(ctx context.Context, logger logr.Logger, action *dorguv1.RemediationAction) (ctrl.Result, error) {
@@ -513,7 +579,22 @@ func (r *RemediationController) handleTicketed(ctx context.Context, logger logr.
 			setCondition(&action.Status.Conditions, dorguv1.ConditionGateRefused, metav1.ConditionTrue,
 				gate.ReasonEnum(precondition.Guardrail), precondition.Reason)
 			message := fmt.Sprintf("%v; nothing was applied", err)
-			if err := r.transitionToFailedWithReason(ctx, action, dorguv1.ReasonPreconditionRejected, message); err != nil {
+			if precondition.Guardrail == gate.GuardrailTicketExpired {
+				// A ticket that ran out is not a failed remediation: it ends Expired, with
+				// the reason TicketExpired, and starts no cooldown.
+				if err := r.expireTicket(ctx, action, precondition.Reason); err != nil {
+					return ctrl.Result{}, err
+				}
+				r.reportApplyRefusal(action, precondition.Guardrail, message)
+				return ctrl.Result{}, nil
+			}
+			failureReason := dorguv1.ReasonPreconditionRejected
+			if precondition.Guardrail == gate.GuardrailSpecChanged {
+				// The spec is no longer the one the ticket was issued for. Failed, with the
+				// reason SpecChanged, so a client tells it from any other refusal.
+				failureReason = dorguv1.ReasonSpecChanged
+			}
+			if err := r.transitionToFailedWithReason(ctx, action, failureReason, message); err != nil {
 				return ctrl.Result{}, err
 			}
 			r.reportApplyRefusal(action, precondition.Guardrail, message)
@@ -948,7 +1029,8 @@ func (r *RemediationController) transitionToFailed(ctx context.Context, action *
 // transitionToFailedWithReason sets the action to Failed with an explicit
 // condition reason. The reason is load-bearing: the safety checker reads it to
 // tell a rejected-before-apply action (no cluster change, no cooldown) from a
-// remediation that actually went wrong.
+// remediation that actually went wrong, and the incident outcome follows the same
+// line: only a remediation that actually went wrong is booked as failed.
 func (r *RemediationController) transitionToFailedWithReason(
 	ctx context.Context,
 	action *dorguv1.RemediationAction,
@@ -960,6 +1042,17 @@ func (r *RemediationController) transitionToFailedWithReason(
 
 	if err := r.Status().Update(ctx, action); err != nil {
 		return fmt.Errorf("updating status to Failed: %w", err)
+	}
+
+	// A refusal before anything was applied (the gate at approval, a ticket that
+	// does not stand, a changed spec, a ticket the API server would not store) is not
+	// a failed heal: nothing reached the cluster. Like every Expired path it books no
+	// outcome, so the incident stays open and unjudged, no failed-heal count moves, and
+	// the planner's history does not learn a fix that was never tried (N-4).
+	if gate.RejectedBeforeApply(action) {
+		r.Logger.V(1).Info("refused before anything was applied; the incident is not booked as a failed remediation",
+			"action", action.Name, "reason", conditionReason)
+		return nil
 	}
 
 	// Update incident with failure info.

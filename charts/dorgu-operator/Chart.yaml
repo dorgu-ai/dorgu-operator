@@ -2,6 +2,11 @@ apiVersion: v2
 name: dorgu-operator
 description: Dorgu Operator - ApplicationPersona validation and lifecycle management for Kubernetes
 type: application
+# Kubernetes 1.30 or later. The RemediationAction CRD relies on CRD validation
+# ratcheting (on by default from 1.30, GA in 1.33) so actions stored before the
+# step command rule was tightened stay updatable; without it a status update on
+# one is refused. The -0 admits provider suffixes (v1.30.4-eks-...).
+kubeVersion: ">=1.30.0-0"
 # Release CI restamps both fields from the git tag at publish time. They are kept
 # current in-repo so `helm install ./charts/dorgu-operator` from a clone deploys
 # the matching operator image (templates/deployment.yaml defaults the image tag to

@@ -25,11 +25,13 @@ import (
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
+	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate/gatetest"
 )
 
 // canaryOf turns a Deployment into a second one that also answers to the test
@@ -55,6 +57,7 @@ func proposedAction(mutate ...func(*dorguv1.RemediationAction)) *dorguv1.Remedia
 		Status: dorguv1.RemediationActionStatus{
 			Phase:      "Approved",
 			ApprovedAt: &approved,
+			ApprovedBy: "alice@example.com",
 			Gate: &dorguv1.GateStatus{
 				Phase: string(PhaseProposal), Result: string(ResultPass), EvaluatedAt: now,
 				Observed: priorObservation("uid-1"),
@@ -71,9 +74,36 @@ func proposedAction(mutate ...func(*dorguv1.RemediationAction)) *dorguv1.Remedia
 	return ra
 }
 
+// serve stores ra in the gate's reader, as the API server serves it, and returns
+// the specHash of that served spec (P2-D14). The gate hashes what its reader serves,
+// never the typed object it is handed, so a test that runs the gate on an in-memory
+// action first puts that action where the gate reads. Calling it again replaces the
+// stored one, which is how a test edits the spec between issue and apply.
+func serve(t *testing.T, g *Gate, ra *dorguv1.RemediationAction) string {
+	t.Helper()
+	store, ok := g.reader.(client.Client)
+	require.True(t, ok, "the gate's reader cannot be written to in a test")
+	ctx := context.Background()
+	stored := ra.DeepCopy()
+	stored.ResourceVersion = ""
+	var existing dorguv1.RemediationAction
+	switch err := store.Get(ctx, client.ObjectKeyFromObject(ra), &existing); {
+	case apierrors.IsNotFound(err):
+		require.NoError(t, store.Create(ctx, stored))
+	case err != nil:
+		require.NoError(t, err)
+	default:
+		stored.ResourceVersion = existing.ResourceVersion
+		require.NoError(t, store.Update(ctx, stored))
+	}
+	hash, err := g.ServedSpecHash(ctx, ra)
+	require.NoError(t, err)
+	return hash
+}
+
 func approvalRun(t *testing.T, g *Gate, ra *dorguv1.RemediationAction) *Decision {
 	t.Helper()
-	d, err := g.Run(context.Background(), ApprovalCandidate(ra), PhaseApprovalRecheck)
+	d, err := g.Run(context.Background(), ApprovalCandidate(ra, serve(t, g, ra)), PhaseApprovalRecheck)
 	require.NoError(t, err)
 	return d
 }
@@ -104,7 +134,7 @@ func TestL1_UnknownPhaseIsAnErrorNotAPass(t *testing.T) {
 
 func TestM1_ApprovalRecheckRefusesAnOwnerCommandWhateverFinalSays(t *testing.T) {
 	g := newTestGate(t, fakeClient(t, persona("512Mi"), deployment("512Mi", func(d *appsv1.Deployment) {
-		d.Labels["app.kubernetes.io/managed-by"] = "Helm"
+		d.Labels[managedByLabel] = helmManager
 		d.Annotations = map[string]string{"meta.helm.sh/release-name": "web"}
 	})))
 	step := dorguv1.RemediationStep{Order: 1, ID: "s", Type: dorguv1.StepTypeManual, Description: "x",
@@ -120,7 +150,8 @@ func TestM1_ApprovalRecheckRefusesAnOwnerCommandWhateverFinalSays(t *testing.T) 
 
 func TestM1_ApprovalIgnoresCallerFacts(t *testing.T) {
 	g := standardGate(t)
-	cand := ApprovalCandidate(proposedAction())
+	ra := proposedAction()
+	cand := ApprovalCandidate(ra, serve(t, g, ra))
 	cand.Facts = Facts{AdvisoryAllowed: true, TargetPath: ResourcePathCPU}
 
 	d, err := g.Run(context.Background(), cand, PhaseApprovalRecheck)
@@ -213,7 +244,7 @@ func TestApproval_ACleanProposalPassesAndIssuesATicket(t *testing.T) {
 	assert.Equal(t, "42", ticket.ObservedResourceVersion)
 	assert.Equal(t, testPersona, ticket.Container)
 	assert.Equal(t, "384Mi", PatchLeafValues(ticket.Patch.Raw)[memLimit])
-	assert.True(t, ticket.ExpiresAt.Time.Equal(fixedNow.Add(TicketTTL)))
+	assert.True(t, ticket.ExpiresAt.Time.Equal(fixedNow.Add(DefaultTicketTTL)))
 	assert.NotEmpty(t, ticket.Verdicts)
 }
 
@@ -381,6 +412,41 @@ func TestL4_AGateRefusalAtApprovalStartsNoCooldown(t *testing.T) {
 	assert.Equal(t, "pass", verdictKind(d, GuardrailFailedCooldown))
 }
 
+// F-2: every Failed that was refused before anything touched the cluster leaves the
+// persona free to be proposed for again. A spec edit after the ticket (SpecChanged)
+// is one of them: nothing was applied.
+func TestF2_FailuresRefusedBeforeApplyStartNoCooldown(t *testing.T) {
+	for _, reason := range []string{
+		dorguv1.ReasonPreconditionRejected,
+		dorguv1.ReasonGateRefusedAtApproval,
+		dorguv1.ReasonSpecChanged,
+	} {
+		t.Run(reason, func(t *testing.T) {
+			refused := sibling("refused", "Failed", func(ra *dorguv1.RemediationAction) {
+				ra.Status.Conditions = []metav1.Condition{{
+					Type: "Applied", Status: metav1.ConditionFalse, Reason: reason,
+				}}
+			})
+			g := standardGate(t, refused)
+			d := run(t, g, planCandidate(personaUpdateStep(memPatch("300Mi"))), PhaseProposal)
+			assert.Equal(t, "pass", verdictKind(d, GuardrailFailedCooldown), "%s starts the failed-remediation cooldown", reason)
+		})
+	}
+}
+
+func TestF2_AFailureAfterApplyStillStartsTheCooldown(t *testing.T) {
+	applied := sibling("applied-then-failed", "Failed", func(ra *dorguv1.RemediationAction) {
+		at := metav1.NewTime(fixedNow.Add(-time.Minute))
+		ra.Status.AppliedAt = &at
+		ra.Status.Conditions = []metav1.Condition{{
+			Type: "Applied", Status: metav1.ConditionFalse, Reason: dorguv1.ReasonSpecChanged,
+		}}
+	})
+	g := standardGate(t, applied)
+	d := run(t, g, planCandidate(personaUpdateStep(memPatch("300Mi"))), PhaseProposal)
+	assert.Equal(t, "refuse", verdictKind(d, GuardrailFailedCooldown))
+}
+
 // --- R11: dedup, concurrency and the rate limit read the API server, not the cache -
 
 func TestR11_SiblingReadsUseTheUncachedReader(t *testing.T) {
@@ -426,24 +492,40 @@ func TestR11_ApprovalReadsTheLiveWorkloadUncached(t *testing.T) {
 
 // --- the ticket at apply time -----------------------------------------------------
 
+// specHashOfTheSpecAsCleared is the placeholder ticketedAction gives the ticket's
+// specHash; it becomes the hash of the spec as the fixture's mutators leave it, so
+// a mutator that shapes the plan does not trip the spec-changed refusal. A test of
+// that refusal edits the spec of the finished fixture instead, and a mutator that
+// sets SpecHash itself (even to "") keeps what it set.
+const specHashOfTheSpecAsCleared = "<the hash of the spec as cleared>"
+
 func ticketedAction(mutate ...func(*dorguv1.RemediationAction)) *dorguv1.RemediationAction {
-	return proposedAction(append([]func(*dorguv1.RemediationAction){func(ra *dorguv1.RemediationAction) {
+	base := func(ra *dorguv1.RemediationAction) {
 		issued := metav1.NewTime(fixedNow)
 		ra.Status.Phase = "Ticketed"
 		ra.Status.ApplyTicket = &dorguv1.ApplyTicket{
 			WorkloadUID: "uid-1", Container: testPersona, Patch: memPatch("384Mi"),
-			ObservedResourceVersion: "42", IssuedAt: &issued, ExpiresAt: metav1.NewTime(fixedNow.Add(TicketTTL)),
+			ObservedResourceVersion: "42", IssuedAt: &issued, ExpiresAt: metav1.NewTime(fixedNow.Add(DefaultTicketTTL)),
+			SpecHash: specHashOfTheSpecAsCleared, ApprovedBy: ra.Status.ApprovedBy,
 		}
 		// What the approval re-check recorded when it issued the ticket.
 		ra.Status.Gate = &dorguv1.GateStatus{
 			Phase: string(PhaseApprovalRecheck), Result: string(ResultPass), EvaluatedAt: issued,
 			Observed: priorObservation("uid-1"), PrePatchState: memPatch("256Mi"),
 		}
-	}}, mutate...)...)
+	}
+	seal := func(ra *dorguv1.RemediationAction) {
+		if ra.Status.ApplyTicket != nil && ra.Status.ApplyTicket.SpecHash == specHashOfTheSpecAsCleared {
+			ra.Status.ApplyTicket.SpecHash = gatetest.ServedSpecHash(ra)
+		}
+	}
+	mutators := append([]func(*dorguv1.RemediationAction){base}, mutate...)
+	return proposedAction(append(mutators, seal)...)
 }
 
 func checkTicket(t *testing.T, g *Gate, ra *dorguv1.RemediationAction) *TicketProblem {
 	t.Helper()
+	serve(t, g, ra)
 	problem, err := g.CheckTicket(context.Background(), ra)
 	require.NoError(t, err)
 	return problem
@@ -463,7 +545,7 @@ func TestTicket_RefusalsAreEnumerated(t *testing.T) {
 		"expired": {func(ra *dorguv1.RemediationAction) {
 			ra.Status.ApplyTicket.ExpiresAt = metav1.NewTime(fixedNow.Add(-time.Second))
 		}, GuardrailTicketExpired},
-		"no expiry":   {func(ra *dorguv1.RemediationAction) { ra.Status.ApplyTicket.ExpiresAt = metav1.Time{} }, GuardrailTicketExpired},
+		"no expiry":   {func(ra *dorguv1.RemediationAction) { ra.Status.ApplyTicket.ExpiresAt = metav1.Time{} }, GuardrailTicketIncomplete},
 		"unbound":     {func(ra *dorguv1.RemediationAction) { ra.Status.ApplyTicket.WorkloadUID = "" }, GuardrailNoProposalRecord},
 		"other UID":   {func(ra *dorguv1.RemediationAction) { ra.Status.ApplyTicket.WorkloadUID = "uid-other" }, GuardrailLiveWorkload},
 		"empty patch": {func(ra *dorguv1.RemediationAction) { ra.Status.ApplyTicket.Patch = nil }, GuardrailPatchShape},

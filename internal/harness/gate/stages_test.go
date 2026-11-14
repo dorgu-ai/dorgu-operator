@@ -17,6 +17,7 @@ limitations under the License.
 package gate
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -33,7 +34,7 @@ import (
 // ------------------------------------------------------------------- ownership
 
 func helmOwned(d *appsv1.Deployment) {
-	d.Labels["app.kubernetes.io/managed-by"] = "Helm"
+	d.Labels[managedByLabel] = helmManager
 	d.Annotations = map[string]string{"meta.helm.sh/release-name": "shop", "meta.helm.sh/release-namespace": testNS}
 }
 
@@ -302,4 +303,34 @@ func TestOperatorNamespace(t *testing.T) {
 		t.Cleanup(func() { serviceAccountNamespaceFile = restore })
 		assert.Empty(t, OperatorNamespace())
 	})
+}
+
+// F-9: a plan longer than the CRD allows is a gate refusal with a reason, at the
+// Validate stage, not a plan that passes the gate and then fails client.Create.
+func TestF9_APlanOverTheStepCapIsRefusedAtValidate(t *testing.T) {
+	g := standardGate(t)
+	manual := func(n int) dorguv1.RemediationStep {
+		return dorguv1.RemediationStep{Order: int32(n), ID: fmt.Sprintf("m-%d", n), Type: dorguv1.StepTypeManual, Description: "look"}
+	}
+	build := func(n int) []dorguv1.RemediationStep {
+		steps := make([]dorguv1.RemediationStep, 0, n)
+		for i := 1; i <= n; i++ {
+			steps = append(steps, manual(i))
+		}
+		return steps
+	}
+
+	assert.Equal(t, 64, dorguv1.MaxPlanSteps, "the cap is the CRD's maxItems")
+
+	atCap := run(t, g, planCandidate(build(dorguv1.MaxPlanSteps)...), PhaseProposal)
+	assert.True(t, atCap.Allowed(), "exactly the cap is fine: %s", atCap.SkipReason())
+
+	for _, phase := range []Phase{PhaseProposal, PhaseApprovalRecheck} {
+		over := run(t, g, planCandidate(build(dorguv1.MaxPlanSteps+1)...), phase)
+		require.False(t, over.Allowed(), "%s: 65 steps must be refused", phase)
+		stage, guardrail := over.RefusedBy()
+		assert.Equal(t, StageValidate, stage)
+		assert.Equal(t, GuardrailTooManySteps, guardrail)
+		assert.NotEmpty(t, over.SkipReason())
+	}
 }

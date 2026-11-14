@@ -1,8 +1,11 @@
 package gate
 
 import (
+	"fmt"
 	"slices"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/metrics"
@@ -82,6 +85,7 @@ func (s refusalSite) phases() []Phase {
 // listed here.
 var refusalCatalog = []refusalSite{
 	{Stage: StageValidate, Guardrail: GuardrailTarget},
+	{Stage: StageValidate, Guardrail: GuardrailTooManySteps},
 	{Stage: StageValidate, Guardrail: GuardrailStepType},
 	{Stage: StageValidate, Guardrail: GuardrailActionClass},
 	{Stage: StageValidate, Guardrail: GuardrailFieldAllowlist},
@@ -101,6 +105,9 @@ var refusalCatalog = []refusalSite{
 
 	{Stage: StageGuardrails, Guardrail: GuardrailNothingLeft, approvalOnly: true},
 	{Stage: StageGuardrails, Guardrail: GuardrailNoPlan, approvalOnly: true},
+	{Stage: StageGuardrails, Guardrail: GuardrailNoApprover, approvalOnly: true},
+	{Stage: StageGuardrails, Guardrail: GuardrailBadApprover, approvalOnly: true},
+	{Stage: StageGuardrails, Guardrail: GuardrailTicketIncomplete, approvalOnly: true},
 	{Stage: StageGuardrails, Guardrail: GuardrailNothingApplies},
 	{Stage: StageGuardrails, Guardrail: GuardrailDenyList},
 	{Stage: StageGuardrails, Guardrail: GuardrailOperatorNamespace},
@@ -133,7 +140,7 @@ var ticketOnlyReasons = []string{
 	GuardrailTicket, GuardrailNotApproved, GuardrailPatchShape, GuardrailTicketExpired,
 	GuardrailNoProposalRecord, GuardrailWorkloadGone, GuardrailWorkloadAmbiguous, GuardrailLiveWorkload,
 	GuardrailTicketMismatch, GuardrailNoPlan, GuardrailNoBaseline, GuardrailPersona,
-	GuardrailNotTicketed, GuardrailClusterUnreadable,
+	GuardrailNotTicketed, GuardrailClusterUnreadable, GuardrailTicketIncomplete,
 }
 
 // applyReasons are every reason an apply-time check can refuse with: the ticket's
@@ -188,6 +195,7 @@ func allGuardrails() []string {
 		GuardrailNoProposalRecord, GuardrailWorkloadUnbound, GuardrailSpecChanged, GuardrailNoPlan,
 		GuardrailActionClass, GuardrailPolicyUnreadable, GuardrailUnknownMode, GuardrailNotTicketed,
 		GuardrailClusterUnreadable, GuardrailTicket, GuardrailNotApproved, GuardrailTicketMismatch, GuardrailTicketExpired,
+		GuardrailNoApprover, GuardrailBadApprover, GuardrailTicketIncomplete, GuardrailTooManySteps,
 	}
 	return all
 }
@@ -246,7 +254,7 @@ const noPlanReason = "the gate cleared the plan but nothing is left to apply aft
 // a change; this is for the caller that reaches an allowed decision with no ticket
 // for any other reason (the controller's own advisory check).
 func (d *Decision) RefuseNoPlan() {
-	d.refuse(StageGuardrails, GuardrailNoPlan, noPlanReason, nil)
+	d.refuse(StageGuardrails, GuardrailNoPlan, noPlanReason, nil).From(dorguv1.CeilingSourceDefault)
 }
 
 // hasAutoApplicableChange reports whether the candidate asks for a change that
@@ -272,9 +280,52 @@ func sealApproval(cand *Candidate, d *Decision) {
 		return
 	}
 	if _, err := d.Ticket(); err != nil {
-		d.RefuseNoPlan()
+		switch {
+		case d.approvedBy == "":
+			d.refuse(StageGuardrails, GuardrailNoApprover, noApproverReason, nil).From(dorguv1.CeilingSourceDefault)
+		case approverProblem(d.approvedBy) != "":
+			d.refuse(StageGuardrails, GuardrailBadApprover, badApproverReason(d.approvedBy), nil).From(dorguv1.CeilingSourceDefault)
+		case d.specHash == "":
+			d.refuse(StageGuardrails, GuardrailTicketIncomplete, noSpecHashReason, nil).From(dorguv1.CeilingSourceDefault)
+		default:
+			d.RefuseNoPlan()
+		}
 	}
 }
+
+// approverProblem is why status.approvedBy cannot be carried by a ticket, or "":
+// longer than dorguv1.MaxApprovedByLength, invalid UTF-8, or any character that is
+// not printable (controls, line and paragraph separators, bidirectional overrides,
+// zero-width and other format characters, the replacement character). A plain space
+// is allowed: an IAM role name can contain one. It describes the value without
+// quoting it, because the value is the approver's text.
+func approverProblem(approvedBy string) string {
+	if len(approvedBy) > dorguv1.MaxApprovedByLength {
+		return fmt.Sprintf("is longer than the %d characters a ticket carries", dorguv1.MaxApprovedByLength)
+	}
+	if !utf8.ValidString(approvedBy) {
+		return "is not valid UTF-8"
+	}
+	for _, r := range approvedBy {
+		if (r != ' ' && !unicode.IsPrint(r)) || r == utf8.RuneError {
+			return "contains a character that is not printable"
+		}
+	}
+	return ""
+}
+
+// badApproverReason is the sentence on the refusal of an approver a ticket cannot carry.
+func badApproverReason(approvedBy string) string {
+	return "the approver (status.approvedBy) " + approverProblem(approvedBy) +
+		", so the gate issues no ticket for it; an approver is a person's name, and one that cannot be shown safely is not acted on"
+}
+
+// The sentences on the verdicts of an approval that cannot be ticketed for want of
+// an approver or a spec hash.
+const (
+	noApproverReason = "the approval names nobody (status.approvedBy is empty), so the gate issues no ticket for it; an approval is a person's decision and one that cannot say whose it was is not acted on"
+	noSpecHashReason = "the spec could not be hashed, so the gate cannot bind a ticket to what was approved"
+)
 
 // recordGateError counts a run that could not decide, at the stage that failed.
 func recordGateError(phase, stage string) {

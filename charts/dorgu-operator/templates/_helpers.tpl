@@ -70,3 +70,35 @@ provider's env var name.
 {{- define "dorgu-operator.llmSecretKey" -}}
 {{- .Values.llm.existingSecretKey | default (include "dorgu-operator.llmKeyEnv" .) -}}
 {{- end }}
+
+{{/*
+The apply ticket lifetime, validated the way the operator validates --ticket-ttl: a
+Go duration (a number and a unit, ns us µs ms s m h, one or more), positive and at
+most 24h. A value the operator would refuse at startup fails the chart here instead,
+so `helm install` and `helm upgrade` stop with this message and no pod crash-loops.
+The fallback keeps a --reuse-values upgrade from an older release rendering the
+default, never an empty flag.
+*/}}
+{{- define "dorgu-operator.ticketTTL" -}}
+{{- $raw := dig "ticketTTL" "15m" (.Values.remediation | default dict) -}}
+{{- if not (kindIs "string" $raw) -}}
+{{- fail (printf "remediation.ticketTTL must be a duration string such as 15m or 1h30m, got %v (%s): a bare number has no unit" $raw (kindOf $raw)) -}}
+{{- end -}}
+{{- if not (regexMatch "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$" $raw) -}}
+{{- fail (printf "remediation.ticketTTL %q is not a duration such as 15m, 90s or 1h30m (a number and a unit: ns, us, ms, s, m, h)" $raw) -}}
+{{- end -}}
+{{- $units := dict "ns" 0.000000001 "us" 0.000001 "µs" 0.000001 "ms" 0.001 "s" 1.0 "m" 60.0 "h" 3600.0 -}}
+{{- $seconds := 0.0 -}}
+{{- range $part := regexFindAll "[0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h)" $raw -1 -}}
+{{- $number := regexFind "^[0-9]+(\\.[0-9]+)?" $part | float64 -}}
+{{- $unit := regexFind "(ns|us|µs|ms|s|m|h)$" $part -}}
+{{- $seconds = addf $seconds (mulf $number (get $units $unit)) -}}
+{{- end -}}
+{{- if le $seconds 0.0 -}}
+{{- fail (printf "remediation.ticketTTL %q must be positive: a ticket that lives no time is refused by the operator at startup" $raw) -}}
+{{- end -}}
+{{- if gt $seconds 86400.0 -}}
+{{- fail (printf "remediation.ticketTTL %q is longer than 24h, the most the operator accepts" $raw) -}}
+{{- end -}}
+{{- $raw -}}
+{{- end -}}
