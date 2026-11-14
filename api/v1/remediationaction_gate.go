@@ -140,7 +140,36 @@ type GateVerdict struct {
 	// ceiling) as data, so no client has to parse them out of Reason.
 	// +optional
 	Numbers map[string]string `json:"numbers,omitempty"`
+
+	// CeilingSource says where the limit this verdict applied came from. The
+	// guardrails stage fills it on every verdict it records, so a client never
+	// infers it. Verdicts of other stages and verdicts recorded before it existed
+	// leave it empty.
+	// +optional
+	// +kubebuilder:validation:Enum=Default;ClusterPersona;ApplicationPersona;LiveWorkload
+	CeilingSource string `json:"ceilingSource,omitempty"`
 }
+
+// GateVerdict.CeilingSource values: the places the guardrails stage reads a limit
+// or a baseline from.
+const (
+	// CeilingSourceDefault is a value built into the operator: the 2x blast-radius
+	// multiplier, one remediation in flight, the 30 minute failure cooldown, five
+	// remediations an hour, kube-system and the operator's own namespace.
+	CeilingSourceDefault = "Default"
+
+	// CeilingSourceClusterPersona is a value the user set on a ClusterPersona:
+	// spec.policies.selfHealing.maxRemediationsPerHour or excludeNamespaces.
+	CeilingSourceClusterPersona = "ClusterPersona"
+
+	// CeilingSourceApplicationPersona is the baseline a change is measured against
+	// when no live workload resolved: the ApplicationPersona's recorded value.
+	CeilingSourceApplicationPersona = "ApplicationPersona"
+
+	// CeilingSourceLiveWorkload is the baseline read from the live Deployment's
+	// container.
+	CeilingSourceLiveWorkload = "LiveWorkload"
+)
 
 // ApplyTicket is the gate's clearance to apply one change, written to
 // status.applyTicket when an approval passes the approval re-check.
@@ -187,6 +216,21 @@ type ApplyTicket struct {
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
+	// SpecHash is the SHA-256 of the canonical encoding of spec at the moment the
+	// gate cleared it (RemediationActionSpec.Hash: 64 lowercase hex characters).
+	// Nothing is applied under the ticket once the spec no longer hashes to it.
+	// Absent on a v0 ticket, which is refused.
+	// +optional
+	// +kubebuilder:validation:MaxLength=64
+	SpecHash string `json:"specHash,omitempty"`
+
+	// ApprovedBy is who approved the plan, copied from status.approvedBy when the
+	// approval re-check passed. The operator issues no ticket when it is empty.
+	// Absent on a v0 ticket, which is refused.
+	// +optional
+	// +kubebuilder:validation:MaxLength=253
+	ApprovedBy string `json:"approvedBy,omitempty"`
+
 	// IssuedAt is when the operator wrote the ticket. Operator-set. A client that
 	// recorded its approval at time T accepts only a ticket issued at or after T,
 	// so a ticket that was already there before the approval cannot be mistaken for
@@ -194,7 +238,8 @@ type ApplyTicket struct {
 	// +optional
 	IssuedAt *metav1.Time `json:"issuedAt,omitempty"`
 
-	// ExpiresAt is when the ticket stops being valid. Nothing is applied under an
-	// expired ticket.
+	// ExpiresAt is IssuedAt plus the ticket lifetime (15 minutes by default, set
+	// with the operator's --ticket-ttl flag). Nothing is applied under an expired
+	// ticket: the action ends Expired with reason TicketExpired.
 	ExpiresAt metav1.Time `json:"expiresAt"`
 }

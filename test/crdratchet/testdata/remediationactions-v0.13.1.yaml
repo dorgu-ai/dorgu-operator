@@ -1,0 +1,896 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.0
+  name: remediationactions.dorgu.io
+spec:
+  group: dorgu.io
+  names:
+    kind: RemediationAction
+    listKind: RemediationActionList
+    plural: remediationactions
+    shortNames:
+    - ra
+    singular: remediationaction
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .spec.action.type
+      name: Type
+      type: string
+    - jsonPath: .spec.planSource
+      name: Plan
+      type: string
+    - jsonPath: .spec.confidence
+      name: Confidence
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          RemediationAction is the Schema for the remediationactions API.
+          It represents a proposed or applied remediation for a detected incident.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: Spec defines the desired state of RemediationAction.
+            properties:
+              action:
+                description: |-
+                  Action describes the remediation to apply.
+
+                  DEPRECATED: steps[] is the only plan. Action is derived from the steps for
+                  back-compat and is never what the operator applies: the executor applies
+                  status.applyTicket, which the gate computes from steps[] at approval. It is
+                  retained for one release and will be removed.
+                properties:
+                  patch:
+                    description: Patch is the JSON merge patch to apply to the Persona
+                      spec.
+                    x-kubernetes-preserve-unknown-fields: true
+                  prePatchState:
+                    description: PrePatchState is the snapshot of fields before the
+                      patch, for rollback.
+                    x-kubernetes-preserve-unknown-fields: true
+                  type:
+                    description: Type classifies the remediation action.
+                    enum:
+                    - persona-update
+                    - notification
+                    - git-pr
+                    type: string
+                required:
+                - type
+                type: object
+              approval:
+                description: Approval configures the approval requirements for this
+                  remediation.
+                properties:
+                  autoApproveRule:
+                    description: |-
+                      AutoApproveRule configures automatic approval after repeated successes.
+                      Not yet implemented — no controller reads this field, so setting it grants
+                      nothing. Every remediation requires human approval. Deferred to Phase 2c
+                      (founder decision #7).
+                    properties:
+                      afterSuccessfulOccurrences:
+                        default: 3
+                        description: |-
+                          AfterSuccessfulOccurrences is the number of successful identical remediations
+                          required before auto-approval is granted.
+                          Not yet implemented — see AutoApproveRule.
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      enabled:
+                        default: false
+                        description: |-
+                          Enabled activates auto-approve graduation.
+                          Not yet implemented — see AutoApproveRule.
+                        type: boolean
+                    required:
+                    - afterSuccessfulOccurrences
+                    - enabled
+                    type: object
+                  deadline:
+                    description: Deadline is when the pending remediation expires
+                      if not approved.
+                    format: date-time
+                    type: string
+                  required:
+                    default: true
+                    description: Required indicates whether human approval is needed.
+                    type: boolean
+                required:
+                - required
+                type: object
+              confidence:
+                description: Confidence is the diagnosis confidence score as a decimal
+                  string (e.g., "0.85").
+                pattern: ^(0(\.\d+)?|1(\.0+)?)$
+                type: string
+              explanation:
+                description: Explanation provides a human-readable description of
+                  why this remediation is proposed.
+                type: string
+              incidentRef:
+                description: IncidentRef references the IncidentMemory that triggered
+                  this remediation.
+                properties:
+                  name:
+                    description: Name of the IncidentMemory.
+                    type: string
+                  namespace:
+                    description: Namespace of the IncidentMemory.
+                    type: string
+                required:
+                - name
+                - namespace
+                type: object
+              personaRef:
+                description: PersonaRef references the Persona to be remediated.
+                properties:
+                  kind:
+                    description: Kind is ApplicationPersona or ClusterPersona.
+                    enum:
+                    - ApplicationPersona
+                    - ClusterPersona
+                    type: string
+                  name:
+                    description: Name of the referenced Persona.
+                    type: string
+                  namespace:
+                    description: Namespace of the referenced Persona (empty for ClusterPersona).
+                    type: string
+                required:
+                - kind
+                - name
+                type: object
+              planSource:
+                description: PlanSource records how the plan was produced.
+                enum:
+                - rule-based
+                - ai-anthropic
+                type: string
+              planSummary:
+                description: PlanSummary is the AI root-cause / plan explanation for
+                  the ordered plan.
+                type: string
+              rollback:
+                description: Rollback configures automatic rollback behavior.
+                properties:
+                  enabled:
+                    default: true
+                    description: Enabled activates automatic rollback on degradation.
+                    type: boolean
+                  healthCheckAfter:
+                    description: HealthCheckAfter is the duration to wait before verifying
+                      remediation health.
+                    type: string
+                  maxRetries:
+                    default: 1
+                    description: MaxRetries limits rollback attempts.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                required:
+                - enabled
+                - maxRetries
+                type: object
+              steps:
+                description: |-
+                  Steps is the ordered remediation plan and the only plan: the operator's
+                  approval re-check turns its persona-update steps into the apply ticket, and
+                  the ticket is exactly what is applied.
+                items:
+                  description: |-
+                    RemediationStep is a single ordered action within a multi-step remediation plan.
+
+                    Step-safety invariant: only persona-update steps may be AutoExecutable. All
+                    other step types are advisory — recorded for a human/CLI/platform to apply —
+                    which preserves the operator's non-negotiable guarantee that it never writes
+                    workloads. See ValidateAutoExecutable.
+                  properties:
+                    autoExecutable:
+                      description: |-
+                        AutoExecutable indicates the operator may apply this step without external
+                        action. v1 invariant: this is true ONLY for persona-update steps.
+                      type: boolean
+                    command:
+                      description: |-
+                        Command is a ready-to-run kubectl command that carries out this advisory
+                        step, when a single command can. It exists so a correct diagnosis turns
+                        into an actual fix instead of prose the reader has to translate.
+
+                        It is never executed: not by the operator (which never writes workloads)
+                        and not by the CLI. It is printed for a human to read, check, and run.
+                        Because it can originate from a model, it is filtered through
+                        SanitizeStepCommand before being persisted: anything that is not a
+                        single-line kubectl invocation free of shell metacharacters is dropped.
+                      maxLength: 1024
+                      type: string
+                    description:
+                      description: Description is a human-readable summary of the
+                        action.
+                      type: string
+                    id:
+                      description: ID is a stable, per-plan identifier for the step.
+                      type: string
+                    order:
+                      description: Order is the 1-based execution order of this step
+                        within the plan.
+                      format: int32
+                      minimum: 1
+                      type: integer
+                    patch:
+                      description: Patch is the JSON merge patch to apply to the Persona
+                        spec (persona-update steps).
+                      x-kubernetes-preserve-unknown-fields: true
+                    prePatchState:
+                      description: PrePatchState is the snapshot of fields before
+                        the patch, for rollback.
+                      x-kubernetes-preserve-unknown-fields: true
+                    rationale:
+                      description: Rationale explains why this step is proposed (AI
+                        reasoning).
+                      type: string
+                    risk:
+                      description: Risk is the assessed risk level of applying this
+                        step.
+                      enum:
+                      - low
+                      - medium
+                      - high
+                      type: string
+                    safety:
+                      description: |-
+                        Safety records what Dorgu's guardrails decided about this step, one entry
+                        per field they ruled on. It is structured so a client can render the
+                        verdict, filter on it, or alert on it.
+
+                        It exists because the verdict used to be a string prefix on Rationale, next
+                        to the model's own account of the same change. A reader then saw the
+                        guardrail's arithmetic presented as part of the model's reasoning, and in
+                        clean-room run #4 saw it directly beside the model's claim that a 16x
+                        change was "well within a 2x ceiling". A guardrail's verdict is Dorgu's
+                        alone.
+                      items:
+                        description: |-
+                          StepSafety is one guardrail verdict on one field of a step.
+
+                          Every string in it is written by Dorgu from its own arithmetic. No part of it
+                          comes from a model, and no model is asked to characterise it.
+                        properties:
+                          baseline:
+                            description: |-
+                              Baseline is the value the guardrail measured against: the live workload's
+                              value when it could be read, the persona's otherwise. Empty when the rule
+                              did not measure a change (a derived patch has nothing to compare).
+                            type: string
+                          field:
+                            description: Field is the persona-spec path ruled on,
+                              e.g. "spec.resources.limits.memory".
+                            type: string
+                          maxRatio:
+                            description: MaxRatio is the largest multiple the guardrail
+                              allows, e.g. "2.0x".
+                            type: string
+                          message:
+                            description: Message is Dorgu's one-line rendering of
+                              the verdict, ready to print.
+                            type: string
+                          permitted:
+                            description: |-
+                              Permitted is the value that will actually be applied for this field, and
+                              is exactly what the step's patch carries. Empty means nothing will be
+                              applied for this field.
+                            type: string
+                          ratio:
+                            description: Ratio is the requested change as a multiple
+                              of Baseline, e.g. "16.0x".
+                            type: string
+                          requested:
+                            description: |-
+                              Requested is the value the plan asked for. Empty when the plan named a
+                              change without giving a value.
+                            type: string
+                          rule:
+                            description: Rule identifies the guardrail that ruled.
+                            enum:
+                            - blast-radius
+                            - plan-validation
+                            - absent-field
+                            type: string
+                          verdict:
+                            description: Verdict is what happened to the requested
+                              value.
+                            enum:
+                            - clamped
+                            - rejected
+                            - derived
+                            type: string
+                        required:
+                        - field
+                        - message
+                        - rule
+                        - verdict
+                        type: object
+                      type: array
+                      x-kubernetes-list-type: atomic
+                    type:
+                      description: Type classifies the step action.
+                      enum:
+                      - persona-update
+                      - workload-apply
+                      - restart
+                      - scale
+                      - config-change
+                      - manual
+                      type: string
+                  required:
+                  - autoExecutable
+                  - description
+                  - id
+                  - order
+                  - type
+                  type: object
+                  x-kubernetes-validations:
+                  - message: only persona-update steps may be autoExecutable
+                    rule: '!self.autoExecutable || self.type == ''persona-update'''
+                  - message: step command must be a kubectl invocation
+                    rule: '!has(self.command) || self.command.startsWith(''kubectl
+                      '')'
+                type: array
+                x-kubernetes-list-type: atomic
+              trustLevel:
+                description: TrustLevel is the minimum trust level required to execute
+                  this remediation.
+                format: int32
+                maximum: 5
+                minimum: 0
+                type: integer
+              workloadRef:
+                description: |-
+                  WorkloadRef records the live workload this remediation concerns, who owns
+                  it, and what its resources actually were when the plan was made.
+
+                  Absent means the operator could not observe a workload. Consumers must
+                  then treat the workload as owned (see WorkloadRef.ManagedBy).
+                properties:
+                  container:
+                    description: |-
+                      Container is the container within the pod template whose resources were
+                      observed and which a fix would target.
+                    type: string
+                  kind:
+                    description: Kind is the workload kind. Only Deployment is resolved
+                      today.
+                    enum:
+                    - Deployment
+                    type: string
+                  managedBy:
+                    default: unknown
+                    description: |-
+                      ManagedBy is derived from server-side-apply field managers plus
+                      labels/annotations (app.kubernetes.io/managed-by, meta.helm.sh/*,
+                      argocd.argoproj.io/*, *.toolkit.fluxcd.io/*).
+
+                      Only "unmanaged" permits the CLI to patch the Deployment. Everything
+                      else, including "unknown", means Dorgu recommends and does not write.
+                    enum:
+                    - helm
+                    - argocd
+                    - flux
+                    - kustomize
+                    - unmanaged
+                    - unknown
+                    type: string
+                  managedByDetail:
+                    description: |-
+                      ManagedByDetail names the specific owner when one was identified, e.g.
+                      `Helm release "frontend" in namespace apps`. It exists so a refusal can
+                      name what owns the workload instead of saying "something does".
+                    maxLength: 253
+                    type: string
+                  name:
+                    description: |-
+                      Name is the live workload's metadata.name. It is not the persona name:
+                      the two differ in most brownfield clusters (persona "frontend" resolving
+                      to Deployment "frontend-podinfo").
+                    type: string
+                  namespace:
+                    description: Namespace is the live workload's namespace.
+                    type: string
+                  observedAt:
+                    description: ObservedAt is when the live workload was read.
+                    format: date-time
+                    type: string
+                  observedImage:
+                    description: |-
+                      ObservedImage is the container's live image reference, including its tag.
+                      It is the only image Dorgu has actually read, and the planner is
+                      instructed never to assert a version it has not read.
+                    type: string
+                  observedResources:
+                    description: |-
+                      ObservedResources is the LIVE container resource block at proposal time.
+
+                      An empty CPU or Memory string means the workload does not set that key.
+                      That distinction is load-bearing: a remediation may only change a key the
+                      workload already has, so approving a memory fix can never silently add a
+                      CPU limit.
+                    properties:
+                      limits:
+                        description: |-
+                          Limits are the container's live resource limits. An empty field means the
+                          container does not set that limit.
+                        properties:
+                          cpu:
+                            type: string
+                          memory:
+                            type: string
+                        type: object
+                      requests:
+                        description: |-
+                          Requests are the container's live resource requests. An empty field means
+                          the container does not set that request.
+                        properties:
+                          cpu:
+                            type: string
+                          memory:
+                            type: string
+                        type: object
+                    type: object
+                required:
+                - kind
+                - managedBy
+                - name
+                - namespace
+                type: object
+            required:
+            - action
+            - confidence
+            - explanation
+            - incidentRef
+            - personaRef
+            - trustLevel
+            type: object
+          status:
+            description: Status defines the observed state of RemediationAction.
+            properties:
+              appliedAt:
+                description: AppliedAt is when the remediation patch was applied.
+                format: date-time
+                type: string
+              applyTicket:
+                description: |-
+                  ApplyTicket is what the gate cleared at approval: the one change that may be
+                  applied, bound to the live workload it was measured against. The executor and
+                  the CLI apply exactly this and nothing else, and refuse when it is missing,
+                  expired, or its workload no longer matches. Written by the operator only.
+                properties:
+                  container:
+                    description: |-
+                      Container is the container in that Deployment whose resources the ticket
+                      changes.
+                    type: string
+                  expiresAt:
+                    description: |-
+                      ExpiresAt is when the ticket stops being valid. Nothing is applied under an
+                      expired ticket.
+                    format: date-time
+                    type: string
+                  issuedAt:
+                    description: |-
+                      IssuedAt is when the operator wrote the ticket. Operator-set. A client that
+                      recorded its approval at time T accepts only a ticket issued at or after T,
+                      so a ticket that was already there before the approval cannot be mistaken for
+                      the answer to it.
+                    format: date-time
+                    type: string
+                  observedGeneration:
+                    description: |-
+                      ObservedGeneration is metadata.generation of the Deployment when the ticket
+                      was written. Generation moves only when the Deployment's spec does, so unlike
+                      resourceVersion it is not disturbed by status or scale writes: a client that
+                      compares it asks "did the spec change under the ticket", which is the question.
+                    format: int64
+                    type: integer
+                  observedResourceVersion:
+                    description: |-
+                      ObservedResourceVersion is the resourceVersion of the Deployment when the
+                      ticket was written. A ticket whose workload has since been changed by
+                      someone else is stale and is refused.
+                    type: string
+                  patch:
+                    description: |-
+                      Patch is the JSON merge patch the gate cleared, in persona-spec shape
+                      ({"spec":{"resources":{...}}}): every persona-update step of the plan,
+                      clamped and merged in order.
+                    x-kubernetes-preserve-unknown-fields: true
+                  verdicts:
+                    description: Verdicts is every guardrail the approval re-check
+                      ran and what each decided.
+                    items:
+                      description: GateVerdict is one guardrail's decision.
+                      properties:
+                        guardrail:
+                          description: |-
+                            Guardrail names the check within the stage, e.g. blast-radius,
+                            rate-limit, deny-list.
+                          type: string
+                        numbers:
+                          additionalProperties:
+                            type: string
+                          description: |-
+                            Numbers carries the inputs of the verdict (baseline, requested, ratio,
+                            ceiling) as data, so no client has to parse them out of Reason.
+                          type: object
+                        reason:
+                          description: Reason is a sentence safe to show a human.
+                            It never contains model text.
+                          maxLength: 1024
+                          type: string
+                        stage:
+                          description: |-
+                            Stage is the pipeline stage: Validate, Ground, Ownership, Guardrails,
+                            ModePolicy or DedupCooldown.
+                          type: string
+                        verdict:
+                          description: Verdict is pass, clamp or refuse.
+                          enum:
+                          - pass
+                          - clamp
+                          - refuse
+                          type: string
+                      required:
+                      - guardrail
+                      - stage
+                      - verdict
+                      type: object
+                    maxItems: 64
+                    type: array
+                    x-kubernetes-list-type: atomic
+                  workloadUID:
+                    description: |-
+                      WorkloadUID is the UID of the live Deployment the ticket was measured
+                      against. A Deployment with another UID is another workload, and the ticket
+                      does not apply to it.
+                    type: string
+                required:
+                - expiresAt
+                type: object
+              approvedAt:
+                description: ApprovedAt is when the remediation was approved.
+                format: date-time
+                type: string
+              approvedBy:
+                description: ApprovedBy identifies who approved the remediation.
+                type: string
+              conditions:
+                description: Conditions are standard K8s conditions.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              currentStep:
+                description: |-
+                  CurrentStep is the 1-based order of the step currently being executed.
+                  Schema only this sprint — not yet driven by the controller.
+                format: int32
+                type: integer
+              gate:
+                description: |-
+                  Gate is what the operator's gate established about this action: the live
+                  facts it read, who owns the workload, every guardrail verdict, and the
+                  baseline the change was measured against. Written by the operator only.
+                properties:
+                  evaluatedAt:
+                    description: EvaluatedAt is when the gate ran.
+                    format: date-time
+                    type: string
+                  observed:
+                    description: Observed is what the gate read from the cluster.
+                    properties:
+                      liveValues:
+                        description: LiveValues is the live container's resource block.
+                        properties:
+                          limits:
+                            description: |-
+                              Limits are the container's live resource limits. An empty field means the
+                              container does not set that limit.
+                            properties:
+                              cpu:
+                                type: string
+                              memory:
+                                type: string
+                            type: object
+                          requests:
+                            description: |-
+                              Requests are the container's live resource requests. An empty field means
+                              the container does not set that request.
+                            properties:
+                              cpu:
+                                type: string
+                              memory:
+                                type: string
+                            type: object
+                        type: object
+                      observedAt:
+                        description: ObservedAt is when the cluster was read.
+                        format: date-time
+                        type: string
+                      personaGeneration:
+                        description: |-
+                          PersonaGeneration is the generation of the ApplicationPersona that was
+                          read.
+                        format: int64
+                        type: integer
+                      workloadResourceVersion:
+                        description: |-
+                          WorkloadResourceVersion is the resourceVersion of that Deployment when it
+                          was read.
+                        type: string
+                      workloadUID:
+                        description: |-
+                          WorkloadUID is the UID of the live Deployment that was read. A later
+                          re-check refuses when it differs: the workload was replaced.
+                        type: string
+                    type: object
+                  ownership:
+                    description: Ownership says who owns the live workload, as resolved
+                      by the operator.
+                    properties:
+                      detail:
+                        description: Detail names the specific owner when one was
+                          identified.
+                        maxLength: 253
+                        type: string
+                      managedBy:
+                        description: |-
+                          ManagedBy is the owner class. Anything but "unmanaged" means Dorgu
+                          recommends and does not write the workload.
+                        enum:
+                        - helm
+                        - argocd
+                        - flux
+                        - kustomize
+                        - unmanaged
+                        - unknown
+                        type: string
+                      resolved:
+                        description: |-
+                          Resolved is false when no live Deployment could be read, in which case
+                          ManagedBy is "unknown" and treated as owned.
+                        type: boolean
+                    required:
+                    - managedBy
+                    - resolved
+                    type: object
+                  phase:
+                    description: |-
+                      Phase is the gate phase that produced this record: Proposal when the
+                      operator proposed the action, ApprovalRecheck when approval re-ran it on
+                      live state.
+                    enum:
+                    - Proposal
+                    - ApprovalRecheck
+                    type: string
+                  prePatchState:
+                    description: |-
+                      PrePatchState is the baseline the guardrails measured the change against,
+                      at the paths the plan touches: the LIVE workload's values when the workload
+                      resolved, otherwise the persona's. It is computed by the operator and
+                      never accepted from the plan's author.
+                    x-kubernetes-preserve-unknown-fields: true
+                  result:
+                    description: |-
+                      Result is the overall decision: Pass, Clamp (the plan was narrowed and
+                      proceeds) or Refuse.
+                    enum:
+                    - Pass
+                    - Clamp
+                    - Refuse
+                    type: string
+                  verdicts:
+                    description: Verdicts is every guardrail the gate ran and what
+                      each one decided.
+                    items:
+                      description: GateVerdict is one guardrail's decision.
+                      properties:
+                        guardrail:
+                          description: |-
+                            Guardrail names the check within the stage, e.g. blast-radius,
+                            rate-limit, deny-list.
+                          type: string
+                        numbers:
+                          additionalProperties:
+                            type: string
+                          description: |-
+                            Numbers carries the inputs of the verdict (baseline, requested, ratio,
+                            ceiling) as data, so no client has to parse them out of Reason.
+                          type: object
+                        reason:
+                          description: Reason is a sentence safe to show a human.
+                            It never contains model text.
+                          maxLength: 1024
+                          type: string
+                        stage:
+                          description: |-
+                            Stage is the pipeline stage: Validate, Ground, Ownership, Guardrails,
+                            ModePolicy or DedupCooldown.
+                          type: string
+                        verdict:
+                          description: Verdict is pass, clamp or refuse.
+                          enum:
+                          - pass
+                          - clamp
+                          - refuse
+                          type: string
+                      required:
+                      - guardrail
+                      - stage
+                      - verdict
+                      type: object
+                    maxItems: 64
+                    type: array
+                    x-kubernetes-list-type: atomic
+                required:
+                - evaluatedAt
+                - phase
+                - result
+                type: object
+              phase:
+                description: |-
+                  Phase tracks the remediation lifecycle.
+                  Ticketed means a human approved the plan and the gate re-checked it on live
+                  state and cleared it: status.applyTicket is what may be applied, and nothing
+                  else. Apply refuses without a valid, unexpired ticket.
+
+                  Acknowledged is the terminal phase for an approved plan with nothing to
+                  apply: its steps are advisory, so approval records the decision and the
+                  operator changes nothing. It is not a failure and does not trip the
+                  failure cooldown.
+                enum:
+                - Pending
+                - Approved
+                - Ticketed
+                - Applying
+                - Verifying
+                - Completed
+                - Acknowledged
+                - RolledBack
+                - Failed
+                - Rejected
+                - Expired
+                type: string
+              stepStatuses:
+                description: |-
+                  StepStatuses tracks per-step execution outcome for the ordered plan.
+                  Schema only this sprint — not yet driven by the controller.
+                items:
+                  description: StepStatus tracks the execution outcome of a single
+                    RemediationStep.
+                  properties:
+                    appliedAt:
+                      description: AppliedAt is when the step was applied.
+                      format: date-time
+                      type: string
+                    order:
+                      description: Order is the 1-based order of the step this status
+                        refers to.
+                      format: int32
+                      minimum: 1
+                      type: integer
+                    phase:
+                      description: Phase tracks the step lifecycle.
+                      enum:
+                      - Pending
+                      - Applied
+                      - Verified
+                      - Failed
+                      - Skipped
+                      type: string
+                    verificationResult:
+                      description: VerificationResult is the outcome of post-apply
+                        verification for this step.
+                      type: string
+                  required:
+                  - order
+                  type: object
+                type: array
+                x-kubernetes-list-type: atomic
+              verificationResult:
+                description: VerificationResult is the outcome of post-apply health
+                  verification.
+                enum:
+                - Healthy
+                - Degraded
+                - Unknown
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

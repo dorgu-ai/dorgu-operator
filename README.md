@@ -232,6 +232,7 @@ kubectl get clusterpersona           # dorgu-cluster, auto-created
 | `healthCheck.enabled` | Detection, diagnosis, incident tracking and remediation proposals. When `false`, the operator records persona health only and never opens an incident or proposes a fix | `true` |
 | `healthCheck.interval` | Health check reconciliation interval | `60s` |
 | `remediation.pendingTTL` | How long a proposal may wait for approval before it becomes `Expired` (terminal, nothing applied, no cooldown). A proposal's own deadline can only shorten it; `0` disables the TTL (maps to `--remediation-pending-ttl`) | `24h` |
+| `remediation.ticketTTL` | How long an apply ticket stays valid after approval issues it. A ticket not applied within it is refused and the remediation ends `Expired` with reason `TicketExpired` (nothing applied, no cooldown). Positive, at most `24h` (maps to `--ticket-ttl`) | `15m` |
 | `safety.excludedNamespaces` | Namespaces Dorgu never remediates, on top of `kube-system` and its own namespace (maps to `--safety-excluded-namespaces`) | `[]` |
 | `metricsServer.enabled` | metrics-server integration for container-level CPU/memory detection | `true` |
 | `llm.provider` | AI provider: `claude` (Anthropic) or `gemini` (Google); empty disables AI. The chart injects `ANTHROPIC_API_KEY` or `GEMINI_API_KEY` to match | `""` |

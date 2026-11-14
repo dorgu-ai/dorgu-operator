@@ -34,11 +34,12 @@ import (
 	"github.com/dorgu-ai/dorgu-operator/internal/workload"
 )
 
-// TicketTTL is how long an apply ticket stays valid. It is operator-owned: a
-// human approves in seconds and the operator applies in the same pass, so ten
+// DefaultTicketTTL is how long an apply ticket stays valid unless the operator is
+// started with another (--ticket-ttl, chart value ticketTTL). It is operator-owned:
+// a human approves in seconds and the operator applies in the same pass, so fifteen
 // minutes is a long margin; a ticket that outlives it describes a cluster nobody
 // measured.
-const TicketTTL = 10 * time.Minute
+const DefaultTicketTTL = 15 * time.Minute
 
 // DorguFieldManager is the field manager the dorgu CLI patches a Deployment
 // under. A write by it is the approved change itself, not somebody else moving
@@ -77,7 +78,12 @@ const kubeControllerManager = "kube-controller-manager"
 // spec is still the generation it cleared (the Proposed condition). Nothing the
 // author of the spec controls can supply, widen or skip those (M2).
 func ApprovalCandidate(action *dorguv1.RemediationAction) Candidate {
+	// A spec that cannot be hashed leaves specHash empty, and no ticket is issued
+	// for it (Decision.Ticket).
+	specHash, _ := action.Spec.Hash()
 	cand := Candidate{
+		approvedBy:  strings.TrimSpace(action.Status.ApprovedBy),
+		specHash:    specHash,
 		Target:      action.Spec.PersonaRef,
 		Namespace:   action.Namespace,
 		Name:        action.Name,
@@ -154,12 +160,25 @@ func (d *Decision) Ticket() (*dorguv1.ApplyTicket, error) {
 		return nil, errors.New("the plan has no persona-update left to apply")
 	}
 
+	if d.approvedBy == "" {
+		return nil, errors.New("the approval names nobody (status.approvedBy is empty), so no ticket is issued")
+	}
+	if d.specHash == "" {
+		return nil, errors.New("the spec could not be hashed, so no ticket is issued")
+	}
+
 	issued := d.EvaluatedAt
+	ttl := d.ticketTTL
+	if ttl <= 0 {
+		ttl = DefaultTicketTTL
+	}
 	ticket := &dorguv1.ApplyTicket{
-		Patch:     patch,
-		Verdicts:  append([]dorguv1.GateVerdict(nil), d.Verdicts...),
-		IssuedAt:  &issued,
-		ExpiresAt: metav1.NewTime(d.EvaluatedAt.Add(TicketTTL)),
+		Patch:      patch,
+		Verdicts:   append([]dorguv1.GateVerdict(nil), d.Verdicts...),
+		SpecHash:   d.specHash,
+		ApprovedBy: d.approvedBy,
+		IssuedAt:   &issued,
+		ExpiresAt:  metav1.NewTime(d.EvaluatedAt.Add(ttl)),
 	}
 	if d.Observed != nil {
 		ticket.WorkloadUID = d.Observed.WorkloadUID
@@ -230,9 +249,11 @@ func (p *TicketProblem) Error() string { return p.Reason }
 // is honoured only when the gate, run again on the cluster as it is now, would
 // issue exactly this ticket.
 //
-// In order, it requires: a ticket; an approval on record (status.approvedAt); a
-// well-formed patch inside the resource allowlist; an issue time, an expiry that
-// has not passed, and a lifetime no longer than TicketTTL; the same workload (UID)
+// In order, it requires: a ticket; every ticket v1 field (specHash, approvedBy,
+// issuedAt, expiresAt), so a v0 ticket is refused before anything is read; an
+// approval on record (status.approvedAt); the spec still hashing to the ticket's
+// specHash; a well-formed patch inside the resource allowlist; an expiry that has
+// not passed and a lifetime no longer than the gate's TicketTTL; the same workload (UID)
 // and one nobody else has changed since; the approval history the operator wrote
 // (the Proposed condition at the current spec generation, and status.gate as the
 // ApprovalRecheck that cleared); and then ApprovalRecheck itself, whose derived
@@ -263,8 +284,14 @@ func (g *Gate) checkTicket(ctx context.Context, action *dorguv1.RemediationActio
 	if ticket == nil {
 		return &TicketProblem{GuardrailTicket, "there is no apply ticket: nothing is applied without one"}, nil
 	}
+	if problem := ticketFieldsProblem(ticket); problem != nil {
+		return problem, nil
+	}
 	if action.Status.ApprovedAt == nil || action.Status.ApprovedAt.IsZero() {
 		return &TicketProblem{GuardrailNotApproved, "the action has no approval on record (status.approvedAt), so a ticket on it was not issued for an approval"}, nil
+	}
+	if problem := ticketSpecProblem(ticket, action); problem != nil {
+		return problem, nil
 	}
 	if problem := ticketPatchProblem(ticket); problem != "" {
 		return &TicketProblem{GuardrailPatchShape, problem}, nil
@@ -286,6 +313,47 @@ func (g *Gate) checkTicket(ctx context.Context, action *dorguv1.RemediationActio
 	return g.rederiveTicket(ctx, action)
 }
 
+// ticketFieldsProblem requires every field ticket v1 added or relies on. The
+// operator writes all four on every ticket it issues; a ticket without them was
+// written before ticket v1, or by something that is not the gate, and is refused
+// rather than honoured until it expires: what it was cleared for, and who cleared
+// it, cannot be told.
+func ticketFieldsProblem(ticket *dorguv1.ApplyTicket) *TicketProblem {
+	var missing []string
+	if strings.TrimSpace(ticket.SpecHash) == "" {
+		missing = append(missing, "specHash")
+	}
+	if strings.TrimSpace(ticket.ApprovedBy) == "" {
+		missing = append(missing, "approvedBy")
+	}
+	if ticket.IssuedAt == nil || ticket.IssuedAt.IsZero() {
+		missing = append(missing, "issuedAt")
+	}
+	if ticket.ExpiresAt.IsZero() {
+		missing = append(missing, "expiresAt")
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	return &TicketProblem{GuardrailTicketIncomplete, fmt.Sprintf(
+		"the apply ticket lacks %s: it predates ticket v1 or is incomplete, so it is refused and nothing is applied",
+		strings.Join(missing, ", "))}
+}
+
+// ticketSpecProblem refuses a ticket whose specHash is not the hash of the spec
+// the action has now. The ticket was cleared for one spec; any edit since, to any
+// field of any step, is a different plan that no human approved.
+func ticketSpecProblem(ticket *dorguv1.ApplyTicket, action *dorguv1.RemediationAction) *TicketProblem {
+	now, err := action.Spec.Hash()
+	if err != nil {
+		return &TicketProblem{GuardrailSpecChanged, "the spec can no longer be hashed, so it cannot be shown to be the one the ticket was issued for"}
+	}
+	if now != ticket.SpecHash {
+		return &TicketProblem{GuardrailSpecChanged, "the spec was changed after the ticket was issued (its hash is no longer the ticket's specHash), so what is in the spec is not what was approved"}
+	}
+	return nil
+}
+
 // ticketTimingProblem checks the ticket's own clock fields: it has an issue time,
 // has not expired, and was not given a lifetime beyond what the gate hands out.
 func (g *Gate) ticketTimingProblem(ticket *dorguv1.ApplyTicket) *TicketProblem {
@@ -296,7 +364,7 @@ func (g *Gate) ticketTimingProblem(ticket *dorguv1.ApplyTicket) *TicketProblem {
 		return &TicketProblem{GuardrailTicketExpired,
 			fmt.Sprintf("the apply ticket expired at %s", ticket.ExpiresAt.UTC().Format(time.RFC3339))}
 	}
-	if ticket.ExpiresAt.Sub(ticket.IssuedAt.Time) > TicketTTL {
+	if ticket.ExpiresAt.Sub(ticket.IssuedAt.Time) > g.TicketTTL() {
 		return &TicketProblem{GuardrailTicket, "the apply ticket's lifetime is longer than the gate ever issues"}
 	}
 	return nil
@@ -405,7 +473,7 @@ func ticketIssuedAt(ticket *dorguv1.ApplyTicket) time.Time {
 	if ticket.IssuedAt != nil && !ticket.IssuedAt.IsZero() {
 		return ticket.IssuedAt.Time
 	}
-	return ticket.ExpiresAt.Add(-TicketTTL)
+	return ticket.ExpiresAt.Add(-DefaultTicketTTL)
 }
 
 // ticketKey is the persona (namespace, name) whose workload the ticket is about.

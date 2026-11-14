@@ -161,8 +161,10 @@ const stepCommandPrefix = "kubectl "
 
 // stepCommandForbidden are the characters that let a pasted one-liner do more
 // than the command it appears to be: chaining, piping, redirecting, command
-// substitution, and variable expansion.
-const stepCommandForbidden = ";&|<>`$\n\r"
+// substitution, subshells and variable expansion, and a second line. It is the
+// same set as the step command rule on the CRD (see RemediationStep), so a command
+// that passes SanitizeStepCommand always passes admission.
+const stepCommandForbidden = ";&|<>`$()\n\r"
 
 // SanitizeStepCommand returns cmd if it is safe to print as a copy-paste
 // suggestion, and "" otherwise.

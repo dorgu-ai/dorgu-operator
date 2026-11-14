@@ -204,6 +204,11 @@ func run(t *testing.T, g *Gate, cand Candidate, phase Phase) *Decision {
 	if phase == PhaseApprovalRecheck && cand.prior == nil && cand.priorProblem == "" {
 		cand.prior = priorObservation("uid-1")
 	}
+	// Likewise an approver and a spec hash, which ApprovalCandidate takes from the
+	// RemediationAction: the tests that are about something else are not about them.
+	if phase == PhaseApprovalRecheck && cand.approvedBy == "" && cand.specHash == "" {
+		cand.approvedBy, cand.specHash = "alice@example.com", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	}
 	d, err := g.Run(context.Background(), cand, phase)
 	require.NoError(t, err)
 	return d

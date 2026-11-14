@@ -136,10 +136,13 @@ func TestB6_AnExpiredTicketIsCountedAsExpiredAndRefusedByName(t *testing.T) {
 
 	_, got := lcReconcile(t, rc, ra)
 
-	require.Equal(t, RemediationPhaseFailed, got.Status.Phase)
+	require.Equal(t, RemediationPhaseExpired, got.Status.Phase, "an expired ticket ends Expired, not Failed")
 	cond := lcCondition(got, dorguv1.ConditionGateRefused)
 	require.NotNil(t, cond)
 	assert.Equal(t, "TicketExpired", cond.Reason)
+	expiredCond := lcCondition(got, ConditionExpired)
+	require.NotNil(t, expiredCond)
+	assert.Equal(t, dorguv1.ReasonTicketExpired, expiredCond.Reason)
 	assert.True(t, hasEvent(drainEvents(rec), "Warning", "DorguTicketRefused"))
 	assert.Equal(t, expired0+1, metricValue(t, "dorgu_tickets_total", expired))
 	assert.Equal(t, refused0, metricValue(t, "dorgu_tickets_total", map[string]string{"result": metrics.TicketRefusedAtApply}),

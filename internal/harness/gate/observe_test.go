@@ -117,7 +117,7 @@ func TestObserve_GuardrailVerdictsAreCounted(t *testing.T) {
 func TestObserve_AnExpiredTicketHasItsOwnReason(t *testing.T) {
 	expired := ticketedAction(func(ra *dorguv1.RemediationAction) {
 		ra.Status.ApplyTicket.ExpiresAt.Time = fixedNow.Add(-time.Minute)
-		ra.Status.ApplyTicket.IssuedAt.Time = fixedNow.Add(-time.Minute - TicketTTL)
+		ra.Status.ApplyTicket.IssuedAt.Time = fixedNow.Add(-time.Minute - DefaultTicketTTL)
 	})
 	before := decisions(t, MetricPhaseApply, StageTicket, "refuse", GuardrailTicketExpired)
 
@@ -447,7 +447,7 @@ func TestObserve_ARejectionCooldownAndEveryOtherRefusalAreNotDeferred(t *testing
 // not first as a pass or clamp.
 func TestObserve_ANoPlanApprovalIsCountedOnlyAsARefusal(t *testing.T) {
 	cand := legacyCandidate(memPatch("384Mi")) // asks for a change
-	cleared := &Decision{Phase: PhaseApprovalRecheck, Result: ResultPass}
+	cleared := &Decision{Phase: PhaseApprovalRecheck, Result: ResultPass, approvedBy: "alice@example.com", specHash: "abc"}
 	require.Empty(t, cleared.Steps, "the decision carries no persona patch to ticket")
 	counts := func() (float64, float64, float64) {
 		return decisions(t, "ApprovalRecheck", StageComplete, "pass", ReasonNone),
