@@ -18,6 +18,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
+	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
 )
 
 func testScheme(t *testing.T) *runtime.Scheme {
@@ -317,5 +318,15 @@ func TestBootstrap_EnsureInterval(t *testing.T) {
 				t.Errorf("ensureInterval(%v) = %v, want %v", tc.in, got, tc.want)
 			}
 		})
+	}
+}
+
+// F-5: the guardrail verdict reports a rate limit equal to the built-in one as
+// Default, which is right only while the persona the operator seeds carries the
+// built-in value.
+func TestBootstrapPersona_SeedsTheBuiltInRateLimit(t *testing.T) {
+	persona := (&ClusterPersonaBootstrap{}).buildPersona("uid")
+	if got := persona.Spec.Policies.SelfHealing.MaxRemediationsPerHour; got != gate.DefaultMaxRemediationsPerHour {
+		t.Fatalf("the seeded maxRemediationsPerHour is %d, the gate's built-in limit is %d: the ceilingSource of the rate limit would be wrong", got, gate.DefaultMaxRemediationsPerHour)
 	}
 }

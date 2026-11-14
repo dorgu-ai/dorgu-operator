@@ -70,16 +70,18 @@ func (s dedupCooldownStage) Run(ctx context.Context, cand *Candidate, d *Decisio
 	}
 
 	if reason := activeRemediationReason(cand, siblings); reason != "" {
-		d.refuse(StageDedupCooldown, GuardrailActiveAction, reason, nil)
+		d.refuse(StageDedupCooldown, GuardrailActiveAction, reason, nil).From(dorguv1.CeilingSourceDefault)
 		return nil
 	}
-	d.pass(StageDedupCooldown, GuardrailActiveAction, "no active remediation covers this incident or fix", nil)
+	d.pass(StageDedupCooldown, GuardrailActiveAction, "no active remediation covers this incident or fix", nil).
+		From(dorguv1.CeilingSourceDefault)
 
 	if reason := s.rejectionReason(cand, siblings); reason != "" {
-		d.refuse(StageDedupCooldown, GuardrailRejection, reason, nil)
+		d.refuse(StageDedupCooldown, GuardrailRejection, reason, nil).From(dorguv1.CeilingSourceDefault)
 		return nil
 	}
-	d.pass(StageDedupCooldown, GuardrailRejection, "no recent rejection for this incident", nil)
+	d.pass(StageDedupCooldown, GuardrailRejection, "no recent rejection for this incident", nil).
+		From(dorguv1.CeilingSourceDefault)
 	return nil
 }
 

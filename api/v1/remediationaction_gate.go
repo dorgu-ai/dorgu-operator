@@ -142,9 +142,9 @@ type GateVerdict struct {
 	Numbers map[string]string `json:"numbers,omitempty"`
 
 	// CeilingSource says where the limit this verdict applied came from. The
-	// guardrails stage fills it on every verdict it records, so a client never
-	// infers it. Verdicts of other stages and verdicts recorded before it existed
-	// leave it empty.
+	// Guardrails and DedupCooldown stages fill it on every verdict they record, so
+	// a client never infers it. Verdicts of other stages and verdicts recorded
+	// before it existed leave it empty.
 	// +optional
 	// +kubebuilder:validation:Enum=Default;ClusterPersona;ApplicationPersona;LiveWorkload
 	CeilingSource string `json:"ceilingSource,omitempty"`
@@ -158,8 +158,11 @@ const (
 	// remediations an hour, kube-system and the operator's own namespace.
 	CeilingSourceDefault = "Default"
 
-	// CeilingSourceClusterPersona is a value the user set on a ClusterPersona:
-	// spec.policies.selfHealing.maxRemediationsPerHour or excludeNamespaces.
+	// CeilingSourceClusterPersona is a value a ClusterPersona set that differs from
+	// the built-in one: spec.policies.selfHealing.maxRemediationsPerHour other than
+	// 5, or excludeNamespaces. The operator seeds the ClusterPersona it creates
+	// with 5 and the CRD defaults the field to 5, so a limit of 5 is reported as
+	// Default whoever wrote it: it is the built-in value.
 	CeilingSourceClusterPersona = "ClusterPersona"
 
 	// CeilingSourceApplicationPersona is the baseline a change is measured against

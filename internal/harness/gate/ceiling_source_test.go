@@ -17,6 +17,8 @@ limitations under the License.
 package gate
 
 import (
+	"context"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -308,4 +310,70 @@ func TestCeilingSource_TheTicketCarriesTheSources(t *testing.T) {
 		}
 	}
 	assert.True(t, found, "no blast-radius verdict on the ticket")
+}
+
+// F-4: the no-plan refusal and the DedupCooldown verdicts carry a source as well.
+func TestCeilingSource_RefuseNoPlanAndDedupVerdicts(t *testing.T) {
+	d := &Decision{}
+	d.RefuseNoPlan()
+	require.Len(t, d.Verdicts, 1)
+	assert.Equal(t, dorguv1.CeilingSourceDefault, d.Verdicts[0].CeilingSource)
+	require.NotNil(t, d.refusing)
+	assert.Equal(t, dorguv1.CeilingSourceDefault, d.refusing.CeilingSource, "the copy kept as the refusal has it too")
+
+	pass := run(t, dedupGate(t), dedupCandidate(), PhaseProposal)
+	assert.Equal(t, dorguv1.CeilingSourceDefault, ceilingOf(t, pass, GuardrailRejection))
+
+	dup := sibling("dup", "Pending", func(ra *dorguv1.RemediationAction) { ra.Spec.IncidentRef.Name = incidentOne })
+	deferred := run(t, dedupGate(t, dup), dedupCandidate(), PhaseProposal)
+	assert.Equal(t, dorguv1.CeilingSourceDefault, ceilingOf(t, deferred, GuardrailActiveAction))
+}
+
+// F-5: the operator seeds the ClusterPersona it creates at startup with
+// maxRemediationsPerHour 5, and the CRD defaults the field to 5, so on a normal
+// cluster the field is 5 whether or not anybody set it. A limit equal to the
+// built-in value is the built-in value: it is Default. ClusterPersona is reported
+// only when a persona moves the limit off the built-in one.
+func TestCeilingSource_F5_RateLimitSourceIsAccurateOnABootstrappedCluster(t *testing.T) {
+	cases := map[string]struct {
+		limits []int32
+		source string
+		limit  int32
+	}{
+		"the seeded value on the bootstrapped persona":      {limits: []int32{DefaultMaxRemediationsPerHour}, source: dorguv1.CeilingSourceDefault, limit: DefaultMaxRemediationsPerHour},
+		"a user lowered it":                                 {limits: []int32{2}, source: dorguv1.CeilingSourceClusterPersona, limit: 2},
+		"a user raised it":                                  {limits: []int32{20}, source: dorguv1.CeilingSourceClusterPersona, limit: 20},
+		"two personas, the bootstrap one and a lowered one": {limits: []int32{DefaultMaxRemediationsPerHour, 3}, source: dorguv1.CeilingSourceClusterPersona, limit: 3},
+		"two personas, the bootstrap one and a raised one":  {limits: []int32{DefaultMaxRemediationsPerHour, 20}, source: dorguv1.CeilingSourceDefault, limit: DefaultMaxRemediationsPerHour},
+		"no limit set (zero is the field's empty value)":    {limits: []int32{0}, source: dorguv1.CeilingSourceDefault, limit: DefaultMaxRemediationsPerHour},
+		"no ClusterPersona at all":                          {limits: nil, source: dorguv1.CeilingSourceDefault, limit: DefaultMaxRemediationsPerHour},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			objs := []clientObject{persona("256Mi"), deployment("256Mi")}
+			for i, limit := range tc.limits {
+				cp := clusterPersona(func(p *dorguv1.SelfHealingPolicy) { p.MaxRemediationsPerHour = limit })
+				cp.Name = fmt.Sprintf("cluster-%d", i)
+				objs = append(objs, cp)
+			}
+			g := newTestGate(t, fakeClient(t, objs...))
+
+			limit, source, err := g.maxRemediationsPerHour(context.Background())
+
+			require.NoError(t, err)
+			assert.Equal(t, tc.limit, limit)
+			assert.Equal(t, tc.source, source)
+		})
+	}
+}
+
+// The limit stays fail-closed: an unreadable ClusterPersona is an error, labelled
+// as the ClusterPersona's, never the built-in value.
+func TestCeilingSource_F5_AnUnreadableClusterPersonaStillFailsClosed(t *testing.T) {
+	c := failingListClient(t, func(list clientObjectList) bool {
+		return isKind[*dorguv1.ClusterPersonaList](list)
+	}, persona("256Mi"), deployment("256Mi"))
+	_, source, err := newTestGate(t, c).maxRemediationsPerHour(context.Background())
+	require.Error(t, err)
+	assert.Equal(t, dorguv1.CeilingSourceClusterPersona, source)
 }

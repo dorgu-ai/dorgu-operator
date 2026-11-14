@@ -662,9 +662,9 @@ func (g *Gate) siblings(ctx context.Context, cand *Candidate) ([]dorguv1.Remedia
 }
 
 // maxRemediationsPerHour reads the rate limit from the ClusterPersonas (the lowest
-// one set). A list
-// error is returned, not defaulted: an unreadable limit is unknown, and unknown
-// fails closed.
+// one set) and says where it came from: ClusterPersona when a persona moved it off
+// the built-in value, Default otherwise. A list error is returned, not defaulted:
+// an unreadable limit is unknown, and unknown fails closed.
 func (g *Gate) maxRemediationsPerHour(ctx context.Context) (limit int32, source string, err error) {
 	var clusterPersonas dorguv1.ClusterPersonaList
 	if err := g.client.List(ctx, &clusterPersonas); err != nil {
@@ -682,7 +682,11 @@ func (g *Gate) maxRemediationsPerHour(ctx context.Context) (limit int32, source 
 			limit = v
 		}
 	}
-	if limit > 0 {
+	// The ClusterPersona the operator creates at startup is seeded with the built-in
+	// value, and the CRD defaults the field to it, so on a normal cluster the field
+	// is never empty. A limit equal to the built-in value is the built-in value
+	// (Default); it is the ClusterPersona's only when the persona moves it (F-5).
+	if limit > 0 && limit != DefaultMaxRemediationsPerHour {
 		return limit, dorguv1.CeilingSourceClusterPersona, nil
 	}
 	return DefaultMaxRemediationsPerHour, dorguv1.CeilingSourceDefault, nil

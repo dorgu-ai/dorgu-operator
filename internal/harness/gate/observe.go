@@ -250,7 +250,7 @@ const noPlanReason = "the gate cleared the plan but nothing is left to apply aft
 // a change; this is for the caller that reaches an allowed decision with no ticket
 // for any other reason (the controller's own advisory check).
 func (d *Decision) RefuseNoPlan() {
-	d.refuse(StageGuardrails, GuardrailNoPlan, noPlanReason, nil)
+	d.refuse(StageGuardrails, GuardrailNoPlan, noPlanReason, nil).From(dorguv1.CeilingSourceDefault)
 }
 
 // hasAutoApplicableChange reports whether the candidate asks for a change that
