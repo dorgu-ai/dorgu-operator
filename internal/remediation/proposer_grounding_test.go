@@ -32,6 +32,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
+	dorguv1alpha1 "github.com/dorgu-ai/dorgu-operator/api/v1alpha1"
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
 	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
 )
@@ -126,7 +127,7 @@ func TestProposer_GroundsMemoryInLiveWorkload(t *testing.T) {
 
 	c := fake.NewClientBuilder().WithScheme(scheme).
 		WithRuntimeObjects(persona, deploy).
-		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
 	proposer := NewProposer(c, gate.New(c, testLogger()), testLogger())
 	diag := newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical)
@@ -157,7 +158,7 @@ func TestProposer_WorkloadRefRecordsLiveState(t *testing.T) {
 
 	c := fake.NewClientBuilder().WithScheme(scheme).
 		WithRuntimeObjects(persona, deploy).
-		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
 	proposer := NewProposer(c, gate.New(c, testLogger()), testLogger())
 	result, err := proposer.Propose(context.Background(),
@@ -194,7 +195,7 @@ func TestProposer_NeverIntroducesAbsentResourceKey(t *testing.T) {
 
 	c := fake.NewClientBuilder().WithScheme(scheme).
 		WithRuntimeObjects(persona, deploy).
-		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
 	proposer := NewProposer(c, gate.New(c, testLogger()), testLogger())
 	diag := newCPUDiagnosis(defaultNamespace, "my-app", detection.SeverityWarning)
@@ -218,7 +219,7 @@ func TestProposer_FallsBackToPersonaWhenWorkloadUnreadable(t *testing.T) {
 
 	c := fake.NewClientBuilder().WithScheme(scheme).
 		WithRuntimeObjects(persona).
-		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
 	proposer := NewProposer(c, gate.New(c, testLogger()), testLogger())
 	result, err := proposer.Propose(context.Background(),

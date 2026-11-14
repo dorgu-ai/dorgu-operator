@@ -32,6 +32,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
+	dorguv1alpha1 "github.com/dorgu-ai/dorgu-operator/api/v1alpha1"
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
 	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
 	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
@@ -44,6 +45,7 @@ import (
 func newTestScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = dorguv1.AddToScheme(s)
+	_ = dorguv1alpha1.AddToScheme(s)
 	// The gate lists Deployments, and a list it cannot make is a refusal (R3), so a
 	// test world needs the type registered like a real cluster's scheme has it.
 	_ = appsv1.AddToScheme(s)
