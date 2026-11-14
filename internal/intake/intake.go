@@ -23,12 +23,16 @@ limitations under the License.
 // rejects the proposal with the stage and reason that refused it.
 //
 // Processor.createAction is the ONLY place in the operator that creates a
-// RemediationAction. A test (TestOnlyIntakeCreatesRemediationActions) fails if any
-// other non-test code does.
+// RemediationAction, and that is structural: every other component is handed a
+// client wrapped by GuardActionWrites, which refuses to create, update, patch or
+// apply a RemediationAction in any form, and only the Processor holds the raw client
+// (cmd/clients.go). A source scan (TestNoStaticRemediationActionCreateOutsideIntake)
+// is a cheap extra tripwire.
 //
-// A proposal's rationale is untrusted text. It is copied to the action's
-// explanation for people to read and is read by nothing else: no branch, guardrail
-// or gate input in this package or anywhere else looks at it (KPI I5).
+// A proposal's rationale is untrusted text. It is stripped of control characters
+// (safetext.Clean) and copied to the action's explanation for people to read. No
+// branch, guardrail or gate input looks at it (KPI I5), and it is never put in a
+// model's prompt (planner.BuildContext shows only the planner's own explanations).
 package intake
 
 import (

@@ -66,12 +66,15 @@ type healthPipeline struct {
 //
 // It makes no network calls: LLM clients are constructed but not used.
 func buildHealthPipeline(
-	c client.Client,
+	clients clusterClients,
 	reader client.Reader,
 	cfg operatorConfig,
 	operatorNS string,
 	log logr.Logger,
 ) healthPipeline {
+	// c is the guarded client: nothing built here may create a RemediationAction
+	// except through the intake, which alone is given clients.Intake.
+	c := clients.Guarded
 	// The gate is built first because it is the single deny-list and the single
 	// decision point: it gates the remediation proposer and the diagnosis
 	// provider's model call alike.
@@ -141,7 +144,7 @@ func buildHealthPipeline(
 	// One intake for everyone: Dorgu's planner proposes through it as the operator
 	// ServiceAccount, and the proposal reconciler decides everyone else's.
 	proposalIntake := intake.New(intake.Config{
-		Client:           c,
+		Client:           clients.Intake,
 		Reader:           reader,
 		Gate:             g,
 		Incidents:        &controller.ProposalIncidents{Client: c},

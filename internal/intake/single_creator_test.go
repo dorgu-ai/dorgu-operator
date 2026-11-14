@@ -27,12 +27,17 @@ import (
 	"testing"
 )
 
-// The proposal intake is the ONLY code that creates a RemediationAction (P2-D1).
-// This test fails when any other non-test Go file in the operator calls Create on
-// one: on a composite literal of the type, on a value it was declared or assigned
-// as, or on a parameter typed as one. It is a syntactic check, which is the
-// strongest that needs no type information; it errs toward flagging.
-func TestOnlyIntakeCreatesRemediationActions(t *testing.T) {
+// A cheap tripwire against an honest regression: it fails when another non-test Go
+// file calls Create on a RemediationAction literal, or on a value it was declared or
+// assigned as, or on a parameter typed as one.
+//
+// It is NOT the enforcement. It is syntactic, and the C1 review found seven shapes it
+// cannot see (an unstructured object, a helper that returns the object, a generic
+// client.Object parameter, server-side apply, new(T), a type alias, a struct field).
+// The enforcement is structural: every component is handed a client that refuses to
+// create or change a RemediationAction (GuardActionWrites, guard_test.go), and only
+// the intake gets the raw one (cmd/clients.go, cmd/clients_test.go).
+func TestNoStaticRemediationActionCreateOutsideIntake(t *testing.T) {
 	root := filepath.Join("..", "..")
 	allowed := filepath.Join(root, "internal", "intake", "process.go")
 
