@@ -338,9 +338,13 @@ func TestCPUThrottling_PrometheusSignal(t *testing.T) {
 			{Namespace: throttleNS, Pod: "api-1", Container: "app", Ratio: 0.8},
 		}, 1},
 	}
+	// A real Prometheus answers for every container, quiet ones included. An answer
+	// with no series for any container in the cluster is "no data", not a source (F-4),
+	// so each case carries the quiet series the endpoint would also return.
+	quiet := ThrottleSample{Namespace: throttleNS, Pod: "api-1", Container: "app", Ratio: 0.01}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			prom := &fakeThrottleSource{samples: tt.samples}
+			prom := &fakeThrottleSource{samples: append([]ThrottleSample{quiet}, tt.samples...)}
 			c := newThrottleCollector(t, []client.Object{pod}, WithThrottleSource(prom))
 			signals := collectTypes(t, c)
 			assert.Len(t, signals, tt.want)
@@ -368,7 +372,8 @@ func TestCPUThrottling_PrometheusFiresImmediately(t *testing.T) {
 func TestCPUThrottling_PrometheusWinsWhenBothArePresent(t *testing.T) {
 	metrics := &fakeMetricsSource{present: true}
 	metrics.set(map[string]string{"api-1 app": "1000m"}) // hot by usage
-	prom := &fakeThrottleSource{samples: nil}            // not throttled by the true signal
+	// Not throttled by the true signal: Prometheus has a series for the container, and it is quiet.
+	prom := &fakeThrottleSource{samples: []ThrottleSample{{Namespace: throttleNS, Pod: "api-1", Container: "app", Ratio: 0.01}}}
 	sink := &statusRecorder{}
 	c := newThrottleCollector(t, []client.Object{throttlePod("api-1", map[string]string{"app": "1000m"})},
 		WithMetricsSource(metrics), WithThrottleSource(prom), WithCPUStatusSink(sink))
@@ -620,17 +625,18 @@ func TestCPUThrottling_StatusMessagesNeverCarryRemoteText(t *testing.T) {
 	assert.NotContains(t, st.Message, "ignore previous", "the status is shown to humans and read by tools; it states what the operator knows, not what a remote server wrote")
 }
 
-// The failure must reach the engine as a failed collector, which is what the verifier
-// and the incident resolver read as "do not conclude anything from silence".
-func TestCPUThrottling_FailureReachesTheEngineAsPartial(t *testing.T) {
+// A failed CPU source reaches the engine as a failed FamilyCollector (F-5): it blinds
+// CPUThrottling, which is what the verifier and the incident resolver read as "do not
+// conclude anything from silence", and it is not a whole-cycle failure.
+func TestCPUThrottling_FailureReachesTheEngineAsFamilyBlindness(t *testing.T) {
 	metrics := &fakeMetricsSource{present: true, listErr: errors.New("503")}
 	c := newThrottleCollector(t, nil, WithMetricsSource(metrics))
-	_, err := NewEngine(logr.Discard(), c).CollectAll(context.Background())
-	require.Error(t, err)
-	assert.True(t, IsPartial(err))
-	var ce *CollectionError
-	require.True(t, errors.As(err, &ce))
-	assert.Equal(t, []string{"cpu-throttling-checker"}, ce.Collectors())
+	e := NewEngine(logr.Discard(), c)
+	_, err := e.CollectAll(context.Background())
+	require.NoError(t, err, "not a whole-cycle failure")
+	assert.False(t, IsPartial(err))
+	assert.True(t, e.SignalBlind(SignalCPUThrottling))
+	assert.False(t, e.SignalBlind(SignalOOMKilled))
 }
 
 func TestCPUThrottling_OffIsNotAFailureToTheEngine(t *testing.T) {

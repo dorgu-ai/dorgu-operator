@@ -61,6 +61,20 @@ const (
 // fault: the collector reads metrics.k8s.io instead and says nothing is wrong.
 var ErrPrometheusNotConfigured = errors.New("no Prometheus URL is configured")
 
+// ErrPrometheusURLInvalid marks a spec.metrics.prometheus.url the operator refuses
+// (scheme, credentials, query string, whitespace...). It is the admin's typo, so the
+// status says so instead of calling the endpoint unreachable.
+var ErrPrometheusURLInvalid = errors.New("the Prometheus URL is not valid")
+
+// urlError is a URL validation failure: its text is the specific reason, and it is
+// an ErrPrometheusURLInvalid to errors.Is.
+type urlError string
+
+func (e urlError) Error() string      { return string(e) }
+func (urlError) Is(target error) bool { return target == ErrPrometheusURLInvalid }
+
+func invalidURL(msg string) error { return urlError(msg) }
+
 // ThrottleSample is one container's throttled-period ratio, already checked.
 type ThrottleSample struct {
 	Namespace string
@@ -136,34 +150,34 @@ func NewPrometheusThrottleSource(urlFn func(ctx context.Context) (string, error)
 func ValidatePrometheusURL(raw string) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		return "", errors.New("prometheus url is empty")
+		return "", invalidURL("prometheus url is empty")
 	}
 	if len(raw) > maxPrometheusURLLength {
-		return "", fmt.Errorf("prometheus url is longer than %d characters", maxPrometheusURLLength)
+		return "", invalidURL(fmt.Sprintf("prometheus url is longer than %d characters", maxPrometheusURLLength))
 	}
 	for _, r := range raw {
 		if unicode.IsSpace(r) || unicode.IsControl(r) {
-			return "", errors.New("prometheus url contains whitespace or a control character")
+			return "", invalidURL("prometheus url contains whitespace or a control character")
 		}
 	}
 	u, err := url.Parse(raw)
 	if err != nil {
-		return "", errors.New("prometheus url cannot be parsed")
+		return "", invalidURL("prometheus url cannot be parsed")
 	}
 	switch strings.ToLower(u.Scheme) {
 	case "http", "https":
 	default:
-		return "", fmt.Errorf("prometheus url scheme must be http or https, not %q", u.Scheme)
+		return "", invalidURL(fmt.Sprintf("prometheus url scheme must be http or https, not %q", u.Scheme))
 	}
 	switch {
 	case u.Hostname() == "":
-		return "", errors.New("prometheus url has no host")
+		return "", invalidURL("prometheus url has no host")
 	case u.User != nil:
-		return "", errors.New("prometheus url must not carry credentials")
+		return "", invalidURL("prometheus url must not carry credentials")
 	case u.RawQuery != "" || strings.Contains(raw, "?"):
-		return "", errors.New("prometheus url must not carry a query string")
+		return "", invalidURL("prometheus url must not carry a query string")
 	case u.Fragment != "" || strings.Contains(raw, "#"):
-		return "", errors.New("prometheus url must not carry a fragment")
+		return "", invalidURL("prometheus url must not carry a fragment")
 	}
 	u.Scheme = strings.ToLower(u.Scheme)
 	return strings.TrimRight(u.String(), "/"), nil

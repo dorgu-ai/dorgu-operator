@@ -27,6 +27,7 @@ import (
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/apimachinery/pkg/types"
 	metricsv1beta1 "k8s.io/metrics/pkg/apis/metrics/v1beta1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -60,7 +61,24 @@ const (
 	// DefaultMinCycleSpacing is how close two Collect calls may be before the second
 	// is the same cycle. The verifier runs detection too, and a verification must
 	// not count as another cycle toward the threshold.
+	//
+	// What counts as a cycle, exactly: a Collect call made at least the spacing after
+	// the previous cycle ran (the operator sets it to half the health-check interval).
+	// A call closer than that is answered from the previous cycle and counts for
+	// nothing. A cycle that could not look (an error reading pods or metrics) resets
+	// every container's streak, so "3 consecutive cycles" means three consecutive
+	// cycles that all read the metrics. The window is wall-clock, not the caller's
+	// identity: a verifier call that lands later than the spacing after a cycle is
+	// counted as one, and the next real cycle shortly after is then answered from it.
+	// The effect is a signal one cycle earlier or later, never a missed one.
 	DefaultMinCycleSpacing = 30 * time.Second
+
+	// PrometheusCriticalRatio is the throttled-period ratio at or above which the
+	// signal is Critical: half the container's scheduling periods are throttled. It is
+	// the only way to a Critical CPUThrottling signal. Usage at the limit from
+	// metrics.k8s.io is evidence of throttling and not a measurement of it, so that path
+	// is always a Warning.
+	PrometheusCriticalRatio = 0.5
 )
 
 // Sources and reasons of CPU throttling detection (see SourceStatus).
@@ -72,6 +90,8 @@ const (
 	ReasonMetricsServerActive   = "MetricsServerActive"
 	ReasonPrometheusActive      = "PrometheusActive"
 	ReasonPrometheusUnreachable = "PrometheusUnreachable"
+	ReasonPrometheusNoData      = "PrometheusNoData"
+	ReasonPrometheusURLInvalid  = "PrometheusURLInvalid"
 	ReasonNoMetricsSource       = "NoMetricsSource"
 	ReasonMetricsServerDisabled = "MetricsServerDisabled"
 	ReasonMetricsSourceLost     = "MetricsSourceLost"
@@ -85,11 +105,18 @@ const (
 	msgMetricsServerActive = "CPU throttling detection reads metrics.k8s.io: a container at 95% of its CPU limit for 3 cycles is throttled."
 	msgPrometheusActive    = "CPU throttling detection reads the throttled-period ratio from Prometheus: 25% or more of periods throttled."
 	msgFallback            = "The Prometheus endpoint in spec.metrics.prometheus.url could not be read, so CPU throttling detection reads metrics.k8s.io instead."
-	msgNoSource            = "CPU throttling detection is off: metrics.k8s.io is not served and spec.metrics.prometheus.url is not set. " +
+	msgFallbackNoData      = "The Prometheus endpoint in spec.metrics.prometheus.url answered with no CPU throttling series for the containers in this cluster " +
+		"(cAdvisor metrics may not be scraped), so CPU throttling detection reads metrics.k8s.io instead."
+	msgFallbackURLInvalid = "spec.metrics.prometheus.url is not a valid http or https URL, so CPU throttling detection reads metrics.k8s.io instead."
+	msgNoSource           = "CPU throttling detection is off: metrics.k8s.io is not served and spec.metrics.prometheus.url is not set. " +
 		"Install metrics-server or set spec.metrics.prometheus.url on the ClusterPersona."
 	msgServerDisabled = "CPU throttling detection is off: metrics-server detection is disabled (--enable-metrics-server=false) and " +
 		"spec.metrics.prometheus.url is not set. Enable it or set spec.metrics.prometheus.url on the ClusterPersona."
 	msgPrometheusDown = "CPU throttling detection is off: the Prometheus endpoint in spec.metrics.prometheus.url could not be read and " +
+		"metrics.k8s.io is not available."
+	msgPrometheusNoData = "CPU throttling detection is off: the Prometheus endpoint in spec.metrics.prometheus.url answered with no CPU throttling series " +
+		"for the containers in this cluster and metrics.k8s.io is not available."
+	msgPrometheusURLInvalid = "CPU throttling detection is off: spec.metrics.prometheus.url is not a valid http or https URL and " +
 		"metrics.k8s.io is not available."
 	msgSourceLost = "CPU throttling detection is off: metrics.k8s.io was served and is not any more, so a quiet cycle proves nothing."
 	msgReadFailed = "CPU throttling detection is off this cycle: metrics.k8s.io or the pod list could not be read."
@@ -122,10 +149,15 @@ type CPUThrottlingStatusSink interface {
 //
 // A source that does not exist (no metrics-server, no Prometheus URL) is a missing
 // capability: detection is off, loudly in the status and quietly in the logs, and
-// Collect returns no error, or every verification on a cluster without metrics-server
-// would read "unknown". A source that exists and cannot be read, or one that was
+// Collect returns no error. A source that exists and cannot be read, or one that was
 // there and is gone, is a collector that could not look, and Collect returns the
-// error so it never reads as healthy (B2b).
+// error.
+//
+// Either way the collector is Blind, and it is a FamilyCollector: the engine does not
+// turn its failure into a whole-cycle failure, because a CPU metrics outage says
+// nothing about a crash loop. It blinds CPUThrottling only: a CPUThrottling incident
+// does not resolve and a CPU fix does not verify Healthy while Blind is true (B2b,
+// scoped to the family), and nothing else is held back.
 type CPUThrottlingCollector struct {
 	pods       client.Reader
 	logger     logr.Logger
@@ -137,19 +169,35 @@ type CPUThrottlingCollector struct {
 	metricsDisabled bool
 	minSpacing      time.Duration
 	now             func() time.Time
-	logs            *logThrottle
+	logs            *LogThrottle
 
 	mu             sync.Mutex
-	counts         map[containerKey]int
+	counts         map[countKey]int
 	everSawMetrics bool
 	haveLast       bool
 	lastRun        time.Time
 	lastSignals    []Signal
 	lastErr        error
 	lastActive     string
+
+	// view is what Blind reads. It has its own lock, so asking whether the collector is
+	// blind never waits behind a Collect that is in the middle of a Prometheus query.
+	viewMu     sync.RWMutex
+	haveStatus bool
+	lastStatus SourceStatus
 }
 
 type containerKey struct{ namespace, pod, container string }
+
+// countKey is what a streak belongs to: one container of one pod instance. The UID
+// makes a StatefulSet's recreated db-0 a new pod that starts from zero, where the
+// name alone would let it inherit its predecessor's cycles.
+type countKey struct {
+	uid types.UID
+	containerKey
+}
+
+var _ FamilyCollector = (*CPUThrottlingCollector)(nil)
 
 // CPUThrottlingOption configures a CPUThrottlingCollector.
 type CPUThrottlingOption func(*CPUThrottlingCollector)
@@ -209,8 +257,8 @@ func NewCPUThrottlingCollector(pods client.Reader, logger logr.Logger, opts ...C
 		namespaces: kubeSystemOnly{},
 		minSpacing: DefaultMinCycleSpacing,
 		now:        time.Now,
-		logs:       newLogThrottle(logRepeatInterval),
-		counts:     map[containerKey]int{},
+		logs:       NewLogThrottle(LogRepeatInterval),
+		counts:     map[countKey]int{},
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -220,6 +268,20 @@ func NewCPUThrottlingCollector(pods client.Reader, logger logr.Logger, opts ...C
 
 // Name implements SignalCollector.
 func (c *CPUThrottlingCollector) Name() string { return collectorNameCPUThrottling }
+
+// Families implements FamilyCollector: this collector is the only observer of CPU
+// throttling.
+func (c *CPUThrottlingCollector) Families() []Family { return []Family{FamilyCPUThrottling} }
+
+// Blind implements FamilyCollector. It is true until a cycle has read a source, and
+// whenever the latest cycle could not (no source, source lost, read failed). A call
+// answered from the cache inside the spacing window keeps the status of the cycle
+// that produced it.
+func (c *CPUThrottlingCollector) Blind() bool {
+	c.viewMu.RLock()
+	defer c.viewMu.RUnlock()
+	return !c.haveStatus || !c.lastStatus.Active
+}
 
 // Collect implements SignalCollector.
 func (c *CPUThrottlingCollector) Collect(ctx context.Context) ([]Signal, error) {
@@ -233,6 +295,14 @@ func (c *CPUThrottlingCollector) Collect(ctx context.Context) ([]Signal, error) 
 
 	signals, status, err := c.observe(ctx, now)
 	c.haveLast, c.lastRun, c.lastSignals, c.lastErr = true, now, slices.Clone(signals), err
+	if err != nil {
+		// A cycle that could not look breaks every streak: three consecutive cycles
+		// means three that all read the metrics.
+		c.counts = map[countKey]int{}
+	}
+	c.viewMu.Lock()
+	c.haveStatus, c.lastStatus = true, status
+	c.viewMu.Unlock()
 
 	if c.sink != nil {
 		c.sink.ReportCPUThrottlingSource(ctx, status)
@@ -241,10 +311,16 @@ func (c *CPUThrottlingCollector) Collect(ctx context.Context) ([]Signal, error) 
 	return signals, err
 }
 
-// observe runs one cycle. Prometheus, when it answers, decides; otherwise metrics.k8s.io.
+// errPrometheusNoData says the Prometheus endpoint answered, with nothing about any
+// container in this cluster that has a CPU limit.
+var errPrometheusNoData = errors.New("prometheus returned no series for any container with a CPU limit")
+
+// observe runs one cycle. Prometheus, when it answers with data, decides; otherwise
+// metrics.k8s.io.
 func (c *CPUThrottlingCollector) observe(ctx context.Context, now time.Time) ([]Signal, SourceStatus, error) {
 	var promErr error
 	var samples []ThrottleSample
+	var pods podIndex
 	promUsed := false
 	if c.throttle != nil {
 		got, err := c.throttle.Query(ctx)
@@ -254,24 +330,66 @@ func (c *CPUThrottlingCollector) observe(ctx context.Context, now time.Time) ([]
 		case err != nil:
 			promErr = err
 		default:
-			samples, promUsed = got, true
+			idx, perr := c.podIndex(ctx)
+			if perr != nil {
+				return nil, readFailed(), perr
+			}
+			pods = idx
+			// The query answers for every container, including quiet ones, so an answer
+			// that names none of the containers that could be throttled means the endpoint
+			// has no cAdvisor data (not scraped, relabelled, an outage). It is not a source
+			// that saw "nothing throttled".
+			if len(pods) > 0 && !namesAKnownContainer(got, pods) {
+				promErr = errPrometheusNoData
+			} else {
+				samples, promUsed = got, true
+			}
 		}
 	}
 
 	if promUsed {
-		return c.fromPrometheus(ctx, samples, now)
+		return c.fromPrometheus(ctx, samples, pods, now)
 	}
-	return c.fromMetricsServer(ctx, promErr, now)
+	return c.fromMetricsServer(ctx, promErr, pods, now)
 }
 
-func (c *CPUThrottlingCollector) fromPrometheus(ctx context.Context, samples []ThrottleSample, now time.Time) ([]Signal, SourceStatus, error) {
-	status := SourceStatus{Active: true, Source: CPUThrottlingSourcePrometheus, Reason: ReasonPrometheusActive, Message: msgPrometheusActive}
-	pods, err := c.podIndex(ctx)
-	if err != nil {
-		return nil, readFailed(), err
+// namesAKnownContainer reports whether any sample is about a container in the index.
+func namesAKnownContainer(samples []ThrottleSample, pods podIndex) bool {
+	for _, s := range samples {
+		if _, _, ok := pods.lookup(containerKey{s.Namespace, s.Pod, s.Container}); ok {
+			return true
+		}
 	}
+	return false
+}
+
+// promFault is how a Prometheus failure is announced: the reason, and the fixed
+// sentences for "using metrics.k8s.io instead" and "nothing to use instead".
+type promFault struct {
+	reason, fallback, down string
+}
+
+func classifyPromFault(err error) promFault {
+	switch {
+	case errors.Is(err, errPrometheusNoData):
+		return promFault{ReasonPrometheusNoData, msgFallbackNoData, msgPrometheusNoData}
+	case errors.Is(err, ErrPrometheusURLInvalid):
+		return promFault{ReasonPrometheusURLInvalid, msgFallbackURLInvalid, msgPrometheusURLInvalid}
+	default:
+		return promFault{ReasonPrometheusUnreachable, msgFallback, msgPrometheusDown}
+	}
+}
+
+func (f promFault) downStatus() SourceStatus {
+	return SourceStatus{Source: CPUThrottlingSourceNone, Reason: f.reason, Message: f.down}
+}
+
+func (c *CPUThrottlingCollector) fromPrometheus(
+	ctx context.Context, samples []ThrottleSample, pods podIndex, now time.Time,
+) ([]Signal, SourceStatus, error) {
+	status := SourceStatus{Active: true, Source: CPUThrottlingSourcePrometheus, Reason: ReasonPrometheusActive, Message: msgPrometheusActive}
 	// The usage counts belong to metrics.k8s.io; switching source starts them over.
-	c.counts = map[containerKey]int{}
+	c.counts = map[countKey]int{}
 
 	seen := map[containerKey]bool{}
 	signals := make([]Signal, 0, len(samples))
@@ -299,11 +417,15 @@ func (c *CPUThrottlingCollector) fromPrometheus(ctx context.Context, samples []T
 			continue
 		}
 		seen[key] = true
+		severity := SeverityWarning
+		if s.Ratio >= PrometheusCriticalRatio {
+			severity = SeverityCritical
+		}
 		pct, threshold := s.Ratio*100, PrometheusThrottleRatio*100
 		meta := containerMeta(pod, key.container, CPUThrottlingSourcePrometheus, limit)
 		meta["throttledRatio"] = fmt.Sprintf("%.2f", s.Ratio)
 		signals = append(signals, Signal{
-			Type: SignalCPUThrottling, Severity: SeverityWarning, Category: CategoryResource,
+			Type: SignalCPUThrottling, Severity: severity, Category: CategoryResource,
 			Source:     collectorNameCPUThrottling,
 			Message:    fmt.Sprintf("Container %s in %s/%s was CPU throttled in %.0f%% of its scheduling periods", key.container, key.namespace, key.pod, pct),
 			Resource:   podResource(*pod),
@@ -316,7 +438,9 @@ func (c *CPUThrottlingCollector) fromPrometheus(ctx context.Context, samples []T
 	return signals, status, nil
 }
 
-func (c *CPUThrottlingCollector) fromMetricsServer(ctx context.Context, promErr error, now time.Time) ([]Signal, SourceStatus, error) {
+func (c *CPUThrottlingCollector) fromMetricsServer(
+	ctx context.Context, promErr error, pods podIndex, now time.Time,
+) ([]Signal, SourceStatus, error) {
 	if c.metrics == nil || c.metricsDisabled {
 		return c.noMetricsServer(promErr)
 	}
@@ -326,13 +450,13 @@ func (c *CPUThrottlingCollector) fromMetricsServer(ctx context.Context, promErr 
 		return nil, readFailed(), fmt.Errorf("probing metrics.k8s.io: %w", err)
 	}
 	if !present {
-		c.counts = map[containerKey]int{}
+		c.counts = map[countKey]int{}
 		switch {
 		case c.everSawMetrics:
 			return nil, SourceStatus{Source: CPUThrottlingSourceNone, Reason: ReasonMetricsSourceLost, Message: msgSourceLost},
 				errors.New("metrics.k8s.io was served and is not any more")
 		case promErr != nil:
-			return nil, prometheusDown(), fmt.Errorf("prometheus unreachable and metrics.k8s.io is not served: %w", promErr)
+			return nil, classifyPromFault(promErr).downStatus(), fmt.Errorf("prometheus unusable and metrics.k8s.io is not served: %w", promErr)
 		}
 		return nil, SourceStatus{Source: CPUThrottlingSourceNone, Reason: ReasonNoMetricsSource, Message: msgNoSource}, nil
 	}
@@ -342,9 +466,10 @@ func (c *CPUThrottlingCollector) fromMetricsServer(ctx context.Context, promErr 
 	if err != nil {
 		return nil, readFailed(), fmt.Errorf("reading pod metrics: %w", err)
 	}
-	pods, err := c.podIndex(ctx)
-	if err != nil {
-		return nil, readFailed(), err
+	if pods == nil {
+		if pods, err = c.podIndex(ctx); err != nil {
+			return nil, readFailed(), err
+		}
 	}
 
 	signals, err := c.usageSignals(ctx, items, pods, now)
@@ -354,17 +479,33 @@ func (c *CPUThrottlingCollector) fromMetricsServer(ctx context.Context, promErr 
 
 	status := SourceStatus{Active: true, Source: CPUThrottlingSourceMetricsServer, Reason: ReasonMetricsServerActive, Message: msgMetricsServerActive}
 	if promErr != nil {
-		c.logger.V(1).Info("prometheus could not be read; using metrics.k8s.io", "error", promErr.Error())
-		status.Reason, status.Message = ReasonPrometheusUnreachable, msgFallback
+		fault := classifyPromFault(promErr)
+		c.logFallback(promErr, fault, now)
+		status.Reason, status.Message = fault.reason, fault.fallback
 	}
 	return signals, status, nil
 }
 
+// logFallback says, at the default log level and once per LogRepeatInterval, why the
+// configured Prometheus is not being used. Without it a response over the size limit
+// or an empty answer looks like "detection is on" while the true signal never arrives.
+func (c *CPUThrottlingCollector) logFallback(err error, fault promFault, now time.Time) {
+	ok, held := c.logs.Allow("prometheus-fallback/"+fault.reason, now)
+	if !ok {
+		return
+	}
+	kv := []any{"reason", fault.reason, "error", err.Error()}
+	if held > 0 {
+		kv = append(kv, "cyclesSinceLastLog", held)
+	}
+	c.logger.Info("Prometheus is not being used for CPU throttling detection; reading metrics.k8s.io instead", kv...)
+}
+
 // noMetricsServer is the case where metrics.k8s.io is not an option at all.
 func (c *CPUThrottlingCollector) noMetricsServer(promErr error) ([]Signal, SourceStatus, error) {
-	c.counts = map[containerKey]int{}
+	c.counts = map[countKey]int{}
 	if promErr != nil {
-		return nil, prometheusDown(), fmt.Errorf("prometheus unreachable and metrics.k8s.io is not in use: %w", promErr)
+		return nil, classifyPromFault(promErr).downStatus(), fmt.Errorf("prometheus unusable and metrics.k8s.io is not in use: %w", promErr)
 	}
 	if c.metricsDisabled {
 		return nil, SourceStatus{Source: CPUThrottlingSourceNone, Reason: ReasonMetricsServerDisabled, Message: msgServerDisabled}, nil
@@ -376,17 +517,13 @@ func readFailed() SourceStatus {
 	return SourceStatus{Source: CPUThrottlingSourceNone, Reason: ReasonMetricsReadFailed, Message: msgReadFailed}
 }
 
-func prometheusDown() SourceStatus {
-	return SourceStatus{Source: CPUThrottlingSourceNone, Reason: ReasonPrometheusUnreachable, Message: msgPrometheusDown}
-}
-
 // usageSignals applies the default threshold: usage at or above 95% of the limit for
 // CPUUsageConsecutiveCycles cycles in a row. A container that dips, or is missing from a
 // cycle, starts again from zero.
 func (c *CPUThrottlingCollector) usageSignals(
 	ctx context.Context, items []metricsv1beta1.PodMetrics, pods podIndex, now time.Time,
 ) ([]Signal, error) {
-	next := map[containerKey]int{}
+	next := map[countKey]int{}
 	var signals []Signal
 	excluded := map[string]bool{}
 
@@ -414,8 +551,9 @@ func (c *CPUThrottlingCollector) usageSignals(
 				continue
 			}
 
-			cycles := c.counts[key] + 1
-			next[key] = cycles
+			ck := countKey{uid: pod.UID, containerKey: key}
+			cycles := c.counts[ck] + 1
+			next[ck] = cycles
 			if cycles < CPUUsageConsecutiveCycles {
 				continue
 			}
@@ -490,7 +628,7 @@ func (c *CPUThrottlingCollector) podIndex(ctx context.Context) (podIndex, error)
 
 // logStatus says what state detection is in without a line per cycle: an active
 // source is announced when it changes, and any other state at most once per
-// logRepeatInterval.
+// LogRepeatInterval.
 func (c *CPUThrottlingCollector) logStatus(status SourceStatus, err error, now time.Time) {
 	if status.Active {
 		if c.lastActive != status.Reason {
@@ -501,7 +639,7 @@ func (c *CPUThrottlingCollector) logStatus(status SourceStatus, err error, now t
 	}
 	c.lastActive = ""
 
-	ok, held := c.logs.allow(status.Reason, now)
+	ok, held := c.logs.Allow(status.Reason, now)
 	if !ok {
 		return
 	}
