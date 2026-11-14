@@ -52,13 +52,20 @@ func before(a, b *v1alpha1.RemediationProposal) bool {
 
 // earlierDuplicate returns the name of the earliest proposal in the same namespace
 // with the same proposer and idempotency key that arrived before prop, or "".
+//
+// Only a proposal that holds the key counts: one that is Received (undecided) or
+// Converted. A Rejected proposal released it, so the retry that an idempotency key
+// exists to make safe (after a rate limit, a missing incident or a gate refusal the
+// proposer has since fixed) is decided on its merits instead of refused as its own
+// duplicate until the Rejected proposal is pruned.
 func earlierDuplicate(prop *v1alpha1.RemediationProposal, all []v1alpha1.RemediationProposal) string {
 	var dups []*v1alpha1.RemediationProposal
 	for i := range all {
 		other := &all[i]
 		if same(other, prop) || other.Namespace != prop.Namespace ||
 			other.Spec.Proposer.Username != prop.Spec.Proposer.Username ||
-			other.Spec.IdempotencyKey != prop.Spec.IdempotencyKey {
+			other.Spec.IdempotencyKey != prop.Spec.IdempotencyKey ||
+			other.Status.Phase == v1alpha1.PhaseRejected {
 			continue
 		}
 		if before(other, prop) {

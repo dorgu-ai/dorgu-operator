@@ -680,6 +680,65 @@ func TestProcess_AResolvedIncidentCannotBeCited(t *testing.T) {
 	assert.Equal(t, v1alpha1.ReasonIncidentResolved, out.Rejection.Reason)
 }
 
+// F-6: a Rejected proposal releases its idempotency key, so the retry an
+// idempotency key exists to make safe is not refused as its own duplicate. Only a
+// proposal that is Received (undecided) or Converted holds the key.
+func TestIntakeChecks_ARejectedProposalReleasesItsIdempotencyKey(t *testing.T) {
+	t.Run("a retry after a gate refusal", func(t *testing.T) {
+		w := newWorld(t, Config{}, baseObjects()...)
+		refused := proposal("a-first", "alice", "retry-key")
+		refused.Spec.Steps = memoryRaise() // ImagePullBackOff is not a resource problem
+		w.create(t, refused)
+		first := w.process(t, "a-first", nil)
+		require.Equal(t, v1alpha1.PhaseRejected, first.Phase)
+		require.Equal(t, gate.StageValidate, first.Rejection.Stage)
+
+		w.create(t, proposal("b-retry", "alice", "retry-key"))
+		retry := w.process(t, "b-retry", nil)
+
+		assert.Equal(t, v1alpha1.PhaseConverted, retry.Phase, "the corrected retry is decided on its merits: %s", retry.Message)
+	})
+	t.Run("a retry after RateLimited", func(t *testing.T) {
+		w := newWorld(t, Config{RateLimit: 1, RateWindow: 10 * time.Second}, baseObjects()...)
+		w.create(t, proposal("old", "alice", "other"))
+		w.create(t, proposal("limited", "alice", "retry-key"))
+		w.create(t, proposal("retry", "alice", "retry-key"))
+		require.Equal(t, v1alpha1.ReasonRateLimited, reasonOf(w.process(t, "limited", nil)))
+
+		out := w.process(t, "retry", nil)
+
+		// Still inside the window, so still limited, but the key was not used up: the
+		// answer is the limit, not "duplicate of a proposal that never happened".
+		assert.Equal(t, v1alpha1.ReasonRateLimited, reasonOf(out))
+	})
+	t.Run("a retry after IncidentNotFound", func(t *testing.T) {
+		w := newWorld(t, Config{}, baseObjects()...)
+		gone := proposal("a-first", "alice", "retry-key")
+		gone.Spec.IncidentRef = &dorguv1.IncidentReference{Name: "not-yet", Namespace: testNS}
+		w.create(t, gone)
+		require.Equal(t, v1alpha1.ReasonIncidentNotFound, reasonOf(w.process(t, "a-first", nil)))
+
+		w.create(t, proposal("b-retry", "alice", "retry-key"))
+		assert.Equal(t, v1alpha1.PhaseConverted, w.process(t, "b-retry", nil).Phase)
+	})
+	t.Run("a Converted proposal still holds its key", func(t *testing.T) {
+		w := newWorld(t, Config{}, baseObjects()...)
+		w.create(t, proposal("a-first", "alice", "same"))
+		require.Equal(t, v1alpha1.PhaseConverted, w.process(t, "a-first", nil).Phase)
+		w.create(t, proposal("b-second", "alice", "same"))
+		assert.Equal(t, v1alpha1.ReasonDuplicate, reasonOf(w.process(t, "b-second", nil)))
+	})
+	t.Run("a Received proposal still holds its key", func(t *testing.T) {
+		w := newWorld(t, Config{}, baseObjects()...)
+		w.create(t, proposal("a-first", "alice", "same"))
+		w.create(t, proposal("b-second", "alice", "same"))
+		first := w.get(t, "a-first")
+		first.Status.Phase = v1alpha1.PhaseReceived
+		require.NoError(t, w.c.Status().Update(context.Background(), first))
+		assert.Equal(t, v1alpha1.ReasonDuplicate, reasonOf(w.process(t, "b-second", nil)))
+	})
+}
+
 func reasonOf(out *Outcome) string {
 	if out == nil || out.Rejection == nil {
 		return ""
