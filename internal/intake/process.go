@@ -76,7 +76,11 @@ func (p *Processor) Claimed(key client.ObjectKey) bool {
 //
 // An error means nothing final was decided and the caller should retry.
 func (p *Processor) Process(ctx context.Context, key client.ObjectKey, hint *Hint) (*Outcome, error) {
-	defer p.lockProposal(key)()
+	unlockProposal, err := p.lockProposal(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	defer unlockProposal()
 
 	var prop v1alpha1.RemediationProposal
 	if err := p.reader.Get(ctx, key, &prop); err != nil {
@@ -102,8 +106,10 @@ func (p *Processor) Process(ctx context.Context, key client.ObjectKey, hint *Hin
 	}
 
 	// The planner holds the persona lock for the whole of its proposal, including
-	// this call. Anyone else takes it below, so two proposals for one persona never
-	// race through the gate.
+	// this call, and says so. Whether the hint describes this proposal decides what
+	// is believed; it never decides whether the lock is taken, or a mismatched hint
+	// would wait forever on the lock its own caller holds.
+	callerLocked := hint != nil && hint.PersonaLocked
 	if !hintMatches(hint, &prop) {
 		hint = nil
 	}
@@ -120,9 +126,15 @@ func (p *Processor) Process(ctx context.Context, key client.ObjectKey, hint *Hin
 		}
 	}
 
-	if hint == nil {
+	if !callerLocked {
+		// Anyone else takes the lock here, so two proposals for one persona never
+		// race through the gate.
 		persona := personaRefOf(&prop)
-		defer p.locks.Lock(&persona)()
+		unlock, err := p.locks.Acquire(ctx, &persona, "", p.lockTimeout)
+		if err != nil {
+			return nil, fmt.Errorf("waiting for the lock on persona %s/%s: %w", persona.Namespace, persona.Name, err)
+		}
+		defer unlock()
 	}
 	return p.convert(ctx, &prop, incident, hint)
 }
@@ -145,11 +157,12 @@ func replayed(prop *v1alpha1.RemediationProposal) *Outcome {
 	return out
 }
 
-func (p *Processor) lockProposal(key client.ObjectKey) func() {
-	mu, _ := p.perProposal.LoadOrStore(key, newMutex())
-	m := mu.(*mutex)
-	m.Lock()
-	return m.Unlock
+func (p *Processor) lockProposal(ctx context.Context, key client.ObjectKey) (func(), error) {
+	unlock, err := p.perProposal.acquire(ctx, key.String(), p.lockTimeout)
+	if err != nil {
+		return nil, fmt.Errorf("waiting for proposal %s: %w", key, err)
+	}
+	return unlock, nil
 }
 
 // intakeChecks runs the checks that need nothing but the proposal and the other

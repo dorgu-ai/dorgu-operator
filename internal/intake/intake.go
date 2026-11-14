@@ -53,6 +53,10 @@ const (
 
 	// DefaultRejectedTTL is how long a Rejected proposal is kept before it is pruned.
 	DefaultRejectedTTL = 7 * 24 * time.Hour
+
+	// DefaultLockTimeout is the longest Process waits for a persona or proposal
+	// lock. It is longer than any planning call, which holds the persona lock.
+	DefaultLockTimeout = 10 * time.Minute
 )
 
 // DefaultOperatorUsername is the username used for the operator when it cannot
@@ -88,6 +92,10 @@ type Config struct {
 	RateWindow  time.Duration
 	RejectedTTL time.Duration
 
+	// LockTimeout bounds how long Process waits for a proposal or persona lock
+	// before it gives up with ErrLockTimeout. Defaults to DefaultLockTimeout.
+	LockTimeout time.Duration
+
 	// Now is the clock; defaults to time.Now.
 	Now func() time.Time
 
@@ -106,11 +114,12 @@ type Processor struct {
 	rateLimit   int
 	rateWindow  time.Duration
 	rejectedTTL time.Duration
+	lockTimeout time.Duration
 	now         func() time.Time
 	log         logr.Logger
 
 	// perProposal serialises Process for one proposal.
-	perProposal sync.Map // client.ObjectKey -> *sync.Mutex
+	perProposal *keyedLocks
 
 	// claimed holds the proposals the planner is converting itself, in-process.
 	claimed sync.Map // client.ObjectKey -> struct{}
@@ -128,6 +137,8 @@ func New(cfg Config) *Processor {
 		rateLimit:   cfg.RateLimit,
 		rateWindow:  cfg.RateWindow,
 		rejectedTTL: cfg.RejectedTTL,
+		lockTimeout: cfg.LockTimeout,
+		perProposal: newKeyedLocks(),
 		now:         cfg.Now,
 		log:         cfg.Logger.WithName("intake"),
 	}
@@ -148,6 +159,9 @@ func New(cfg Config) *Processor {
 	}
 	if p.rejectedTTL <= 0 {
 		p.rejectedTTL = DefaultRejectedTTL
+	}
+	if p.lockTimeout <= 0 {
+		p.lockTimeout = DefaultLockTimeout
 	}
 	if p.now == nil {
 		p.now = time.Now
@@ -180,6 +194,12 @@ type Hint struct {
 
 	// Facts are the diagnosis-derived inputs the planner gave the gate.
 	Facts gate.Facts
+
+	// PersonaLocked says the caller holds the lock for the proposal's persona (the
+	// planner does, for its whole proposal). The intake then does not take it, so
+	// it can never wait on a lock its own caller holds. It is a statement about the
+	// caller, not about the hint: it applies even when the hint does not match.
+	PersonaLocked bool
 
 	// Decision is the planner's last gate decision over the draft. When the intake's
 	// own run agrees (a plain Pass), it is what status.gate records, because it is

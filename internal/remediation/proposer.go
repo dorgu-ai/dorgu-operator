@@ -111,9 +111,11 @@ type Proposer struct {
 	intake *intake.Processor
 }
 
-// lockPersona serialises proposals for one persona and returns the unlock.
-func (p *Proposer) lockPersona(ref *dorguv1.PersonaReference) func() {
-	return p.intake.Locks().Lock(ref)
+// lockPersona serialises proposals for one persona and returns the unlock. The
+// namespace an empty reference means is the one the proposal will be written for,
+// so this lock and the intake's are always the same lock.
+func (p *Proposer) lockPersona(ctx context.Context, ref *dorguv1.PersonaReference) (func(), error) {
+	return p.intake.Locks().Acquire(ctx, ref, defaultNamespace, 0)
 }
 
 // ProposerOption configures an optional Proposer dependency.
@@ -236,7 +238,11 @@ func (p *Proposer) Propose(ctx context.Context, diag diagnosis.Diagnosis, incide
 	if diag.PersonaRef == nil {
 		return proposerSkip("diagnosis has no persona reference", SkipNoPersonaRef, nil), nil
 	}
-	defer p.lockPersona(diag.PersonaRef)()
+	unlock, err := p.lockPersona(ctx, diag.PersonaRef)
+	if err != nil {
+		return nil, fmt.Errorf("waiting to propose for persona %s: %w", diag.PersonaRef.Name, err)
+	}
+	defer unlock()
 
 	// Preflight, before planning. Observe mode, a protected namespace, a rate or
 	// concurrency limit, a duplicate and a recent rejection all end here, so none
@@ -463,7 +469,7 @@ func (p *Proposer) persist(
 		return nil, fmt.Errorf("%w: creating RemediationProposal: %w", errPersistFailed, err)
 	}
 
-	out, err := p.intake.Process(ctx, key, &intake.Hint{Draft: action, Facts: facts, Decision: dec})
+	out, err := p.intake.Process(ctx, key, &intake.Hint{Draft: action, Facts: facts, Decision: dec, PersonaLocked: true})
 	if err == nil && out == nil {
 		err = errors.New("the proposal disappeared before it was decided")
 	}

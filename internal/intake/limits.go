@@ -20,16 +20,10 @@ import (
 	"context"
 	"fmt"
 	"sort"
-	"sync"
 	"time"
 
 	"github.com/dorgu-ai/dorgu-operator/api/v1alpha1"
 )
-
-// mutex is a sync.Mutex; the alias keeps the lock map's value type in one place.
-type mutex struct{ sync.Mutex }
-
-func newMutex() *mutex { return &mutex{} }
 
 // listProposals reads every proposal in the cluster. The rate limit counts across
 // namespaces, because one proposer is one identity wherever it writes.
