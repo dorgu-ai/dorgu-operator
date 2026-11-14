@@ -382,6 +382,41 @@ func TestL4_AGateRefusalAtApprovalStartsNoCooldown(t *testing.T) {
 	assert.Equal(t, "pass", verdictKind(d, GuardrailFailedCooldown))
 }
 
+// F-2: every Failed that was refused before anything touched the cluster leaves the
+// persona free to be proposed for again. A spec edit after the ticket (SpecChanged)
+// is one of them: nothing was applied.
+func TestF2_FailuresRefusedBeforeApplyStartNoCooldown(t *testing.T) {
+	for _, reason := range []string{
+		dorguv1.ReasonPreconditionRejected,
+		dorguv1.ReasonGateRefusedAtApproval,
+		dorguv1.ReasonSpecChanged,
+	} {
+		t.Run(reason, func(t *testing.T) {
+			refused := sibling("refused", "Failed", func(ra *dorguv1.RemediationAction) {
+				ra.Status.Conditions = []metav1.Condition{{
+					Type: "Applied", Status: metav1.ConditionFalse, Reason: reason,
+				}}
+			})
+			g := standardGate(t, refused)
+			d := run(t, g, planCandidate(personaUpdateStep(memPatch("300Mi"))), PhaseProposal)
+			assert.Equal(t, "pass", verdictKind(d, GuardrailFailedCooldown), "%s starts the failed-remediation cooldown", reason)
+		})
+	}
+}
+
+func TestF2_AFailureAfterApplyStillStartsTheCooldown(t *testing.T) {
+	applied := sibling("applied-then-failed", "Failed", func(ra *dorguv1.RemediationAction) {
+		at := metav1.NewTime(fixedNow.Add(-time.Minute))
+		ra.Status.AppliedAt = &at
+		ra.Status.Conditions = []metav1.Condition{{
+			Type: "Applied", Status: metav1.ConditionFalse, Reason: dorguv1.ReasonSpecChanged,
+		}}
+	})
+	g := standardGate(t, applied)
+	d := run(t, g, planCandidate(personaUpdateStep(memPatch("300Mi"))), PhaseProposal)
+	assert.Equal(t, "refuse", verdictKind(d, GuardrailFailedCooldown))
+}
+
 // --- R11: dedup, concurrency and the rate limit read the API server, not the cache -
 
 func TestR11_SiblingReadsUseTheUncachedReader(t *testing.T) {

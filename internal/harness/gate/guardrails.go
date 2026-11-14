@@ -326,8 +326,11 @@ func rejectedBeforeApply(action *dorguv1.RemediationAction) bool {
 		return false
 	}
 	for _, c := range action.Status.Conditions {
-		if c.Type == conditionApplied &&
-			(c.Reason == dorguv1.ReasonPreconditionRejected || c.Reason == dorguv1.ReasonGateRefusedAtApproval) {
+		if c.Type != conditionApplied {
+			continue
+		}
+		switch c.Reason {
+		case dorguv1.ReasonPreconditionRejected, dorguv1.ReasonGateRefusedAtApproval, dorguv1.ReasonSpecChanged:
 			return true
 		}
 	}
