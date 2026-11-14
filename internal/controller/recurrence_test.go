@@ -30,6 +30,7 @@ import (
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
+	dorguv1alpha1 "github.com/dorgu-ai/dorgu-operator/api/v1alpha1"
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
 	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation"
@@ -238,7 +239,7 @@ func TestRecurrence_StaleCacheDoesNotFoldIntoAResolvedIncident(t *testing.T) {
 	// misses it, the create of the base name hits AlreadyExists, and the adopt path
 	// used to fold into the Resolved object. It must open a new generation instead.
 	base := fake.NewClientBuilder().WithScheme(noiseScheme(t)).WithObjects(recurrencePersonaObject()).
-		WithStatusSubresource(&dorguv1.IncidentMemory{}, &dorguv1.RemediationAction{}).Build()
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.IncidentMemory{}, &dorguv1.RemediationAction{}).Build()
 	hideResolved := false
 	c := interceptor.NewClient(base, interceptor.Funcs{
 		List: func(ctx context.Context, inner client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {

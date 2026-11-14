@@ -126,6 +126,11 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
+            {{- /* Dorgu's own planner proposes as this ServiceAccount (P2-D3). */}}
+            - name: OPERATOR_SERVICE_ACCOUNT
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.serviceAccountName
           {{- if and .Values.llm.provider $secretName }}
             - name: {{ include "dorgu-operator.llmKeyEnv" . }}
               valueFrom:

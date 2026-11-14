@@ -29,8 +29,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
+	dorguv1alpha1 "github.com/dorgu-ai/dorgu-operator/api/v1alpha1"
 	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
 	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
+	"github.com/dorgu-ai/dorgu-operator/internal/intake"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation/planner"
 )
 
@@ -48,6 +50,9 @@ func buildForTest(t *testing.T, cfg operatorConfig, operatorNS string) healthPip
 	t.Helper()
 	scheme := runtime.NewScheme()
 	if err := dorguv1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := dorguv1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
 	if err := appsv1.AddToScheme(scheme); err != nil {
@@ -299,5 +304,33 @@ func TestNewPodCollector_SharesTheGatesDenyList(t *testing.T) {
 	}
 	if len(signals) != 1 || signals[0].Resource.Namespace != "shop" {
 		t.Fatalf("only the OOM in shop may be detected, got %d signals: %+v", len(signals), signals)
+	}
+}
+
+// There is one intake. The proposer writes Dorgu's own proposals through it and the
+// proposal reconciler decides everyone else's through the same one, so both take the
+// same persona locks and count against the same rate limit (C1).
+func TestBuildHealthPipeline_OneIntakeForTheProposerAndTheProposalReconciler(t *testing.T) {
+	p := buildForTest(t, operatorConfig{}, testOperatorNS)
+
+	if p.Intake == nil {
+		t.Fatal("the pipeline builds no intake")
+	}
+	if p.Proposer.Intake() != p.Intake {
+		t.Fatal("the proposer decides its proposals through a different intake than the reconciler's")
+	}
+}
+
+func TestBuildHealthPipeline_PlannerProposesAsTheOperatorServiceAccount(t *testing.T) {
+	t.Setenv(intake.ServiceAccountEnv, "dorgu-operator")
+	p := buildForTest(t, operatorConfig{}, testOperatorNS)
+	if got, want := p.Intake.OperatorUsername(), "system:serviceaccount:dorgu-system:dorgu-operator"; got != want {
+		t.Fatalf("planner username = %q, want %q", got, want)
+	}
+
+	t.Setenv(intake.ServiceAccountEnv, "")
+	p = buildForTest(t, operatorConfig{}, testOperatorNS)
+	if got := p.Intake.OperatorUsername(); got != intake.DefaultOperatorUsername {
+		t.Fatalf("with no service account known the username is %q, want the default %q", got, intake.DefaultOperatorUsername)
 	}
 }
