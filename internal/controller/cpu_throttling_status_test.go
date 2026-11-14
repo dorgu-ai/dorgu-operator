@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -214,4 +215,42 @@ func TestCPUThrottlingStatusSink_FollowsARecreatedClusterPersona(t *testing.T) {
 	sink.ReportCPUThrottlingSource(context.Background(), st)
 	assert.NotNil(t, getClusterPersona(t, base).Status.CPUThrottlingDetection,
 		"the sink reads the object, not its own memory of what it wrote")
+}
+
+// F-12: Helm does not upgrade crds/, so on an old CRD the API server prunes
+// status.cpuThrottlingDetection. That used to be a silent no-op plus a status write per
+// ClusterPersona per cycle forever. It is now one visible ERROR naming the fix, and the
+// condition (which an old CRD does keep) is all that is compared from then on.
+func TestCPUThrottlingStatusSink_OldCRDIsVisibleAndNotRewrittenEveryCycle(t *testing.T) {
+	updates := 0
+	base := noiseWatchClient(t, clusterPersonaNamed("dorgu", ""))
+	c := interceptor.NewClient(base, interceptor.Funcs{
+		SubResourceUpdate: func(ctx context.Context, cl client.Client, sub string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+			if cp, ok := obj.(*dorguv1.ClusterPersona); ok {
+				updates++
+				cp.Status.CPUThrottlingDetection = nil // what an old CRD's pruning does
+			}
+			return cl.SubResource(sub).Update(ctx, obj, opts...)
+		},
+	})
+	logger, sink := newRecordingLogger()
+	s := NewCPUThrottlingStatusSink(c, logger)
+	status := detection.SourceStatus{Active: true, Source: detection.CPUThrottlingSourceMetricsServer,
+		Reason: detection.ReasonMetricsServerActive, Message: "reads metrics.k8s.io"}
+
+	for range 5 {
+		s.ReportCPUThrottlingSource(context.Background(), status)
+	}
+
+	assert.Equal(t, 1, updates, "one write, not one per cycle")
+	crdLines := 0
+	for _, m := range sink.messages() {
+		if strings.HasPrefix(m, "ERROR ") && strings.Contains(m, "CustomResourceDefinition") {
+			crdLines++
+		}
+	}
+	assert.Equal(t, 1, crdLines, "and one visible line that says to apply the CRDs: %v", sink.messages())
+	cp := getClusterPersona(t, c)
+	assert.NotNil(t, apimeta.FindStatusCondition(cp.Status.Conditions, ConditionCPUThrottlingDetection),
+		"the condition survives an old CRD, so kubectl still shows the state")
 }

@@ -18,10 +18,12 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -56,6 +58,12 @@ type CPUThrottlingStatusSink struct {
 	mu      sync.Mutex
 	lastLog time.Time
 	held    int
+
+	// fieldPruned is set when a write came back without status.cpuThrottlingDetection:
+	// the installed CRD predates it (Helm does not upgrade crds/) and the API server
+	// drops the field. From then on only the condition, which an old CRD keeps, is
+	// compared, so the state is one write and not one per ClusterPersona per cycle.
+	fieldPruned atomic.Bool
 }
 
 // NewCPUThrottlingStatusSink builds the sink over a client that can list and update
@@ -75,7 +83,7 @@ func (s *CPUThrottlingStatusSink) ReportCPUThrottlingSource(ctx context.Context,
 	}
 	for i := range list.Items {
 		name := list.Items[i].Name
-		if !cpuStatusDiffers(&list.Items[i], status) {
+		if !cpuStatusDiffers(&list.Items[i], status, s.fieldPruned.Load()) {
 			continue
 		}
 		err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
@@ -83,11 +91,22 @@ func (s *CPUThrottlingStatusSink) ReportCPUThrottlingSource(ctx context.Context,
 			if err := s.client.Get(ctx, client.ObjectKey{Name: name}, &fresh); err != nil {
 				return err
 			}
-			if !cpuStatusDiffers(&fresh, status) {
+			if !cpuStatusDiffers(&fresh, status, s.fieldPruned.Load()) {
 				return nil
 			}
 			applyCPUStatus(&fresh, status)
-			return s.client.Status().Update(ctx, &fresh)
+			if err := s.client.Status().Update(ctx, &fresh); err != nil {
+				return err
+			}
+			// Update fills fresh from the API server's answer. A field that was set and
+			// is not there was pruned.
+			if fresh.Status.CPUThrottlingDetection == nil && !s.fieldPruned.Swap(true) {
+				s.logger.Error(errOldCRD, "the ClusterPersona CustomResourceDefinition in this cluster has no status.cpuThrottlingDetection, "+
+					"so `dorgu health` cannot show the CPU throttling detection state (and spec.metrics.prometheus.url is ignored). "+
+					"Helm does not upgrade crds/: apply the CRDs from this release with kubectl apply -f charts/dorgu-operator/crds",
+					"clusterPersona", name)
+			}
+			return nil
 		})
 		if err != nil {
 			s.logFailure(err, "could not write the CPU throttling detection state to the ClusterPersona", "clusterPersona", name)
@@ -112,11 +131,14 @@ func conditionStatusFor(status detection.SourceStatus) metav1.ConditionStatus {
 	return metav1.ConditionFalse
 }
 
+// errOldCRD is the cause logged when the API server prunes the status field.
+var errOldCRD = errors.New("status.cpuThrottlingDetection was dropped by the API server")
+
 // cpuStatusDiffers reports whether the persona's field or condition is not what the
-// status says it should be.
-func cpuStatusDiffers(cp *dorguv1.ClusterPersona, status detection.SourceStatus) bool {
+// status says it should be. ignoreField skips the field, for a CRD that cannot hold it.
+func cpuStatusDiffers(cp *dorguv1.ClusterPersona, status detection.SourceStatus, ignoreField bool) bool {
 	have := cp.Status.CPUThrottlingDetection
-	if have == nil || *have != *desiredCPUStatus(status) {
+	if !ignoreField && (have == nil || *have != *desiredCPUStatus(status)) {
 		return true
 	}
 	cond := apimeta.FindStatusCondition(cp.Status.Conditions, ConditionCPUThrottlingDetection)
