@@ -364,7 +364,9 @@ type CPUThrottlingDetectionStatus struct {
 	Source string `json:"source"`
 
 	// reason is a CamelCase token: MetricsServerActive, PrometheusActive,
-	// PrometheusUnreachable (fell back to metrics.k8s.io), NoMetricsSource,
+	// PrometheusUnreachable, PrometheusNoData (the endpoint answered with no series for
+	// any container in the cluster) or PrometheusURLInvalid (each of the three fell back
+	// to metrics.k8s.io when it is served, and is off when it is not), NoMetricsSource,
 	// MetricsServerDisabled, MetricsSourceLost or MetricsReadFailed.
 	// +kubebuilder:validation:MaxLength=64
 	Reason string `json:"reason"`
