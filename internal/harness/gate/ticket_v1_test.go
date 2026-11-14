@@ -288,10 +288,10 @@ func TestF3_AnApproverTheTicketCannotCarryIsRefused(t *testing.T) {
 		"a control character":      "alice\x1b[2K@example.com",
 		"a newline":                "alice\nbob",
 		"NUL":                      "alice\x00",
-		"a right-to-left override": "alice‮@example.com",
-		"a line separator":         "alice bob",
+		"a right-to-left override": "alice\u202e@example.com",
+		"a line separator":         "alice\u2028bob",
 		"invalid UTF-8":            "alice\xff",
-		"a replacement character":  "alice�",
+		"a replacement character":  "alice\ufffd",
 	}
 	for name, approvedBy := range cases {
 		t.Run(name, func(t *testing.T) {

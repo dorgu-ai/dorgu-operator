@@ -33,6 +33,16 @@ import (
 // ceilingSourceStages are the stages whose verdicts say where their limit came from
 // (P2-D13): the Guardrails stage, and the DedupCooldown verdicts for the same
 // concurrency and cooldown rules, which are recorded from both stages.
+// verdictConstructorsFile is where Decision.add and its three callers are defined.
+const verdictConstructorsFile = "types.go"
+
+// The Decision methods that record a verdict.
+const (
+	methodPass   = "pass"
+	methodClamp  = "clamp"
+	methodRefuse = "refuse"
+)
+
 var ceilingSourceStages = []string{StageGuardrails, StageDedupCooldown}
 
 // F-4: the rule "every verdict of these stages has a ceilingSource" is enforced on
@@ -77,10 +87,10 @@ func TestCeilingSource_EveryVerdictConstructorOfTheStagesSetsASource(t *testing.
 			where := fmt.Sprintf("%s:%d", name, fset.Position(call.Pos()).Line)
 			switch sel.Sel.Name {
 			case "add":
-				if name != "types.go" {
+				if name != verdictConstructorsFile {
 					bypass = append(bypass, where)
 				}
-			case "pass", "clamp", "refuse":
+			case methodPass, methodClamp, methodRefuse:
 				if len(call.Args) < 2 {
 					return true
 				}

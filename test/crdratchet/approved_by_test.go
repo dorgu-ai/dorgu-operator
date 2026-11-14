@@ -60,7 +60,8 @@ func TestSpecHash_TheTypedSpecAndTheServedSpecHashAlike(t *testing.T) {
 	ra := remediation("hash-served", "kubectl get pods")
 	ra.Spec.Steps = append(ra.Spec.Steps, dorguv1.RemediationStep{
 		Order: 2, ID: "s2", Type: dorguv1.StepTypePersonaUpdate, AutoExecutable: true, Description: "raise memory",
-		Patch: &apiextensionsv1.JSON{Raw: []byte(`{"spec":{"resources":{"limits":{"memory":"512Mi","weight":1.0,"big":12345678901234567890}}}}`)},
+		Patch: &apiextensionsv1.JSON{Raw: []byte(
+			`{"spec":{"resources":{"limits":{"memory":"512Mi","weight":1.0,"big":12345678901234567890}}}}`)},
 	})
 	ra.Spec.Approval = &dorguv1.ApprovalSpec{Required: true}
 	ra.Spec.Rollback = &dorguv1.RemediationRollbackSpec{Enabled: true}
@@ -79,7 +80,8 @@ func TestSpecHash_TheTypedSpecAndTheServedSpecHashAlike(t *testing.T) {
 	servedHash, err := dorguv1.SpecHashFromMap(spec)
 	require.NoError(t, err)
 
-	assert.Equal(t, servedHash, typedHash, "the operator and a client reading the served spec must compute the same specHash")
+	assert.Equal(t, servedHash, typedHash,
+		"the operator and a client reading the served spec must compute the same specHash")
 	// What the author wrote differs from what is stored (1.0 is 1, the big integer
 	// is a double), and the canonical form does not care.
 	authoredJSON, err := json.Marshal(ra.Spec)
