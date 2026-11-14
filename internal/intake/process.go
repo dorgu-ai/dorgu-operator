@@ -101,17 +101,18 @@ func (p *Processor) Process(ctx context.Context, key client.ObjectKey, hint *Hin
 		}
 	}
 
-	if out, err := p.intakeChecks(ctx, &prop); out != nil || err != nil {
-		return out, err
-	}
-
 	// The planner holds the persona lock for the whole of its proposal, including
 	// this call, and says so. Whether the hint describes this proposal decides what
 	// is believed; it never decides whether the lock is taken, or a mismatched hint
 	// would wait forever on the lock its own caller holds.
 	callerLocked := hint != nil && hint.PersonaLocked
-	if !hintMatches(hint, &prop, p.username) {
+	plannerRun := hintMatches(hint, &prop, p.username)
+	if !plannerRun {
 		hint = nil
+	}
+
+	if out, err := p.intakeChecks(ctx, &prop, plannerRun); out != nil || err != nil {
+		return out, err
 	}
 
 	var incident *dorguv1.IncidentMemory
@@ -168,7 +169,15 @@ func (p *Processor) lockProposal(ctx context.Context, key client.ObjectKey) (fun
 // intakeChecks runs the checks that need nothing but the proposal and the other
 // proposals: a field not yet supported, a namespace that is not the target's,
 // a duplicate idempotency key, and the proposer's rate limit.
-func (p *Processor) intakeChecks(ctx context.Context, prop *v1alpha1.RemediationProposal) (*Outcome, error) {
+//
+// plannerRun is true only for a proposal decided with a matched in-process hint
+// (hintMatches): proof that Dorgu's own planner wrote it, in this process. Only
+// that is exempt from the per-proposer rate limit. proposer.username is a claim
+// until the admission policy verifies it, so the username never exempts anyone.
+// The gate's per-persona limits are not the intake's and still apply.
+func (p *Processor) intakeChecks(
+	ctx context.Context, prop *v1alpha1.RemediationProposal, plannerRun bool,
+) (*Outcome, error) {
 	if prop.Spec.RollbackOf != nil {
 		return p.reject(ctx, prop, nil, v1alpha1.StageIntake, v1alpha1.ReasonNotYetSupported, nil,
 			"rollbackOf is reserved and not supported yet: a ticketed rollback is not available in this version")
@@ -185,6 +194,9 @@ func (p *Processor) intakeChecks(ctx context.Context, prop *v1alpha1.Remediation
 	if original := earlierDuplicate(prop, all); original != "" {
 		return p.reject(ctx, prop, nil, v1alpha1.StageIntake, v1alpha1.ReasonDuplicate, nil,
 			fmt.Sprintf("proposal %q from the same proposer already used idempotencyKey %q", original, prop.Spec.IdempotencyKey))
+	}
+	if plannerRun {
+		return nil, nil
 	}
 	if n := countRecentBefore(prop, all, p.rateWindow); n >= p.rateLimit {
 		return p.reject(ctx, prop, nil, v1alpha1.StageIntake, v1alpha1.ReasonRateLimited, nil,

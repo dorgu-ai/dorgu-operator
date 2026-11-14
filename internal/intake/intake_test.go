@@ -524,6 +524,62 @@ func TestIntakeChecks(t *testing.T) {
 	})
 }
 
+// F-2: only a matched in-process hint exempts a proposal from the rate limit. A
+// proposer that names the operator's username is a claim, not a proof.
+func TestIntakeChecks_OnlyAMatchedHintIsExemptFromTheRateLimit(t *testing.T) {
+	newLimited := func(t *testing.T) *world {
+		w := newWorld(t, Config{OperatorUsername: testOperator, RateLimit: 1}, baseObjects()...)
+		w.create(t, plannerProposal("earlier"))
+		return w
+	}
+
+	t.Run("the planner's matched hint is exempt at limit+1", func(t *testing.T) {
+		w := newLimited(t)
+		w.create(t, plannerProposal("planner-next"))
+		prop := w.get(t, "planner-next")
+		ref := personaRefOf(prop)
+		defer w.p.Locks().Lock(&ref)()
+		out := w.process(t, "planner-next", plannerHint(prop))
+		assert.Equal(t, v1alpha1.PhaseConverted, out.Phase, out.Message)
+	})
+	t.Run("a proposer naming the operator username, with no hint, is limited", func(t *testing.T) {
+		w := newLimited(t)
+		w.create(t, plannerProposal("impostor"))
+		out := w.process(t, "impostor", nil)
+		assert.Equal(t, v1alpha1.ReasonRateLimited, reasonOf(out))
+	})
+	t.Run("a hint for another UID does not exempt", func(t *testing.T) {
+		w := newLimited(t)
+		w.create(t, plannerProposal("replaced"))
+		prop := w.get(t, "replaced")
+		hint := plannerHint(prop)
+		hint.ProposalUID = "uid-of-a-deleted-proposal"
+		ref := personaRefOf(prop)
+		defer w.p.Locks().Lock(&ref)()
+		out := w.process(t, "replaced", hint)
+		assert.Equal(t, v1alpha1.ReasonRateLimited, reasonOf(out))
+	})
+	t.Run("a hint against a proposal from someone else does not exempt", func(t *testing.T) {
+		w := newLimited(t)
+		other := plannerProposal("mallory-prop")
+		other.Spec.Proposer.Username = "mallory"
+		w.create(t, other)
+		w.create(t, plannerProposal("mallory-prop-2"))
+		w.create(t, func() *v1alpha1.RemediationProposal {
+			p := plannerProposal("mallory-3")
+			p.Spec.Proposer.Username = "mallory"
+			return p
+		}())
+		w.process(t, "mallory-prop", nil)
+		prop := w.get(t, "mallory-3")
+		hint := plannerHint(prop)
+		ref := personaRefOf(prop)
+		defer w.p.Locks().Lock(&ref)()
+		out := w.process(t, "mallory-3", hint)
+		assert.Equal(t, v1alpha1.ReasonRateLimited, reasonOf(out))
+	})
+}
+
 func reasonOf(out *Outcome) string {
 	if out == nil || out.Rejection == nil {
 		return ""

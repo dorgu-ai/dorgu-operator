@@ -140,33 +140,41 @@ func TestPropose_TheActionIsWhatThePlannerShaped(t *testing.T) {
 	assert.Equal(t, dorguv1.ActionTypeNotification, ra.Spec.Action.Type)
 }
 
-// The intake's rate limit also holds for Dorgu's own planner, and a refusal at
-// Intake reports its own stage and reason (P2-D12).
-func TestPropose_IntakeRateLimitRefusesThePlannersNextProposal(t *testing.T) {
-	p, c := proposerWorld(t, func(cfg *intake.Config) { cfg.RateLimit = 1 }, "app-a", "app-b")
+// The per-proposer intake limit is for proposers Dorgu cannot vouch for. Dorgu's own
+// planner, recognised by the in-process hint bound to its proposal's UID and never
+// by a username, is exempt, so a rate-limited planner proposal cannot happen (C1
+// review F-2). Its own per-persona limits are the gate's and still apply.
+func TestPropose_ThePlannerIsExemptFromTheIntakeRateLimit(t *testing.T) {
+	personas := []string{"app-a", "app-b", "app-c", "app-d", "app-e"}
+	p, c := proposerWorld(t, func(cfg *intake.Config) { cfg.RateLimit = 1 }, personas...)
 
-	first, err := p.Propose(context.Background(),
-		newOOMDiagnosis(defaultNamespace, "app-a", detection.SeverityCritical),
-		newTestIncident(defaultNamespace, "oom-a", "app-a", "OOMKilled"))
+	for _, name := range personas {
+		result, err := p.Propose(context.Background(),
+			newOOMDiagnosis(defaultNamespace, name, detection.SeverityCritical),
+			newTestIncident(defaultNamespace, "oom-"+name, name, "OOMKilled"))
+		require.NoError(t, err)
+		require.True(t, result.Proposed, "%s: %s/%s %s", name, result.Stage, result.Reason, result.SkipReason)
+	}
+
+	require.Len(t, proposals(t, c), len(personas))
+	for _, prop := range proposals(t, c) {
+		assert.Equal(t, dorguv1alpha1.PhaseConverted, prop.Status.Phase, "no planner proposal is Rejected for rate: %s", prop.Name)
+	}
+}
+
+func TestPropose_TheGatesPerPersonaLimitStillRefusesThePlanner(t *testing.T) {
+	p, c := proposerWorld(t, func(cfg *intake.Config) { cfg.RateLimit = 1 }, "app-a")
+	diag := newOOMDiagnosis(defaultNamespace, "app-a", detection.SeverityCritical)
+
+	first, err := p.Propose(context.Background(), diag, newTestIncident(defaultNamespace, "oom-a1", "app-a", "OOMKilled"))
 	require.NoError(t, err)
 	require.True(t, first.Proposed, first.SkipReason)
 
-	second, err := p.Propose(context.Background(),
-		newOOMDiagnosis(defaultNamespace, "app-b", detection.SeverityCritical),
-		newTestIncident(defaultNamespace, "oom-b", "app-b", "OOMKilled"))
+	second, err := p.Propose(context.Background(), diag, newTestIncident(defaultNamespace, "oom-a2", "app-a", "OOMKilled"))
 	require.NoError(t, err)
 	assert.False(t, second.Proposed)
-	assert.Equal(t, dorguv1alpha1.StageIntake, second.Stage)
-	assert.Equal(t, dorguv1alpha1.ReasonRateLimited, second.Reason)
-
-	var rejected int
-	for _, prop := range proposals(t, c) {
-		if prop.Status.Phase == dorguv1alpha1.PhaseRejected {
-			rejected++
-			assert.Equal(t, dorguv1alpha1.ReasonRateLimited, prop.Status.Rejection.Reason)
-		}
-	}
-	assert.Equal(t, 1, rejected, "the refusal is recorded on the proposal, where an agent would read it")
+	assert.NotEqual(t, dorguv1alpha1.StageIntake, second.Stage, "refused by the gate for the persona, not by the intake for the proposer")
+	assert.Len(t, proposals(t, c), 1, "a gate refusal in the preflight writes no proposal")
 }
 
 // A plan that cannot be recorded is not proposed, and no proposal is left behind to
