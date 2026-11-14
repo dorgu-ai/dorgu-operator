@@ -1029,7 +1029,8 @@ func (r *RemediationController) transitionToFailed(ctx context.Context, action *
 // transitionToFailedWithReason sets the action to Failed with an explicit
 // condition reason. The reason is load-bearing: the safety checker reads it to
 // tell a rejected-before-apply action (no cluster change, no cooldown) from a
-// remediation that actually went wrong.
+// remediation that actually went wrong, and the incident outcome follows the same
+// line: only a remediation that actually went wrong is booked as failed.
 func (r *RemediationController) transitionToFailedWithReason(
 	ctx context.Context,
 	action *dorguv1.RemediationAction,
@@ -1041,6 +1042,17 @@ func (r *RemediationController) transitionToFailedWithReason(
 
 	if err := r.Status().Update(ctx, action); err != nil {
 		return fmt.Errorf("updating status to Failed: %w", err)
+	}
+
+	// A refusal before anything was applied (the gate at approval, a ticket that
+	// does not stand, a changed spec, a ticket the API server would not store) is not
+	// a failed heal: nothing reached the cluster. Like every Expired path it books no
+	// outcome, so the incident stays open and unjudged, no failed-heal count moves, and
+	// the planner's history does not learn a fix that was never tried (N-4).
+	if gate.RejectedBeforeApply(action) {
+		r.Logger.V(1).Info("refused before anything was applied; the incident is not booked as a failed remediation",
+			"action", action.Name, "reason", conditionReason)
+		return nil
 	}
 
 	// Update incident with failure info.

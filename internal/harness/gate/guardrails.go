@@ -319,8 +319,13 @@ func wentWrong(sib *dorguv1.RemediationAction) bool {
 	return false
 }
 
-// rejectedBeforeApply reports whether a Failed action was refused before anything
-// was written to the cluster, as recorded on its Applied condition.
+// RejectedBeforeApply reports whether a Failed action was refused before anything
+// was written to the cluster, as recorded on its Applied condition. The cooldown
+// ignores such an action, and so does the incident outcome: a refusal that applied
+// nothing is not a failed heal.
+func RejectedBeforeApply(action *dorguv1.RemediationAction) bool { return rejectedBeforeApply(action) }
+
+// rejectedBeforeApply is RejectedBeforeApply.
 func rejectedBeforeApply(action *dorguv1.RemediationAction) bool {
 	if action.Status.AppliedAt != nil {
 		return false
