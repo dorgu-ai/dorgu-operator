@@ -24,9 +24,11 @@ import (
 	"github.com/go-logr/logr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/dorgu-ai/dorgu-operator/internal/controller"
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
 	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
 	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
+	"github.com/dorgu-ai/dorgu-operator/internal/intake"
 	"github.com/dorgu-ai/dorgu-operator/internal/llm"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation/planner"
@@ -48,6 +50,10 @@ type healthPipeline struct {
 
 	// Planner is nil unless AI remediation planning is enabled and configured.
 	Planner planner.Planner
+
+	// Intake decides every RemediationProposal. The proposer and the proposal
+	// reconciler share it, so they share one rate limit and one set of persona locks.
+	Intake *intake.Processor
 
 	Proposer *remediation.Proposer
 }
@@ -129,7 +135,18 @@ func buildHealthPipeline(
 		}
 	}
 
-	var proposerOpts []remediation.ProposerOption
+	// One intake for everyone: Dorgu's planner proposes through it as the operator
+	// ServiceAccount, and the proposal reconciler decides everyone else's.
+	proposalIntake := intake.New(intake.Config{
+		Client:           c,
+		Reader:           reader,
+		Gate:             g,
+		Incidents:        &controller.ProposalIncidents{Client: c},
+		OperatorUsername: intake.OperatorUsername(operatorNS),
+		Logger:           log,
+	})
+
+	proposerOpts := []remediation.ProposerOption{remediation.WithIntake(proposalIntake)}
 	if aiPlanner != nil {
 		proposerOpts = append(proposerOpts, remediation.WithPlanner(aiPlanner))
 	}
@@ -139,6 +156,7 @@ func buildHealthPipeline(
 		DiagnosisProviders: providers,
 		DiagnosisEngine:    diagnosis.NewEngine(log, providers...),
 		Planner:            aiPlanner,
+		Intake:             proposalIntake,
 		Proposer:           remediation.NewProposer(c, g, log, proposerOpts...),
 	}
 }

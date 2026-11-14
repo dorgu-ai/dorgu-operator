@@ -33,6 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
+	dorguv1alpha1 "github.com/dorgu-ai/dorgu-operator/api/v1alpha1"
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
 	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
 	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
@@ -46,6 +47,7 @@ func noiseScheme(t *testing.T) *runtime.Scheme {
 	s := runtime.NewScheme()
 	require.NoError(t, clientgoscheme.AddToScheme(s))
 	require.NoError(t, dorguv1.AddToScheme(s))
+	require.NoError(t, dorguv1alpha1.AddToScheme(s))
 	return s
 }
 
@@ -53,7 +55,7 @@ func noiseClient(t *testing.T, objs ...client.Object) client.Client {
 	t.Helper()
 	return fake.NewClientBuilder().WithScheme(noiseScheme(t)).
 		WithObjects(objs...).
-		WithStatusSubresource(&dorguv1.IncidentMemory{}, &dorguv1.RemediationAction{}).
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.IncidentMemory{}, &dorguv1.RemediationAction{}).
 		Build()
 }
 

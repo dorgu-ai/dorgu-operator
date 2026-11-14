@@ -7,6 +7,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+Harness P2, brief C1 (proposal intake). Behaviour is unchanged from the user's point of view: the same plans, the same gate, the same actions, the same CLI output. What changes is the door the plans come through.
+
+### Added
+
+- **`RemediationProposal` CRD (`dorgu.io/v1alpha1`, namespaced, short name `rprop`).** The one way a change request enters Dorgu. Spec: `proposer{username}`, `source`, `agent{name, version, runID}`, `idempotencyKey`, `incidentRef?`, `target{kind, namespace, name}`, `steps[]` (the RemediationAction step schema), `rationale` (at most 4000 characters, untrusted text that nothing reads), `evidence[]`, and the reserved `rollbackOf`. The spec is immutable. Status: `phase` (`Received`, `Converted`, `Rejected`), `rejection{stage, reason}`, `remediationActionRef`, `incidentRef`, `observedGeneration`, conditions. Reference: [docs/remediation-proposals.md](docs/remediation-proposals.md).
+- **The proposal reconciler.** It dedupes by (namespace, proposer, `idempotencyKey`), applies a per-proposer rate limit of 30 proposals received per hour (`Rejected{Intake, RateLimited}`), opens an incident when `incidentRef` is absent (`Rejected{Intake, IncidentNotFound}` when it names one that does not exist), runs the gate over the proposal's steps, and either creates the RemediationAction or rejects the proposal with the gate's `{stage, reason}`. `rollbackOf` is reserved and refused with `Intake/NotYetSupported` until a later release. A converted proposal is owned by its action, so deleting the action prunes it, and a Rejected one is pruned after 7 days.
+- **`RemediationAction.spec.provenance{proposal, proposer, source, requestedBy?, agent?}`.** Written by the operator when it converts a proposal and immutable: it cannot be added to an action that has none. An action created before this release has none and is treated as proposed by the operator ServiceAccount.
+- **Dorgu's own planner proposes through the same door.** Its plans are written as proposals with `source: dorgu-planner` and `proposer.username` set to the operator ServiceAccount (`system:serviceaccount:<namespace>:<name>`, from the new `OPERATOR_SERVICE_ACCOUNT` environment variable, set by the chart and the kustomize manifests from the downward API). The proposer no longer creates RemediationActions; a test (`TestOnlyIntakeCreatesRemediationActions`) fails if any code other than the intake does.
+
+### Migration notes
+
+1. **New CRD and RBAC.** `helm upgrade` installs the `RemediationProposal` CRD from the chart's `crds/` directory only on a first install, so apply it by hand when upgrading an existing release: `kubectl apply -f charts/dorgu-operator/crds/dorgu.io_remediationproposals.yaml` (and `dorgu.io_remediationactions.yaml` for `spec.provenance`). The chart's ClusterRole gains `remediationproposals` (get, list, watch, create, update, patch, delete) and `remediationproposals/status`. Without the CRD the operator cannot record a plan, and no action is proposed.
+2. **One more limit on Dorgu's own planner.** The per-proposer rate limit counts the operator ServiceAccount as one proposer: at most 30 plans in an hour, across all personas. The per-persona hourly limit in the gate is usually the tighter one.
+3. **A proposal needs a detected incident to carry a persona change.** The gate admits a `persona-update` only when the rules recommended a resource adjustment for the incident. A proposal that names no incident gets one the operator opens with signal `ProposerReported`, which the rules do not map to a resource change, so such a proposal can carry advisory steps only.
+4. **The namespace rule is enforced by the operator, not by the CRD.** A CRD validation rule cannot read `metadata.namespace`, so a proposal whose `target.namespace` differs from its own namespace is accepted by the API server and then rejected with `Intake/TargetNamespaceMismatch`. An admission policy can refuse it earlier.
+
 ## [0.13.1] - 2026-11-09
 
 Patch release for the findings of the dogfood upgrade to 0.13.0 (D1.1), paired with CLI v0.14.1. No CRD change, no RBAC change, no new flag or Helm value. Upgrade the CLI first, as for 0.13.0.

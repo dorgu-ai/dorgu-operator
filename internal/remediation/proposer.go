@@ -22,7 +22,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -30,13 +29,14 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
+	"github.com/dorgu-ai/dorgu-operator/api/v1alpha1"
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
 	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
 	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
+	"github.com/dorgu-ai/dorgu-operator/internal/intake"
 	"github.com/dorgu-ai/dorgu-operator/internal/metrics"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation/planner"
 )
@@ -90,32 +90,29 @@ func diagnosisTargetPath(diag diagnosis.Diagnosis) string {
 	return ""
 }
 
-// Proposer generates RemediationAction CRDs from diagnoses. It decides nothing
+// Proposer generates RemediationProposals from diagnoses. It decides nothing
 // about safety itself: it builds a candidate (from the rule engine or the AI
-// planner), asks the gate, and writes what the gate allows.
+// planner), asks the gate, and writes the plan as a RemediationProposal, which the
+// intake converts into a RemediationAction. The Proposer never creates one.
 type Proposer struct {
 	client  client.Client
 	gate    *gate.Gate
 	logger  logr.Logger
 	planner planner.Planner
 
-	// inFlight serialises proposals per persona. The gate's rate limit, concurrency
-	// and dedup decisions read what already exists; two proposals for one persona
-	// racing between that read and their Create would each see nothing and both be
-	// written. Holding a persona's lock from the first gate run to the Create makes
-	// the second one's gate see the first's RemediationAction (R11). The operator
-	// runs a single leader, so an in-process lock is the whole of the exclusion
-	// that is needed; the gate's uncached reader makes what it then reads current.
-	inFlight sync.Map // persona key -> *sync.Mutex
+	// intake decides the proposals this Proposer writes: Dorgu's planner is a
+	// proposer like any other, as the operator ServiceAccount (P2-D3). It also owns
+	// the per-persona locks. The gate's rate limit, concurrency and dedup decisions
+	// read what already exists; two proposals for one persona racing between that
+	// read and the action's creation would each see nothing and both be written
+	// (R11), so a persona's lock is held from the first gate run to the end of the
+	// intake.
+	intake *intake.Processor
 }
 
 // lockPersona serialises proposals for one persona and returns the unlock.
 func (p *Proposer) lockPersona(ref *dorguv1.PersonaReference) func() {
-	key := ref.Namespace + "/" + ref.Name
-	mu, _ := p.inFlight.LoadOrStore(key, &sync.Mutex{})
-	lock := mu.(*sync.Mutex)
-	lock.Lock()
-	return lock.Unlock
+	return p.intake.Locks().Lock(ref)
 }
 
 // ProposerOption configures an optional Proposer dependency.
@@ -127,7 +124,16 @@ func WithPlanner(p planner.Planner) ProposerOption {
 	return func(pr *Proposer) { pr.planner = p }
 }
 
-// NewProposer creates a new Proposer. Pass WithPlanner to enable AI planning.
+// WithIntake injects the intake that decides this Proposer's proposals. The
+// operator shares one with the proposal reconciler, so both take the same persona
+// locks and the same rate limit.
+func WithIntake(in *intake.Processor) ProposerOption {
+	return func(pr *Proposer) { pr.intake = in }
+}
+
+// NewProposer creates a new Proposer. Pass WithPlanner to enable AI planning and
+// WithIntake to share the operator's intake; without it the Proposer builds its own
+// from the same client and gate.
 func NewProposer(c client.Client, g *gate.Gate, logger logr.Logger, opts ...ProposerOption) *Proposer {
 	p := &Proposer{
 		client: c,
@@ -137,12 +143,19 @@ func NewProposer(c client.Client, g *gate.Gate, logger logr.Logger, opts ...Prop
 	for _, opt := range opts {
 		opt(p)
 	}
+	if p.intake == nil {
+		p.intake = intake.New(intake.Config{Client: c, Gate: g, Logger: logger})
+	}
 	return p
 }
 
 // Gate returns the gate the proposer consults. It is exposed so wiring tests can
 // assert the proposer and the diagnosis provider share one deny-list.
 func (p *Proposer) Gate() *gate.Gate { return p.gate }
+
+// Intake returns the intake that decides this Proposer's proposals. It is exposed so
+// wiring tests can assert the proposer and the proposal reconciler share one.
+func (p *Proposer) Intake() *intake.Processor { return p.intake }
 
 // Planner returns the AI planner, or nil when planning is disabled.
 func (p *Proposer) Planner() planner.Planner { return p.planner }
@@ -385,7 +398,7 @@ func (p *Proposer) proposeResourceAdjustment(
 	if !dec.Allowed() {
 		return skipped(dec), nil
 	}
-	installDecision(action, dec)
+	intake.InstallDecision(action, dec)
 	if owned {
 		var refusal *ProposalResult
 		if dec, refusal = p.adviseAndSeal(ctx, action, diag, incident, workloadRef); refusal != nil {
@@ -403,38 +416,28 @@ func (p *Proposer) proposeResourceAdjustment(
 			"action", action.Name, "surfaces", scrubbed)
 	}
 
-	return p.persist(ctx, action, dec)
+	return p.persist(ctx, action, dec, factsFor(diag, incident))
 }
 
-// installDecision applies what the gate allows to the action: the plan it let
-// through, and the verification and rollback settings the operator owns. The
-// plan's own settings were requests; these are the operator's.
-func installDecision(action *dorguv1.RemediationAction, dec *gate.Decision) {
-	action.Spec.Steps = dec.Steps
-	action.Spec.Action = dec.Action
-	if len(dec.Steps) > 0 {
-		// steps[] is the only plan; the single-action form follows from it.
-		action.Spec.Action = gate.DeriveAction(dec.Steps)
-	}
-	verify := dec.Verify
-	action.Spec.Rollback = &verify
-}
-
-// errPersistFailed marks a RemediationAction that could not be recorded. It is not
-// a planning failure, so Propose must not fall back to a second proposal for it.
+// errPersistFailed marks a plan that could not be recorded. It is not a planning
+// failure, so Propose must not fall back to a second proposal for it.
 var errPersistFailed = errors.New("recording the remediation failed")
 
-// persist writes the RemediationAction and records the gate's decision on its
-// status. The spec fields the gate also derives (workloadRef, step verdicts,
-// prePatchState) stay populated for one release; status.gate is the record to
-// trust.
+// persist writes the plan as a RemediationProposal and has the intake decide it.
+// The Proposer never creates a RemediationAction: the intake runs the gate over the
+// proposal's steps and creates the action, with this proposal as its provenance.
 //
-// A RemediationAction whose status could not be written is not proposed (R11): it
-// would sit with no phase, which no controller acts on and the dedup check cannot
-// tell from a live one. The write is retried on a conflict; if it still fails the
-// action is deleted and the error returned, so the caller reports a failure
-// instead of a proposal that does not exist.
-func (p *Proposer) persist(ctx context.Context, action *dorguv1.RemediationAction, dec *gate.Decision) (*ProposalResult, error) {
+// The proposal carries what a proposal carries (steps, rationale, target); the rest
+// of what the planner knows (confidence, plan source, workload record) reaches the
+// intake in process as a hint, so the action the user sees is exactly what the
+// planner shaped. The intake trusts none of it for the decision.
+//
+// A plan that could not be recorded is not proposed (R11): the proposal is removed
+// and the error returned, so the caller reports a failure instead of a proposal
+// that does not exist.
+func (p *Proposer) persist(
+	ctx context.Context, action *dorguv1.RemediationAction, dec *gate.Decision, facts gate.Facts,
+) (*ProposalResult, error) {
 	// No step is written with the text "placeholder" (B10 d).
 	action, repairErr := p.repairBeforePersist(action)
 	if repairErr != nil {
@@ -449,58 +452,93 @@ func (p *Proposer) persist(ctx context.Context, action *dorguv1.RemediationActio
 	// still shapes a plan through it; it is stripped here, on the way out.
 	action.Spec.Action = dorguv1.RemediationActionDetail{Type: dorguv1.ActionTypeNotification}
 
-	if err := p.client.Create(ctx, action); err != nil {
-		return nil, fmt.Errorf("creating RemediationAction: %w", err)
-	}
-	// The generation the apiserver gave this object. The Proposed condition pins it,
-	// and it must not be re-read: a spec edit that lands between Create and the
-	// status write would otherwise be cleared by a gate that never saw it (F9).
-	createdGeneration := action.GetGeneration()
+	proposal := p.proposalFor(action)
+	key := client.ObjectKeyFromObject(proposal)
 
-	key := client.ObjectKeyFromObject(action)
-	err := retry.OnError(retry.DefaultBackoff, retriableStatusWrite, func() error {
-		var fresh dorguv1.RemediationAction
-		if err := p.client.Get(ctx, key, &fresh); err != nil {
-			return err
-		}
-		// The Proposed condition pins the spec generation the gate cleared. An
-		// approval re-check refuses a spec edited after this (M2).
-		fresh.Status = dorguv1.RemediationActionStatus{
-			Phase: phasePending,
-			Gate:  dec.Status(),
-			Conditions: []metav1.Condition{{
-				Type:               dorguv1.ConditionProposed,
-				Status:             metav1.ConditionTrue,
-				Reason:             dorguv1.ReasonGateCleared,
-				Message:            "the operator's gate cleared this plan when it was proposed",
-				ObservedGeneration: createdGeneration,
-				LastTransitionTime: metav1.Now(),
-			}},
-		}
-		if err := p.client.Status().Update(ctx, &fresh); err != nil {
-			return err
-		}
-		fresh.DeepCopyInto(action)
-		return nil
-	})
+	// Hold the proposal until it is decided here: the reconciler would otherwise
+	// decide it without the hint.
+	defer p.intake.Claim(key)()
+	if err := p.client.Create(ctx, proposal); err != nil {
+		return nil, fmt.Errorf("%w: creating RemediationProposal: %w", errPersistFailed, err)
+	}
+
+	out, err := p.intake.Process(ctx, key, &intake.Hint{Draft: action, Facts: facts, Decision: dec})
+	if err == nil && out == nil {
+		err = errors.New("the proposal disappeared before it was decided")
+	}
 	if err != nil {
-		p.logger.Error(err, "RemediationAction created but its status could not be written; removing it",
-			"name", action.Name)
-		if delErr := p.client.Delete(ctx, action); delErr != nil && !apierrors.IsNotFound(delErr) {
-			p.logger.Error(delErr, "could not remove the RemediationAction that has no status; it needs deleting by hand",
-				"name", action.Name, "namespace", action.Namespace)
+		p.logger.Error(err, "the proposal could not be decided; removing it", "proposal", proposal.Name)
+		if delErr := p.client.Delete(ctx, proposal); delErr != nil && !apierrors.IsNotFound(delErr) {
+			p.logger.Error(delErr, "could not remove the undecided proposal; it needs deleting by hand",
+				"name", proposal.Name, "namespace", proposal.Namespace)
 		}
-		return nil, fmt.Errorf("%w: status of %s/%s: %w", errPersistFailed, action.Namespace, action.Name, err)
+		return nil, fmt.Errorf("%w: %w", errPersistFailed, err)
 	}
 
-	return &ProposalResult{Action: action, Proposed: true, Decision: dec}, nil
+	if out.Phase == v1alpha1.PhaseConverted && out.Action != nil {
+		decision := out.Decision
+		if decision == nil {
+			decision = dec
+		}
+		return &ProposalResult{Action: out.Action, Proposed: true, Decision: decision}, nil
+	}
+	return rejectedProposal(out), nil
 }
 
-// retriableStatusWrite reports whether a failed status write is worth another
-// attempt: a conflict, or a read of an object the cache has not caught up with.
-func retriableStatusWrite(err error) bool {
-	return apierrors.IsConflict(err) || apierrors.IsNotFound(err) ||
-		apierrors.IsServerTimeout(err) || apierrors.IsTooManyRequests(err)
+// rejectedProposal is the skip a rejected proposal reports. A refusal by the gate
+// keeps the gate's own result; one at Intake carries the intake's stage and reason.
+func rejectedProposal(out *intake.Outcome) *ProposalResult {
+	if out.Decision != nil {
+		return skipped(out.Decision)
+	}
+	result := &ProposalResult{SkipReason: out.Message}
+	if out.Rejection != nil {
+		result.Stage, result.Reason = out.Rejection.Stage, out.Rejection.Reason
+	}
+	return result
+}
+
+// proposalFor is the RemediationProposal that carries a drafted action: Dorgu's
+// planner proposing as the operator ServiceAccount (P2-D3). The action's name is
+// the proposal's name and its idempotency key.
+func (p *Proposer) proposalFor(action *dorguv1.RemediationAction) *v1alpha1.RemediationProposal {
+	steps := make([]dorguv1.RemediationStep, len(action.Spec.Steps))
+	for i := range action.Spec.Steps {
+		steps[i] = *action.Spec.Steps[i].DeepCopy()
+	}
+	incident := action.Spec.IncidentRef
+	targetNamespace := action.Spec.PersonaRef.Namespace
+	if targetNamespace == "" {
+		targetNamespace = action.Namespace
+	}
+	return &v1alpha1.RemediationProposal{
+		ObjectMeta: metav1.ObjectMeta{Name: action.Name, Namespace: action.Namespace},
+		Spec: v1alpha1.RemediationProposalSpec{
+			Proposer:       dorguv1.ProposerIdentity{Username: p.intake.OperatorUsername()},
+			Source:         dorguv1.ProposalSourceDorguPlanner,
+			Agent:          &dorguv1.AgentInfo{Name: "dorgu-operator"},
+			IdempotencyKey: action.Name,
+			IncidentRef:    &incident,
+			Target: v1alpha1.ProposalTarget{
+				Kind: action.Spec.PersonaRef.Kind, Namespace: targetNamespace, Name: action.Spec.PersonaRef.Name,
+			},
+			Steps:     steps,
+			Rationale: rationaleOf(action.Spec.Explanation),
+		},
+	}
+}
+
+// rationaleOf bounds the planner's explanation to what a proposal's rationale may
+// hold, counted in characters the way the API server counts them.
+func rationaleOf(explanation string) string {
+	if explanation == "" {
+		return "Dorgu proposed this plan."
+	}
+	runes := []rune(explanation)
+	if len(runes) > v1alpha1.MaxRationaleLength {
+		return string(runes[:v1alpha1.MaxRationaleLength])
+	}
+	return explanation
 }
 
 // resourceAdjustment is the outcome of sizing a resource change: the persona

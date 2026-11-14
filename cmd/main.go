@@ -39,6 +39,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
+	dorguv1alpha1 "github.com/dorgu-ai/dorgu-operator/api/v1alpha1"
 	"github.com/dorgu-ai/dorgu-operator/internal/controller"
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
 	"github.com/dorgu-ai/dorgu-operator/internal/events"
@@ -56,6 +57,7 @@ func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
 	utilruntime.Must(dorguv1.AddToScheme(scheme))
+	utilruntime.Must(dorguv1alpha1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -322,6 +324,16 @@ func main() {
 			Logger: setupLog.WithName("incident-controller"),
 		}).SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create incident controller")
+			os.Exit(1)
+		}
+
+		// 8b. Register the proposal reconciler: the one intake for every
+		// RemediationProposal, and the only code that creates a RemediationAction.
+		if err := (&controller.ProposalReconciler{
+			Client:    mgr.GetClient(),
+			Processor: pipeline.Intake,
+		}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "RemediationProposal")
 			os.Exit(1)
 		}
 

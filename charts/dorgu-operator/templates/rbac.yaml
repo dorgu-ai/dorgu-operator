@@ -41,12 +41,22 @@ rules:
   - apiGroups: ["dorgu.io"]
     resources: ["incidentmemories/status"]
     verbs: ["get", "update", "patch"]
-  # RemediationAction CRD (created by proposer; lifecycle managed by remediation controller)
+  # RemediationAction CRD (created by the proposal reconciler from an accepted
+  # RemediationProposal; lifecycle managed by remediation controller)
   - apiGroups: ["dorgu.io"]
     resources: ["remediationactions"]
     verbs: ["get", "list", "watch", "create", "update", "patch"]
   - apiGroups: ["dorgu.io"]
     resources: ["remediationactions/status"]
+    verbs: ["get", "update", "patch"]
+  # RemediationProposal CRD: the one intake for Dorgu's own planner and for any
+  # agent. The operator writes the proposals its planner makes, answers every
+  # proposal in status, and prunes Rejected ones after 7 days (delete).
+  - apiGroups: ["dorgu.io"]
+    resources: ["remediationproposals"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["dorgu.io"]
+    resources: ["remediationproposals/status"]
     verbs: ["get", "update", "patch"]
   # DorguEvent CRD (event pipeline). `delete` is the retention and cap cleaner
   # pruning dorgu's own records, which without it grew without bound in etcd. It

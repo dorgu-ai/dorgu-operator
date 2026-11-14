@@ -28,6 +28,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
+	dorguv1alpha1 "github.com/dorgu-ai/dorgu-operator/api/v1alpha1"
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
 	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation/planner"
@@ -81,7 +82,7 @@ func TestProposer_AIPath_MapsPlanToSteps(t *testing.T) {
 
 	c := fake.NewClientBuilder().WithScheme(scheme).
 		WithRuntimeObjects(persona).
-		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
 	safety := gate.New(c, testLogger())
 	p := NewProposer(c, safety, testLogger(), WithPlanner(&stubPlanner{plan: threeStepPlan()}))
@@ -133,7 +134,7 @@ func TestProposer_AIPath_BlastRadiusClampsStep(t *testing.T) {
 
 	c := fake.NewClientBuilder().WithScheme(scheme).
 		WithRuntimeObjects(persona).
-		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
 	// 256Mi -> 1024Mi is 4x, well over the 2x blast-radius cap.
 	plan := &planner.RemediationPlan{
@@ -186,7 +187,7 @@ func TestProposer_AIPath_DenyListSkips(t *testing.T) {
 
 	c := fake.NewClientBuilder().WithScheme(scheme).
 		WithRuntimeObjects(persona).
-		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
 	safety := gate.New(c, testLogger())
 	p := NewProposer(c, safety, testLogger(), WithPlanner(&stubPlanner{plan: threeStepPlan()}))
@@ -206,7 +207,7 @@ func TestProposer_AIPath_FallbackOnPlannerError(t *testing.T) {
 
 	c := fake.NewClientBuilder().WithScheme(scheme).
 		WithRuntimeObjects(persona).
-		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
 	safety := gate.New(c, testLogger())
 	p := NewProposer(c, safety, testLogger(), WithPlanner(&stubPlanner{err: errors.New("model down")}))
@@ -227,7 +228,7 @@ func TestProposer_AIPath_FallbackOnEmptyPlan(t *testing.T) {
 
 	c := fake.NewClientBuilder().WithScheme(scheme).
 		WithRuntimeObjects(persona).
-		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
 	safety := gate.New(c, testLogger())
 	p := NewProposer(c, safety, testLogger(), WithPlanner(&stubPlanner{plan: &planner.RemediationPlan{}}))
@@ -245,7 +246,7 @@ func TestProposer_NoPlanner_UsesRules(t *testing.T) {
 
 	c := fake.NewClientBuilder().WithScheme(scheme).
 		WithRuntimeObjects(persona).
-		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
 	safety := gate.New(c, testLogger())
 	p := NewProposer(c, safety, testLogger()) // no planner
@@ -267,7 +268,7 @@ func TestProposer_AIPath_AllAdvisoryPlanPersists(t *testing.T) {
 
 	c := fake.NewClientBuilder().WithScheme(scheme).
 		WithRuntimeObjects(persona).
-		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
 	plan := &planner.RemediationPlan{
 		RootCause:  "needs human investigation",
@@ -306,7 +307,7 @@ func TestProposer_AIPath_AllAdvisoryPlanForResourceChangeFallsBack(t *testing.T)
 
 	c := fake.NewClientBuilder().WithScheme(scheme).
 		WithRuntimeObjects(persona).
-		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
 	plan := &planner.RemediationPlan{
 		RootCause:  "needs human investigation",
@@ -343,7 +344,7 @@ func TestProposer_AIPath_InvariantNeverAutoExecsWorkload(t *testing.T) {
 
 	c := fake.NewClientBuilder().WithScheme(scheme).
 		WithRuntimeObjects(persona).
-		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
 	// A malicious/buggy plan marks a workload-apply step as if it were a persona
 	// update; the mapping must never make it auto-executable.
@@ -426,7 +427,7 @@ func TestProposer_AIPath_PersistsAdvisoryCommands(t *testing.T) {
 
 	c := fake.NewClientBuilder().WithScheme(scheme).
 		WithRuntimeObjects(persona, deploy).
-		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
 	p := NewProposer(c, gate.New(c, testLogger()), testLogger(),
 		WithPlanner(&stubPlanner{plan: imagePullPlan()}))
@@ -459,7 +460,7 @@ func TestProposer_AIPath_ExplanationDiffersFromPlanSummary(t *testing.T) {
 
 	c := fake.NewClientBuilder().WithScheme(scheme).
 		WithRuntimeObjects(persona).
-		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
 	p := NewProposer(c, gate.New(c, testLogger()), testLogger(),
 		WithPlanner(&stubPlanner{plan: threeStepPlan()}))
@@ -566,7 +567,7 @@ func TestProposer_AIPath_ClampNoticeSurvivesExplanationRecompute(t *testing.T) {
 
 	c := fake.NewClientBuilder().WithScheme(newWorkloadScheme()).
 		WithRuntimeObjects(persona, deploy).
-		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
 	p := NewProposer(c, gate.New(c, testLogger()), testLogger(),
 		WithPlanner(&stubPlanner{plan: clampedPlan()}))
@@ -612,7 +613,7 @@ func TestProposer_RecordsTheSignalItAnswers(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			c := fake.NewClientBuilder().WithScheme(newTestScheme()).
 				WithRuntimeObjects(newTestPersona(defaultNamespace, "my-app")).
-				WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+				WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 			p := NewProposer(c, gate.New(c, testLogger()), testLogger(), opts...)
 			incident := newTestIncident(defaultNamespace, "oom", "my-app", "OOMKilled")
 

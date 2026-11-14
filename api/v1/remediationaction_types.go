@@ -26,6 +26,7 @@ import (
 // ============================================================================
 
 // RemediationActionSpec defines the desired state of RemediationAction.
+// +kubebuilder:validation:XValidation:rule="has(oldSelf.provenance) ? (has(self.provenance) && self.provenance == oldSelf.provenance) : !has(self.provenance)",message="spec.provenance is written by the operator when it converts a proposal and cannot be added or changed"
 type RemediationActionSpec struct {
 	// IncidentRef references the IncidentMemory that triggered this remediation.
 	IncidentRef IncidentReference `json:"incidentRef"`
@@ -84,6 +85,14 @@ type RemediationActionSpec struct {
 	// Rollback configures automatic rollback behavior.
 	// +optional
 	Rollback *RemediationRollbackSpec `json:"rollback,omitempty"`
+
+	// Provenance records which RemediationProposal this action was converted from
+	// and who proposed it. The operator writes it and it is immutable: it can be
+	// neither added to an action that has none nor changed once set. An action
+	// without provenance predates v0.14 and is treated as proposed by the operator
+	// ServiceAccount.
+	// +optional
+	Provenance *RemediationProvenance `json:"provenance,omitempty"`
 }
 
 // ManagedBy values for WorkloadRef.ManagedBy. Everything except

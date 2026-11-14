@@ -33,6 +33,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
+	dorguv1alpha1 "github.com/dorgu-ai/dorgu-operator/api/v1alpha1"
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
 	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation/planner"
@@ -43,7 +44,7 @@ import (
 func TestProposer_RecordsTheClearedGenerationOnStatus(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(newTestScheme()).
 		WithRuntimeObjects(newTestPersona(defaultNamespace, "my-app")).
-		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 	p := NewProposer(c, gate.New(c, testLogger()), testLogger())
 	incident := newTestIncident(defaultNamespace, "oom", "my-app", "OOMKilled")
 
@@ -73,7 +74,7 @@ func TestProposer_RecordsTheClearedGenerationOnStatus(t *testing.T) {
 func TestProposer_ConcurrentProposalsForOnePersonaCreateOne(t *testing.T) {
 	truth := fake.NewClientBuilder().WithScheme(newTestScheme()).
 		WithRuntimeObjects(newTestPersona(defaultNamespace, "my-app")).
-		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 	laggingCache := interceptor.NewClient(truth, interceptor.Funcs{
 		List: func(ctx context.Context, inner client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
 			if _, isRAs := list.(*dorguv1.RemediationActionList); isRAs {
@@ -125,7 +126,7 @@ func TestProposer_ConcurrentProposalsForOnePersonaCreateOne(t *testing.T) {
 func TestProposer_RuleBasedActionIsDerivedFromItsStep(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(newTestScheme()).
 		WithRuntimeObjects(newTestPersona(defaultNamespace, "my-app")).
-		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 	p := NewProposer(c, gate.New(c, testLogger()), testLogger())
 
 	result, err := p.Propose(context.Background(),
@@ -145,7 +146,7 @@ func TestProposer_RuleBasedActionIsDerivedFromItsStep(t *testing.T) {
 func TestF7_TheProposedSpecActionCarriesNoPatch(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(newTestScheme()).
 		WithRuntimeObjects(newTestPersona(defaultNamespace, "my-app")).
-		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 	p := NewProposer(c, gate.New(c, testLogger()), testLogger())
 
 	result, err := p.Propose(context.Background(),
@@ -167,7 +168,7 @@ func TestF7_TheProposedSpecActionCarriesNoPatch(t *testing.T) {
 func TestF7_AnAIPlansSpecActionCarriesNoPatchEither(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(newTestScheme()).
 		WithRuntimeObjects(newTestPersona(defaultNamespace, "my-app")).
-		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 	p := NewProposer(c, gate.New(c, testLogger()), testLogger(), WithPlanner(&stubPlanner{plan: threeStepPlan()}))
 
 	result, err := p.Propose(context.Background(),
@@ -188,7 +189,7 @@ func TestF7_AnAIPlansSpecActionCarriesNoPatchEither(t *testing.T) {
 func TestF9_TheClearedGenerationIsTheOneCreateReturned(t *testing.T) {
 	truth := fake.NewClientBuilder().WithScheme(newTestScheme()).
 		WithRuntimeObjects(newTestPersona(defaultNamespace, "my-app")).
-		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 	c := interceptor.NewClient(truth, interceptor.Funcs{
 		Create: func(ctx context.Context, inner client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
 			if err := inner.Create(ctx, obj, opts...); err != nil {
@@ -235,7 +236,7 @@ func TestF9_TheClearedGenerationIsTheOneCreateReturned(t *testing.T) {
 func TestV2_AModelPersonaUpdateForAnImagePullDiagnosisIsRefused(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(newTestScheme()).
 		WithRuntimeObjects(newTestPersona(defaultNamespace, "my-app")).
-		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 	memoryPlan := &planner.RemediationPlan{
 		RootCause: "image cannot be pulled; raise memory", Confidence: 0.9,
 		Steps: []planner.PlannedStep{{

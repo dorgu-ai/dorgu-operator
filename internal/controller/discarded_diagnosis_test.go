@@ -33,6 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
+	dorguv1alpha1 "github.com/dorgu-ai/dorgu-operator/api/v1alpha1"
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
 	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
 	"github.com/dorgu-ai/dorgu-operator/internal/events"
@@ -229,6 +230,7 @@ func cf4Scheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 	scheme := runtime.NewScheme()
 	require.NoError(t, dorguv1.AddToScheme(scheme))
+	require.NoError(t, dorguv1alpha1.AddToScheme(scheme))
 	// The gate lists Deployments; a list it cannot make is a refusal.
 	require.NoError(t, appsv1.AddToScheme(scheme))
 	return scheme

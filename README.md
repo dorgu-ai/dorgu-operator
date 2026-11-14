@@ -29,7 +29,7 @@ operator    operator     operator     you       CLI     operator   IncidentMemor
 
 1. **Detect** — the health check reconciler runs every 60 seconds and gathers signals: node conditions, pod failures (OOMKilled, CrashLoopBackOff, ImagePullBackOff), resource saturation, control plane component health, and optionally container-level usage from metrics-server.
 2. **Diagnose** — deterministic rules produce a root cause with a confidence score (0.0–1.0). With an Anthropic key configured, AI enhances the diagnosis. An **IncidentMemory** CRD records it.
-3. **Propose** — the remediation proposer emits a **RemediationAction**: an explanation, a pre-patch snapshot, a JSON merge patch against a Persona spec, and — with `aiRemediation.enabled` — an ordered `Steps[]` plan from the AI planner. Deterministic rules remain the floor; AI never replaces them.
+3. **Propose** — the remediation proposer writes a **RemediationProposal** (as the operator ServiceAccount; any agent can write the same object), and the operator's gate turns it into a **RemediationAction**: an explanation, a pre-patch snapshot, a JSON merge patch against a Persona spec, and — with `aiRemediation.enabled` — an ordered `Steps[]` plan from the AI planner. Deterministic rules remain the floor; AI never replaces them.
 4. **Approve** — the action sits in `Pending`. Nothing happens until a human runs `dorgu remediation approve`.
 5. **Heal** — the **CLI** applies the equivalent change to the running workload, using the user's own credentials. The operator does not do this. See the invariant below.
 6. **Verify** — the operator re-checks health. If it degraded, the pre-patch snapshot is reapplied and the action moves to `RolledBack`.
@@ -125,7 +125,7 @@ Remediation phases: `Pending` → `Approved` → `Applying` → `Verifying` → 
 
 ## CRDs
 
-All five live in API group `dorgu.io/v1`.
+Five live in API group `dorgu.io/v1`. The sixth, **RemediationProposal**, is `dorgu.io/v1alpha1` (see [docs/remediation-proposals.md](docs/remediation-proposals.md)).
 
 | CRD | Scope | Purpose |
 |-----|-------|---------|
@@ -133,6 +133,7 @@ All five live in API group `dorgu.io/v1`.
 | **ClusterPersona** | Cluster | Identity and state of the cluster — nodes, capacity, platform, discovered add-ons, and the self-healing policy (trust level, rate limit, excluded namespaces, rollback config). Auto-created as `dorgu-cluster` on startup if absent. |
 | **IncidentMemory** | Namespaced | A detected incident — signal, root-cause diagnosis, confidence score, affected resources, correlation to a Persona, occurrence count, and resolution outcome. The cluster's memory across incidents. |
 | **RemediationAction** | Namespaced | A proposed fix — explanation, confidence, ordered `Steps[]` plan, JSON merge patch against a Persona spec, pre-patch snapshot, approval workflow, trust level, and rollback spec. Never a patch against a workload. |
+| **RemediationProposal** | Namespaced | A request for a change, from Dorgu's planner or any other proposer: a plan, a rationale (untrusted text), an idempotency key. The operator's gate converts it into a RemediationAction or rejects it with the stage and reason. The only way into the system. |
 | **DorguEvent** | Namespaced | Classified and correlated cluster events with severity, category, Persona correlation, and TTL-based cleanup. |
 
 Source-of-truth split: the CLI and GitOps own `spec` (desired intent); the operator owns `status` (observed reality and learned patterns).
@@ -321,6 +322,7 @@ flowchart LR
       appPersona[ApplicationPersona]
       clusterPersona[ClusterPersona]
       incidentMem[IncidentMemory]
+      remProposal[RemediationProposal]
       remAction[RemediationAction]
       dorguEvent[DorguEvent]
     end
@@ -345,7 +347,8 @@ flowchart LR
   incidentMem --> proposer
   proposer --> planner
   proposer --> safety
-  safety --> remAction
+  safety --> remProposal
+  remProposal -->|proposal reconciler| remAction
   remAction --> remCtrl
   remCtrl -->|patch spec only| appPersona
   eventPipe --> dorguEvent
