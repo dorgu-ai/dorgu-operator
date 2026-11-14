@@ -118,7 +118,8 @@ func proposeThroughPipeline(t *testing.T, apiReader func(client.WithWatch) clien
 		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 	setup := newIntakeSetup(raw, testOperatorNS, logr.Discard())
 	setup.Preflight.Run(context.Background())
-	p := buildHealthPipeline(newClusterClients(raw), apiReader(raw), operatorConfig{}, testOperatorNS, setup, logr.Discard())
+	p := buildHealthPipeline(newClusterClients(raw), apiReader(raw), operatorConfig{}, testOperatorNS, setup,
+		logr.Discard())
 
 	diag := diagnosis.Diagnosis{
 		Summary: "OOMKilled detected", Confidence: 0.85, Category: "resource", Severity: detection.SeverityCritical,
@@ -132,7 +133,8 @@ func proposeThroughPipeline(t *testing.T, apiReader func(client.WithWatch) clien
 	}
 	result, err := p.Proposer.Propose(context.Background(), diag, incident)
 	if err != nil || !result.Proposed {
-		t.Fatalf("the planner's proposal must still become an action: proposed=%v err=%v", result != nil && result.Proposed, err)
+		t.Fatalf("the planner's proposal must still become an action: proposed=%v err=%v",
+			result != nil && result.Proposed, err)
 	}
 	var list dorguv1.RemediationActionList
 	if err := raw.List(context.Background(), &list); err != nil || len(list.Items) != 1 {
@@ -148,7 +150,7 @@ func TestMain_CallsGetClientOnlyToBuildTheGuardedClients(t *testing.T) {
 		t.Fatal(err)
 	}
 	var calls []string
-	for _, line := range strings.Split(string(src), "\n") {
+	for line := range strings.SplitSeq(string(src), "\n") {
 		code := line
 		if i := strings.Index(code, "//"); i >= 0 {
 			code = code[:i]
@@ -179,8 +181,9 @@ func installedCRDs() []client.Object {
 					Type: "object", Properties: map[string]apiextensionsv1.JSONSchemaProps{
 						"spec": {Type: "object", Properties: props}}}},
 			}}},
-			Status: apiextensionsv1.CustomResourceDefinitionStatus{Conditions: []apiextensionsv1.CustomResourceDefinitionCondition{
-				{Type: apiextensionsv1.Established, Status: apiextensionsv1.ConditionTrue}}},
+			Status: apiextensionsv1.CustomResourceDefinitionStatus{
+				Conditions: []apiextensionsv1.CustomResourceDefinitionCondition{
+					{Type: apiextensionsv1.Established, Status: apiextensionsv1.ConditionTrue}}},
 		}
 	}
 	return []client.Object{

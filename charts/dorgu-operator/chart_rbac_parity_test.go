@@ -117,7 +117,7 @@ func TestChartCanReadOnlyTheTwoCRDsThePreflightChecks(t *testing.T) {
 	found := false
 	for doc := range strings.SplitSeq(helmTemplate(t), "\n---") {
 		var role rbacv1.ClusterRole
-		if err := yaml.Unmarshal([]byte(doc), &role); err != nil || role.Kind != "ClusterRole" {
+		if err := yaml.Unmarshal([]byte(doc), &role); err != nil {
 			continue
 		}
 		for _, rule := range role.Rules {

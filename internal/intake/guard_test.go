@@ -88,7 +88,9 @@ func TestGuardActionWrites_RefusesEveryCreationShape(t *testing.T) {
 			return generic(ctx, c, newRA("shape-3"))
 		},
 		"4 server-side apply through Patch": func(c client.Client) error {
-			return c.Patch(ctx, newRA("shape-4"), client.Apply, client.FieldOwner("x"), client.ForceOwnership)
+			//nolint:staticcheck // the deprecated shape is the bypass under test
+			return c.Patch(ctx, newRA("shape-4"), client.Apply,
+				client.FieldOwner("x"), client.ForceOwnership)
 		},
 		"5 new(T)":         func(c client.Client) error { return c.Create(ctx, raPtr) },
 		"6 a type alias":   func(c client.Client) error { return c.Create(ctx, aliased) },

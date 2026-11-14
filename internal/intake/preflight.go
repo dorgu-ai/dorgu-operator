@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
@@ -154,11 +155,9 @@ func (p *Preflight) Run(ctx context.Context) []Failure {
 // the next Run, whose own answer replaces it.
 func (p *Preflight) Report(f Failure) {
 	p.mu.Lock()
-	for _, existing := range p.failures {
-		if existing == f {
-			p.mu.Unlock()
-			return
-		}
+	if slices.Contains(p.failures, f) {
+		p.mu.Unlock()
+		return
 	}
 	p.failures = append(append([]Failure(nil), p.failures...), f)
 	p.ran = true

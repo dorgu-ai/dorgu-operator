@@ -65,7 +65,7 @@ func (g *actionGuard) isAction(obj runtime.Object) bool {
 	gvk := obj.GetObjectKind().GroupVersionKind()
 	if gvk.Kind == "" {
 		// A typed object carries no kind until the scheme is asked.
-		if resolved, err := g.Client.GroupVersionKindFor(obj); err == nil {
+		if resolved, err := g.GroupVersionKindFor(obj); err == nil {
 			gvk = resolved
 		}
 	}

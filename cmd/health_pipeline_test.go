@@ -59,7 +59,8 @@ func buildForTest(t *testing.T, cfg operatorConfig, operatorNS string) healthPip
 		t.Fatal(err)
 	}
 	c := fake.NewClientBuilder().WithScheme(scheme).Build()
-	return buildHealthPipeline(newClusterClients(c), c, cfg, operatorNS, newIntakeSetup(c, operatorNS, logr.Discard()), logr.Discard())
+	setup := newIntakeSetup(c, operatorNS, logr.Discard())
+	return buildHealthPipeline(newClusterClients(c), c, cfg, operatorNS, setup, logr.Discard())
 }
 
 func aiProvider(t *testing.T, p healthPipeline) *diagnosis.AIProvider {
@@ -296,7 +297,8 @@ func TestNewPodCollector_SharesTheGatesDenyList(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(scheme).
 		WithObjects(cp, oomed("cert-manager"), oomed(testOperatorNS), oomed("kube-system"), oomed("shop")).Build()
 	cfg := operatorConfig{safetyExcludedNamespaces: []string{"gateway"}}
-	p := buildHealthPipeline(newClusterClients(c), c, cfg, testOperatorNS, newIntakeSetup(c, testOperatorNS, logr.Discard()), logr.Discard())
+	setup := newIntakeSetup(c, testOperatorNS, logr.Discard())
+	p := buildHealthPipeline(newClusterClients(c), c, cfg, testOperatorNS, setup, logr.Discard())
 
 	signals, err := newPodCollector(c, p.Gate, logr.Discard()).Collect(context.Background())
 	if err != nil {

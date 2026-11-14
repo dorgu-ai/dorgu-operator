@@ -201,7 +201,7 @@ func TestProcess_ABlockedIntakeConvertsNothing(t *testing.T) {
 
 func actionNames(t *testing.T, c client.Client) []string {
 	t.Helper()
-	var names []string
+	names := []string{}
 	var list dorguv1.RemediationActionList
 	require.NoError(t, c.List(context.Background(), &list))
 	for _, ra := range list.Items {
@@ -240,14 +240,14 @@ func crdScheme(t *testing.T) *runtime.Scheme {
 	return s
 }
 
-func crd(name, version string, established bool, schema *apiextensionsv1.JSONSchemaProps) *apiextensionsv1.CustomResourceDefinition {
+func crd(name, version string, established bool, openAPI *apiextensionsv1.JSONSchemaProps) *apiextensionsv1.CustomResourceDefinition {
 	c := &apiextensionsv1.CustomResourceDefinition{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
 		Spec: apiextensionsv1.CustomResourceDefinitionSpec{
 			Group: "dorgu.io",
 			Versions: []apiextensionsv1.CustomResourceDefinitionVersion{{
 				Name: version, Served: true, Storage: true,
-				Schema: &apiextensionsv1.CustomResourceValidation{OpenAPIV3Schema: schema},
+				Schema: &apiextensionsv1.CustomResourceValidation{OpenAPIV3Schema: openAPI},
 			}},
 		},
 	}

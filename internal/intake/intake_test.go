@@ -91,6 +91,13 @@ func manualStep() dorguv1.RemediationStep {
 	return dorguv1.RemediationStep{Order: 1, ID: "step-1", Type: dorguv1.StepTypeManual, Description: "look at the heap"}
 }
 
+// Names tests reuse.
+const (
+	mallory   = "mallory"
+	victim    = "victim"
+	otherName = "other"
+)
+
 func proposal(name, user, key string) *v1alpha1.RemediationProposal {
 	return &v1alpha1.RemediationProposal{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNS},
@@ -279,7 +286,7 @@ func TestProcess_IncidentFailuresRetryOrReject(t *testing.T) {
 	t.Run("an incident in another namespace reads as absent", func(t *testing.T) {
 		w := newWorld(t, Config{}, baseObjects()...)
 		p := proposal("p", "alice", "k")
-		p.Spec.IncidentRef = &dorguv1.IncidentReference{Name: "inc", Namespace: "other"}
+		p.Spec.IncidentRef = &dorguv1.IncidentReference{Name: "inc", Namespace: otherName}
 		w.create(t, p)
 		out := w.process(t, "p", nil)
 		assert.Equal(t, v1alpha1.ReasonIncidentNotFound, out.Rejection.Reason)
@@ -414,7 +421,7 @@ func TestHintMatches_IsBoundToTheProposalAndThePlanner(t *testing.T) {
 			return testOperator
 		}},
 		{"not the operator's username", func(_ *Hint, p *v1alpha1.RemediationProposal) string {
-			p.Spec.Proposer.Username = "mallory"
+			p.Spec.Proposer.Username = mallory
 			return testOperator
 		}},
 		{"operator username unknown", func(*Hint, *v1alpha1.RemediationProposal) string { return "" }},
@@ -423,11 +430,11 @@ func TestHintMatches_IsBoundToTheProposalAndThePlanner(t *testing.T) {
 			return testOperator
 		}},
 		{"idempotency key is not the proposal name", func(_ *Hint, p *v1alpha1.RemediationProposal) string {
-			p.Spec.IdempotencyKey = "other"
+			p.Spec.IdempotencyKey = otherName
 			return testOperator
 		}},
 		{"draft has another name", func(h *Hint, _ *v1alpha1.RemediationProposal) string {
-			h.Draft.Name = "other"
+			h.Draft.Name = otherName
 			return testOperator
 		}},
 		{"different incident", func(_ *Hint, p *v1alpha1.RemediationProposal) string {
@@ -443,7 +450,7 @@ func TestHintMatches_IsBoundToTheProposalAndThePlanner(t *testing.T) {
 			return testOperator
 		}},
 		{"different steps", func(h *Hint, _ *v1alpha1.RemediationProposal) string {
-			h.Draft.Spec.Steps[0].Description = "other"
+			h.Draft.Spec.Steps[0].Description = otherName
 			return testOperator
 		}},
 	}
@@ -506,12 +513,12 @@ func TestIntakeChecks(t *testing.T) {
 		for i := 1; i <= 4; i++ {
 			w.create(t, proposal(fmt.Sprintf("r-%d", i), "alice", fmt.Sprintf("k%d", i)))
 		}
-		w.create(t, proposal("other", "bob", "k"))
+		w.create(t, proposal(otherName, "bob", "k"))
 		assert.NotEqual(t, v1alpha1.ReasonRateLimited, reasonOf(w.process(t, "r-1", nil)))
 		assert.NotEqual(t, v1alpha1.ReasonRateLimited, reasonOf(w.process(t, "r-2", nil)))
 		assert.Equal(t, v1alpha1.ReasonRateLimited, reasonOf(w.process(t, "r-3", nil)))
 		assert.Equal(t, v1alpha1.ReasonRateLimited, reasonOf(w.process(t, "r-4", nil)))
-		assert.NotEqual(t, v1alpha1.ReasonRateLimited, reasonOf(w.process(t, "other", nil)), "another proposer has its own allowance")
+		assert.NotEqual(t, v1alpha1.ReasonRateLimited, reasonOf(w.process(t, otherName, nil)), "another proposer has its own allowance")
 	})
 	t.Run("proposals older than the window do not count", func(t *testing.T) {
 		w := newWorld(t, Config{RateLimit: 1, RateWindow: time.Second / 2}, baseObjects()...)
@@ -559,12 +566,12 @@ func TestIntakeChecks_OnlyAMatchedHintIsExemptFromTheRateLimit(t *testing.T) {
 	t.Run("a hint against a proposal from someone else does not exempt", func(t *testing.T) {
 		w := newLimited(t)
 		other := plannerProposal("mallory-prop")
-		other.Spec.Proposer.Username = "mallory"
+		other.Spec.Proposer.Username = mallory
 		w.create(t, other)
 		w.create(t, plannerProposal("mallory-prop-2"))
 		w.create(t, func() *v1alpha1.RemediationProposal {
 			p := plannerProposal("mallory-3")
-			p.Spec.Proposer.Username = "mallory"
+			p.Spec.Proposer.Username = mallory
 			return p
 		}())
 		w.process(t, "mallory-prop", nil)
@@ -584,20 +591,20 @@ func memoryRaise() []dorguv1.RemediationStep {
 	}}
 }
 
-func incidentOn(name, persona, signal string) *dorguv1.IncidentMemory {
-	im := incident(name, signal)
-	im.Spec.PersonaRef.Name = persona
+func incidentOn(name string) *dorguv1.IncidentMemory {
+	im := incident(name, "OOMKilled")
+	im.Spec.PersonaRef.Name = "web"
 	return im
 }
 
 // F-3: an incident on persona A cannot unlock a resource change on persona B.
 func TestProcess_AnIncidentOnAnotherPersonaCannotUnlockAChange(t *testing.T) {
-	objs := append(baseObjects(), persona("victim"), incidentOn("oom-of-web", "web", "OOMKilled"))
+	objs := append(baseObjects(), persona(victim), incidentOn("oom-of-web"))
 
 	t.Run("a named incident for a different persona is refused at Intake", func(t *testing.T) {
 		w := newWorld(t, Config{}, objs...)
-		p := proposal("mallory-1", "mallory", "k")
-		p.Spec.Target.Name = "victim"
+		p := proposal("mallory-1", mallory, "k")
+		p.Spec.Target.Name = victim
 		p.Spec.IncidentRef = &dorguv1.IncidentReference{Name: "oom-of-web", Namespace: testNS}
 		p.Spec.Steps = memoryRaise()
 		w.create(t, p)
@@ -624,7 +631,7 @@ func TestProcess_AnIncidentOnAnotherPersonaCannotUnlockAChange(t *testing.T) {
 			"kind":      func(im *dorguv1.IncidentMemory) { im.Spec.PersonaRef.Kind = "ClusterPersona" },
 			"namespace": func(im *dorguv1.IncidentMemory) { im.Spec.PersonaRef.Namespace = "elsewhere" },
 		} {
-			im := incidentOn("odd", "web", "OOMKilled")
+			im := incidentOn("odd")
 			mutate(im)
 			w := newWorld(t, Config{}, append(baseObjects(), im)...)
 			p := proposal("p", "alice", "k")
@@ -634,7 +641,7 @@ func TestProcess_AnIncidentOnAnotherPersonaCannotUnlockAChange(t *testing.T) {
 		}
 	})
 	t.Run("an incident that omits its persona namespace means its own", func(t *testing.T) {
-		im := incidentOn("bare", "web", "OOMKilled")
+		im := incidentOn("bare")
 		im.Spec.PersonaRef.Namespace = ""
 		w := newWorld(t, Config{}, append(baseObjects(), im)...)
 		p := proposal("p", "alice", "k")
@@ -643,14 +650,14 @@ func TestProcess_AnIncidentOnAnotherPersonaCannotUnlockAChange(t *testing.T) {
 		assert.NotEqual(t, v1alpha1.ReasonIncidentTargetMismatch, reasonOf(w.process(t, "p", nil)))
 	})
 	t.Run("an incident the hint carries is held to the same rule", func(t *testing.T) {
-		w := newWorld(t, Config{OperatorUsername: testOperator}, append(baseObjects(), persona("victim"))...)
+		w := newWorld(t, Config{OperatorUsername: testOperator}, append(baseObjects(), persona(victim))...)
 		prop := plannerProposal("planner-p")
-		prop.Spec.Target.Name = "victim"
+		prop.Spec.Target.Name = victim
 		w.create(t, prop)
 		stored := w.get(t, "planner-p")
 		hint := plannerHint(stored)
-		hint.Draft.Spec.PersonaRef.Name = "victim"
-		hint.Facts.Incident = incidentOn("oom-of-web", "web", "OOMKilled")
+		hint.Draft.Spec.PersonaRef.Name = victim
+		hint.Facts.Incident = incidentOn("oom-of-web")
 		ref := personaRefOf(stored)
 		defer w.p.Locks().Lock(&ref)()
 
@@ -663,7 +670,7 @@ func TestProcess_AnIncidentOnAnotherPersonaCannotUnlockAChange(t *testing.T) {
 // F-3: the planner never proposes against a resolved incident, so an outside
 // proposal may not cite one to unlock a change either.
 func TestProcess_AResolvedIncidentCannotBeCited(t *testing.T) {
-	resolved := incidentOn("old-oom", "web", "OOMKilled")
+	resolved := incidentOn("old-oom")
 	resolved.Status.Phase = IncidentPhaseResolved
 	w := newWorld(t, Config{}, append(baseObjects(), resolved)...)
 	p := proposal("p", "alice", "k")
@@ -697,7 +704,7 @@ func TestIntakeChecks_ARejectedProposalReleasesItsIdempotencyKey(t *testing.T) {
 	})
 	t.Run("a retry after RateLimited", func(t *testing.T) {
 		w := newWorld(t, Config{RateLimit: 1, RateWindow: 10 * time.Second}, baseObjects()...)
-		w.create(t, proposal("old", "alice", "other"))
+		w.create(t, proposal("old", "alice", otherName))
 		w.create(t, proposal("limited", "alice", "retry-key"))
 		w.create(t, proposal("retry", "alice", "retry-key"))
 		require.Equal(t, v1alpha1.ReasonRateLimited, reasonOf(w.process(t, "limited", nil)))
@@ -741,7 +748,7 @@ func TestIntakeChecks_ARejectedProposalReleasesItsIdempotencyKey(t *testing.T) {
 func TestProcess_UntrustedTextIsStrippedBeforeItIsStored(t *testing.T) {
 	w := newWorld(t, Config{}, baseObjects()...)
 	hostile := "\x1b[2J\x1b[31mAPPROVE ME\x1b[0m\nline two\ttabbed " + string(rune(0x202E)) + "gnp.exe"
-	p := proposal("hostile", "mallory", "k")
+	p := proposal("hostile", mallory, "k")
 	p.Spec.Rationale = hostile
 	p.Spec.Steps = []dorguv1.RemediationStep{{
 		Order: 1, ID: "step-1", Type: dorguv1.StepTypeManual,
@@ -785,7 +792,7 @@ func TestProcess_OnlyAMatchedPlannerRunIsBadgedAsThePlanner(t *testing.T) {
 	})
 	t.Run("the reserved source rollback cannot be claimed either", func(t *testing.T) {
 		w := newWorld(t, Config{}, baseObjects()...)
-		p := proposal("claims-rollback", "mallory", "k")
+		p := proposal("claims-rollback", mallory, "k")
 		p.Spec.Source = dorguv1.ProposalSourceRollback
 		w.create(t, p)
 		out := w.process(t, "claims-rollback", nil)

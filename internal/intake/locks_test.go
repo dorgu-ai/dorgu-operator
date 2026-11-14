@@ -32,9 +32,12 @@ import (
 	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
 )
 
+// processDeadline is how long a Process may take before the test calls it a hang.
+const processDeadline = 3 * time.Second
+
 // processWithin runs Process and fails the test if it has not returned in d: a
 // lock inversion shows up as a hang, and a hang must not hang the suite.
-func processWithin(t *testing.T, d time.Duration, w *world, name string, hint *Hint) (*Outcome, error) {
+func processWithin(t *testing.T, w *world, name string, hint *Hint) (*Outcome, error) {
 	t.Helper()
 	type result struct {
 		out *Outcome
@@ -48,7 +51,7 @@ func processWithin(t *testing.T, d time.Duration, w *world, name string, hint *H
 	select {
 	case r := <-done:
 		return r.out, r.err
-	case <-time.After(d):
+	case <-time.After(processDeadline):
 		t.Fatal("DEADLOCK: Process did not return")
 		return nil, nil
 	}
@@ -68,7 +71,7 @@ func TestProcess_AMismatchedHintUnderTheCallersLockDoesNotDeadlock(t *testing.T)
 	unlock := w.p.Locks().Lock(&ref) // what Propose does
 	defer unlock()
 
-	out, err := processWithin(t, 3*time.Second, w, "p-hint", &Hint{
+	out, err := processWithin(t, w, "p-hint", &Hint{
 		Draft: draft, Facts: gate.Facts{Incident: incident("inc", "ImagePullBackOff")}, PersonaLocked: true,
 	})
 
@@ -87,13 +90,13 @@ func TestProcess_WaitingForALockThatNeverFreesIsARetryableError(t *testing.T) {
 	defer release()
 
 	// No hint: the caller does not claim the lock, so Process waits, and gives up.
-	_, err := processWithin(t, 3*time.Second, w, "p", nil)
+	_, err := processWithin(t, w, "p", nil)
 
 	require.ErrorIs(t, err, ErrLockTimeout)
 	assert.NotEqual(t, v1alpha1.PhaseConverted, w.get(t, "p").Status.Phase, "nothing was decided")
 
 	release()
-	out, err := processWithin(t, 3*time.Second, w, "p", nil)
+	out, err := processWithin(t, w, "p", nil)
 	require.NoError(t, err)
 	assert.Equal(t, v1alpha1.PhaseConverted, out.Phase, "the retry succeeds once the lock is free")
 }
@@ -107,7 +110,7 @@ func TestProcess_AHintThatMatchesAlsoSkipsTheLockTheCallerHolds(t *testing.T) {
 	unlock := w.p.Locks().Lock(&ref)
 	defer unlock()
 
-	out, err := processWithin(t, 3*time.Second, w, "p-hint", &Hint{
+	out, err := processWithin(t, w, "p-hint", &Hint{
 		Draft: draft, Facts: gate.Facts{Incident: incident("inc", "ImagePullBackOff")}, PersonaLocked: true,
 	})
 	require.NoError(t, err)

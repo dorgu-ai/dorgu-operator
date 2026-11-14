@@ -291,7 +291,7 @@ func (r *ClusterPersonaReconciler) reportIntakeReadiness(persona *dorguv1.Cluste
 			"IntakeOpen", "The proposal intake is open: proposals are converted and Dorgu's planner proposes.")
 		return
 	}
-	var parts []string
+	parts := make([]string, 0, len(failures))
 	for _, f := range failures {
 		parts = append(parts, f.Message)
 	}

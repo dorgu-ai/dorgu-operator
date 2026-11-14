@@ -40,7 +40,7 @@ func crdOnlyClient(t *testing.T, objs ...client.Object) client.Client {
 }
 
 func failureReasons(fs []intake.Failure) []string {
-	var out []string
+	out := make([]string, 0, len(fs))
 	for _, f := range fs {
 		out = append(out, f.Reason)
 	}
