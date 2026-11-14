@@ -245,6 +245,27 @@ type RemediationActionDetail struct {
 	PrePatchState *apiextensionsv1.JSON `json:"prePatchState,omitempty"`
 }
 
+// The bounds the CRD puts on a step's free text, in characters. They are the
+// MaxLength markers on RemediationStep's fields, so one proposal cannot approach the
+// API server's request limit through step text; a plan the operator drafts from model
+// output is cut to them (BoundText) before it is proposed.
+const (
+	MaxStepDescriptionLength = 1024
+	MaxStepRationaleLength   = 4000
+)
+
+// BoundText cuts s to at most max characters, never in the middle of one.
+func BoundText(s string, max int) string {
+	if len(s) <= max { // bytes are at least characters: nothing to count
+		return s
+	}
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	return string(runes[:max])
+}
+
 // RemediationStep is a single ordered action within a multi-step remediation plan.
 //
 // Step-safety invariant: only persona-update steps may be AutoExecutable. All
@@ -259,6 +280,7 @@ type RemediationStep struct {
 	Order int32 `json:"order"`
 
 	// ID is a stable, per-plan identifier for the step.
+	// +kubebuilder:validation:MaxLength=128
 	ID string `json:"id"`
 
 	// Type classifies the step action.
@@ -266,10 +288,12 @@ type RemediationStep struct {
 	Type string `json:"type"`
 
 	// Description is a human-readable summary of the action.
+	// +kubebuilder:validation:MaxLength=1024
 	Description string `json:"description"`
 
 	// Rationale explains why this step is proposed (AI reasoning).
 	// +optional
+	// +kubebuilder:validation:MaxLength=4000
 	Rationale string `json:"rationale,omitempty"`
 
 	// Risk is the assessed risk level of applying this step.
@@ -314,6 +338,7 @@ type RemediationStep struct {
 	// alone.
 	// +optional
 	// +listType=atomic
+	// +kubebuilder:validation:MaxItems=16
 	Safety []StepSafety `json:"safety,omitempty"`
 }
 
@@ -364,34 +389,41 @@ type StepSafety struct {
 	Verdict string `json:"verdict"`
 
 	// Field is the persona-spec path ruled on, e.g. "spec.resources.limits.memory".
+	// +kubebuilder:validation:MaxLength=253
 	Field string `json:"field"`
 
 	// Baseline is the value the guardrail measured against: the live workload's
 	// value when it could be read, the persona's otherwise. Empty when the rule
 	// did not measure a change (a derived patch has nothing to compare).
 	// +optional
+	// +kubebuilder:validation:MaxLength=253
 	Baseline string `json:"baseline,omitempty"`
 
 	// Requested is the value the plan asked for. Empty when the plan named a
 	// change without giving a value.
 	// +optional
+	// +kubebuilder:validation:MaxLength=253
 	Requested string `json:"requested,omitempty"`
 
 	// Permitted is the value that will actually be applied for this field, and
 	// is exactly what the step's patch carries. Empty means nothing will be
 	// applied for this field.
 	// +optional
+	// +kubebuilder:validation:MaxLength=253
 	Permitted string `json:"permitted,omitempty"`
 
 	// Ratio is the requested change as a multiple of Baseline, e.g. "16.0x".
 	// +optional
+	// +kubebuilder:validation:MaxLength=253
 	Ratio string `json:"ratio,omitempty"`
 
 	// MaxRatio is the largest multiple the guardrail allows, e.g. "2.0x".
 	// +optional
+	// +kubebuilder:validation:MaxLength=253
 	MaxRatio string `json:"maxRatio,omitempty"`
 
 	// Message is Dorgu's one-line rendering of the verdict, ready to print.
+	// +kubebuilder:validation:MaxLength=1024
 	Message string `json:"message"`
 }
 

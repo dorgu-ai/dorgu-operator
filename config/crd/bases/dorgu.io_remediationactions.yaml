@@ -301,9 +301,11 @@ spec:
                     description:
                       description: Description is a human-readable summary of the
                         action.
+                      maxLength: 1024
                       type: string
                     id:
                       description: ID is a stable, per-plan identifier for the step.
+                      maxLength: 128
                       type: string
                     order:
                       description: Order is the 1-based execution order of this step
@@ -322,6 +324,7 @@ spec:
                     rationale:
                       description: Rationale explains why this step is proposed (AI
                         reasoning).
+                      maxLength: 4000
                       type: string
                     risk:
                       description: Risk is the assessed risk level of applying this
@@ -355,33 +358,40 @@ spec:
                               Baseline is the value the guardrail measured against: the live workload's
                               value when it could be read, the persona's otherwise. Empty when the rule
                               did not measure a change (a derived patch has nothing to compare).
+                            maxLength: 253
                             type: string
                           field:
                             description: Field is the persona-spec path ruled on,
                               e.g. "spec.resources.limits.memory".
+                            maxLength: 253
                             type: string
                           maxRatio:
                             description: MaxRatio is the largest multiple the guardrail
                               allows, e.g. "2.0x".
+                            maxLength: 253
                             type: string
                           message:
                             description: Message is Dorgu's one-line rendering of
                               the verdict, ready to print.
+                            maxLength: 1024
                             type: string
                           permitted:
                             description: |-
                               Permitted is the value that will actually be applied for this field, and
                               is exactly what the step's patch carries. Empty means nothing will be
                               applied for this field.
+                            maxLength: 253
                             type: string
                           ratio:
                             description: Ratio is the requested change as a multiple
                               of Baseline, e.g. "16.0x".
+                            maxLength: 253
                             type: string
                           requested:
                             description: |-
                               Requested is the value the plan asked for. Empty when the plan named a
                               change without giving a value.
+                            maxLength: 253
                             type: string
                           rule:
                             description: Rule identifies the guardrail that ruled.
@@ -404,6 +414,7 @@ spec:
                         - rule
                         - verdict
                         type: object
+                      maxItems: 16
                       type: array
                       x-kubernetes-list-type: atomic
                     type:

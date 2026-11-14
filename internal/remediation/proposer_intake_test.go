@@ -19,9 +19,11 @@ package remediation
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -35,6 +37,7 @@ import (
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
 	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
 	"github.com/dorgu-ai/dorgu-operator/internal/intake"
+	"github.com/dorgu-ai/dorgu-operator/internal/remediation/planner"
 )
 
 const operatorUser = "system:serviceaccount:dorgu-system:dorgu-operator"
@@ -301,4 +304,18 @@ func TestPropose_AnIntakeWithNoOperatorUsernameProposesNothing(t *testing.T) {
 	assert.False(t, result.Proposed)
 	assert.Equal(t, SkipIntakeClosed, result.Reason)
 	assert.Contains(t, result.SkipReason, intake.ReasonOperatorIdentityUnknown)
+}
+
+// F-10: the CRD bounds step text, so a model that writes more must not turn a good
+// plan into one the API server refuses. The text is cut to the bound, in characters.
+func TestMapPlannedSteps_BoundsModelTextToTheCRD(t *testing.T) {
+	long := strings.Repeat("é", 5000) // multi-byte: the bound counts characters
+	steps := mapPlannedSteps(&planner.RemediationPlan{Steps: []planner.PlannedStep{
+		{Order: 1, Type: dorguv1.StepTypeManual, Description: long, Rationale: long},
+	}}, nil)
+
+	require.Len(t, steps, 1)
+	assert.Equal(t, 1024, utf8.RuneCountInString(steps[0].Description))
+	assert.Equal(t, 4000, utf8.RuneCountInString(steps[0].Rationale))
+	assert.True(t, utf8.ValidString(steps[0].Description), "never cut mid-character")
 }
