@@ -18,6 +18,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
+	dorguv1alpha1 "github.com/dorgu-ai/dorgu-operator/api/v1alpha1"
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
 	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
 	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
@@ -131,7 +132,7 @@ func proposeFor(t *testing.T, container string) *ProposalResult {
 	incident := newTestIncident(defaultNamespace, "cpu-throttle", "my-app", "CPUThrottling")
 	c := fake.NewClientBuilder().WithScheme(newWorkloadScheme()).
 		WithRuntimeObjects(persona, deploy).
-		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 	result, err := NewProposer(c, gate.New(c, testLogger()), testLogger()).Propose(context.Background(), diag, incident)
 	require.NoError(t, err)
 	return result
@@ -205,7 +206,7 @@ func TestProposer_CPUThrottling_CriticalFromAThrottledRatioOfHalfOrMore(t *testi
 		deploy := liveDeployment("my-app", map[corev1.ResourceName]string{corev1.ResourceCPU: "400m", corev1.ResourceMemory: "256Mi"}, nil)
 		incident := newTestIncident(defaultNamespace, "cpu-throttle", "my-app", "CPUThrottling")
 		c := fake.NewClientBuilder().WithScheme(newWorkloadScheme()).WithRuntimeObjects(persona, deploy).
-			WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+			WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 		result, err := NewProposer(c, gate.New(c, testLogger()), testLogger()).Propose(context.Background(), diags[0], incident)
 		require.NoError(t, err)
 		require.True(t, result.Proposed, "ratio %.2f: %s", tt.ratio, result.SkipReason)
