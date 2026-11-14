@@ -30,6 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
+	dorguv1alpha1 "github.com/dorgu-ai/dorgu-operator/api/v1alpha1"
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
 	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
 	"github.com/dorgu-ai/dorgu-operator/internal/metrics/metricstest"
@@ -70,7 +71,7 @@ func proposeImageError(t *testing.T, plan *planner.RemediationPlan) (*ProposalRe
 	t.Helper()
 	c := fake.NewClientBuilder().WithScheme(newTestScheme()).
 		WithRuntimeObjects(newTestPersona(defaultNamespace, "my-app")).
-		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 	cp := &planCounter{plan: plan}
 	p := NewProposer(c, gate.New(c, testLogger()), testLogger(), WithPlanner(cp))
 	diag := newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical)
@@ -201,7 +202,7 @@ func TestStepCommandRefusal_ANarrowedPlanThatCannotBeGatedLeavesTheFirstRefusal(
 	boom := errors.New("the API server is unavailable")
 	base := fake.NewClientBuilder().WithScheme(newTestScheme()).
 		WithRuntimeObjects(newTestPersona(defaultNamespace, "my-app")).
-		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 	c := interceptor.NewClient(base, interceptor.Funcs{List: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error {
 		return boom
 	}})
@@ -344,7 +345,7 @@ func TestStepCommandRefusal_ChainedNarrowingsRecordBothRefusals(t *testing.T) {
 	}}
 	c := fake.NewClientBuilder().WithScheme(newTestScheme()).
 		WithRuntimeObjects(newTestPersona(defaultNamespace, "my-app")).
-		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 	p := NewProposer(c, gate.New(c, testLogger()), testLogger(), WithPlanner(&planCounter{plan: plan}))
 	diag := newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical)
 	diag.Contributing[0].Signal.Type = detection.SignalCrashLoopBackOff

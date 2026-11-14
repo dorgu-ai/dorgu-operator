@@ -30,6 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
+	dorguv1alpha1 "github.com/dorgu-ai/dorgu-operator/api/v1alpha1"
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
 	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
 	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
@@ -92,7 +93,7 @@ func TestProposer_PlannerNeverSeesAProtectedNamespaceInAMixedDiagnosis(t *testin
 			incident := newTestIncident("apps", "evict", "my-app", "PodEvicted")
 			c := fake.NewClientBuilder().WithScheme(newTestScheme()).
 				WithRuntimeObjects(persona).
-				WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+				WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
 			model := &countingPlanner{}
 			p := NewProposer(c, gate.New(c, testLogger(), gate.WithProtectedNamespaces("dorgu-system")),
@@ -112,7 +113,7 @@ func TestProposer_WithheldDiagnosisStillGetsTheRuleBasedProposal(t *testing.T) {
 	incident := newTestIncident("apps", "oom", "my-app", "OOMKilled")
 	c := fake.NewClientBuilder().WithScheme(newTestScheme()).
 		WithRuntimeObjects(persona).
-		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
 	model := &countingPlanner{}
 	p := NewProposer(c, gate.New(c, testLogger(), gate.WithProtectedNamespaces("dorgu-system")),

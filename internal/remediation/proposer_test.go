@@ -30,6 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
+	dorguv1alpha1 "github.com/dorgu-ai/dorgu-operator/api/v1alpha1"
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
 	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
 	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
@@ -123,7 +124,7 @@ func TestProposer_OOM_MemoryIncrease_Warning(t *testing.T) {
 
 	c := fake.NewClientBuilder().WithScheme(scheme).
 		WithRuntimeObjects(persona).
-		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
 	safety := gate.New(c, testLogger())
 	proposer := NewProposer(c, safety, testLogger())
@@ -153,7 +154,7 @@ func TestProposer_OOM_MemoryIncrease_Critical(t *testing.T) {
 
 	c := fake.NewClientBuilder().WithScheme(scheme).
 		WithRuntimeObjects(persona).
-		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
 	safety := gate.New(c, testLogger())
 	proposer := NewProposer(c, safety, testLogger())
@@ -180,7 +181,7 @@ func TestProposer_CPUSaturation(t *testing.T) {
 
 	c := fake.NewClientBuilder().WithScheme(scheme).
 		WithRuntimeObjects(persona).
-		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
 	safety := gate.New(c, testLogger())
 	proposer := NewProposer(c, safety, testLogger())
@@ -234,7 +235,7 @@ func TestProposer_BlastRadiusCap(t *testing.T) {
 
 	c := fake.NewClientBuilder().WithScheme(scheme).
 		WithRuntimeObjects(persona).
-		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
 	safety := gate.New(c, testLogger())
 	proposer := NewProposer(c, safety, testLogger())
@@ -279,7 +280,7 @@ func TestProposer_RateLimitBlocks(t *testing.T) {
 
 	c := fake.NewClientBuilder().WithScheme(scheme).
 		WithRuntimeObjects(objects...).
-		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
 	safety := gate.New(c, testLogger())
 	proposer := NewProposer(c, safety, testLogger())
@@ -302,7 +303,7 @@ func TestProposer_DenyListBlocks(t *testing.T) {
 
 	c := fake.NewClientBuilder().WithScheme(scheme).
 		WithRuntimeObjects(persona).
-		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
 	safety := gate.New(c, testLogger())
 	proposer := NewProposer(c, safety, testLogger())
@@ -324,7 +325,7 @@ func TestProposer_CrashLoopWithOOM_ProposesMemoryIncrease(t *testing.T) {
 
 	c := fake.NewClientBuilder().WithScheme(scheme).
 		WithRuntimeObjects(persona).
-		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
 	safety := gate.New(c, testLogger())
 	proposer := NewProposer(c, safety, testLogger())
@@ -372,7 +373,7 @@ func TestProposer_CrashLoopWithoutOOM_Skips(t *testing.T) {
 
 	c := fake.NewClientBuilder().WithScheme(scheme).
 		WithRuntimeObjects(persona).
-		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
 	safety := gate.New(c, testLogger())
 	proposer := NewProposer(c, safety, testLogger())
@@ -488,7 +489,7 @@ func TestProposer_PrePatchStateCaptured(t *testing.T) {
 
 	c := fake.NewClientBuilder().WithScheme(scheme).
 		WithRuntimeObjects(persona).
-		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
 	safety := gate.New(c, testLogger())
 	proposer := NewProposer(c, safety, testLogger())
@@ -515,7 +516,7 @@ func TestProposer_RollbackSpec(t *testing.T) {
 
 	c := fake.NewClientBuilder().WithScheme(scheme).
 		WithRuntimeObjects(persona).
-		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
 	safety := gate.New(c, testLogger())
 	proposer := NewProposer(c, safety, testLogger())

@@ -32,6 +32,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
+	dorguv1alpha1 "github.com/dorgu-ai/dorgu-operator/api/v1alpha1"
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
 	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation/planner"
@@ -85,7 +86,7 @@ func TestR7_StatusGateIsTheSealDecisionOfTheStoredPlan(t *testing.T) {
 func failingStatusClient(t *testing.T, objs ...client.Object) client.Client {
 	t.Helper()
 	inner := fake.NewClientBuilder().WithScheme(newWorkloadScheme()).WithObjects(objs...).
-		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 	return interceptor.NewClient(inner, interceptor.Funcs{
 		SubResourceUpdate: func(context.Context, client.Client, string, client.Object, ...client.SubResourceUpdateOption) error {
 			return errors.New("the API server is unavailable")
@@ -123,7 +124,7 @@ func TestR11_TransientStatusFailureIsRetried(t *testing.T) {
 		map[corev1.ResourceName]string{corev1.ResourceMemory: "32Mi", corev1.ResourceCPU: "50m"})
 	incident := newTestIncident(defaultNamespace, "oom", groundedPersona, "OOMKilled")
 	inner := fake.NewClientBuilder().WithScheme(newWorkloadScheme()).WithObjects(persona, deploy).
-		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 	failures := 0
 	c := interceptor.NewClient(inner, interceptor.Funcs{
 		SubResourceUpdate: func(ctx context.Context, cl client.Client, sub string, obj client.Object, opts ...client.SubResourceUpdateOption) error {

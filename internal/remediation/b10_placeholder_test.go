@@ -27,6 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
+	dorguv1alpha1 "github.com/dorgu-ai/dorgu-operator/api/v1alpha1"
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
 	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation/planner"
@@ -41,7 +42,7 @@ func proposeCrashLoop(t *testing.T, plan *planner.RemediationPlan) *ProposalResu
 	t.Helper()
 	c := fake.NewClientBuilder().WithScheme(newTestScheme()).
 		WithRuntimeObjects(newTestPersona(defaultNamespace, "my-app")).
-		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 	p := NewProposer(c, gate.New(c, testLogger()), testLogger(), WithPlanner(&planCounter{plan: plan}))
 	diag := newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical)
 	diag.Contributing[0].Signal.Type = detection.SignalCrashLoopBackOff
@@ -108,7 +109,7 @@ func TestPlaceholder_OnlyTheLiteralWordIsRepaired(t *testing.T) {
 func TestPlaceholder_ThePersistChokepointNeverWritesOne(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(newTestScheme()).
 		WithRuntimeObjects(newTestPersona(defaultNamespace, "my-app")).
-		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 	p := NewProposer(c, gate.New(c, testLogger()), testLogger())
 	action := &dorguv1.RemediationAction{}
 	action.Name, action.Namespace = "ra-x", defaultNamespace
@@ -149,7 +150,7 @@ func TestPlaceholder_PersistRepairEdgeCases(t *testing.T) {
 func TestPlaceholder_AnAIPlanOfOnlyPlaceholdersFallsBackToTheRules(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(newTestScheme()).
 		WithRuntimeObjects(newTestPersona(defaultNamespace, "my-app")).
-		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 	plan := &planner.RemediationPlan{Confidence: 0.5, Steps: []planner.PlannedStep{
 		{Order: 1, Type: dorguv1.StepTypeManual, Description: "placeholder", Rationale: "placeholder", Risk: "low"},
 	}}
