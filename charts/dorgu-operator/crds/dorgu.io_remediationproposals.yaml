@@ -350,9 +350,11 @@ spec:
                   x-kubernetes-validations:
                   - message: only persona-update steps may be autoExecutable
                     rule: '!self.autoExecutable || self.type == ''persona-update'''
-                  - message: step command must be a kubectl invocation
-                    rule: '!has(self.command) || self.command.startsWith(''kubectl
-                      '')'
+                  - message: step command must be a single-line kubectl invocation
+                      with none of ; | & $ ` ( ) < > and no control, line-break or
+                      invisible format character
+                    rule: '!has(self.command) || (self.command.startsWith(''kubectl
+                      '') && !self.command.matches(r''[;|&$`()<>\p{Cc}\p{Cf}\x{2028}\x{2029}]''))'
                 maxItems: 64
                 type: array
                 x-kubernetes-list-type: atomic
