@@ -66,8 +66,10 @@ func TestCRDs_EveryFreeTextStepFieldHasAMaxLength(t *testing.T) {
 			}
 		}
 		safety := step.Properties["safety"]
-		if safety.MaxItems == nil || *safety.MaxItems != 16 {
-			t.Errorf("%s: step.safety maxItems = %v, want 16", crd.Name, safety.MaxItems)
+		// 64: room above the 32 entries per step the gate writes (gate.MaxStepSafetyEntries;
+		// a gate test holds the two apart), so an action the gate built is never Invalid.
+		if safety.MaxItems == nil || *safety.MaxItems != 64 {
+			t.Errorf("%s: step.safety maxItems = %v, want 64", crd.Name, safety.MaxItems)
 		}
 		if safety.Items == nil || safety.Items.Schema == nil {
 			t.Fatalf("%s: step.safety has no items schema", crd.Name)

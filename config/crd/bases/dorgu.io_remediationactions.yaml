@@ -346,6 +346,8 @@ spec:
                         clean-room run #4 saw it directly beside the model's claim that a 16x
                         change was "well within a 2x ceiling". A guardrail's verdict is Dorgu's
                         alone.
+                        The gate keeps at most 32 entries per step (gate.MaxStepSafetyEntries, which a
+                        test holds below this bound), so the limit is room above what it can write.
                       items:
                         description: |-
                           StepSafety is one guardrail verdict on one field of a step.
@@ -414,7 +416,7 @@ spec:
                         - rule
                         - verdict
                         type: object
-                      maxItems: 16
+                      maxItems: 64
                       type: array
                       x-kubernetes-list-type: atomic
                     type:

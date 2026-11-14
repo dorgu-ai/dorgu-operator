@@ -232,6 +232,32 @@ var _ = Describe("RemediationProposal intake", func() {
 			Expect(n).To(Equal(1))
 		})
 
+		It("converts a step with far more stripped fields than the safety record can list", func() {
+			f := setup("c1-manyfields", "OOMKilled")
+			var junk []string
+			for i := range 3 * gate.MaxStepSafetyEntries {
+				junk = append(junk, fmt.Sprintf(`"key%03d":"x"`, i))
+			}
+			step := memoryStep("384Mi")
+			step.Patch = &apiextensionsv1.JSON{Raw: []byte(
+				`{"spec":{"resources":{"limits":{"memory":"384Mi"}},"policies":{` + strings.Join(junk, ",") + `}}}`)}
+			p := propose(f, "c1-manyfields-p", func(p *dorguv1alpha1.RemediationProposal) {
+				p.Spec.Steps = []dorguv1.RemediationStep{step}
+			})
+
+			got := reconcile(p)
+
+			Expect(got.Status.Phase).To(Equal(dorguv1alpha1.PhaseConverted),
+				"the record of what was stripped is bounded by the gate, so the API server accepts the action")
+			var ra dorguv1.RemediationAction
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: got.Status.RemediationActionRef.Name}, &ra)).To(Succeed())
+			Expect(ra.Spec.Steps).To(HaveLen(1))
+			Expect(ra.Spec.Steps[0].Safety).To(HaveLen(gate.MaxStepSafetyEntries))
+			Expect(ra.Spec.Steps[0].Safety[gate.MaxStepSafetyEntries-1].Message).To(ContainSubstring("left out"))
+			Expect(string(ra.Spec.Steps[0].Patch.Raw)).To(ContainSubstring("384Mi"))
+			Expect(string(ra.Spec.Steps[0].Patch.Raw)).NotTo(ContainSubstring("key000"))
+		})
+
 		It("creates an incident when the proposal names none", func() {
 			f := setup("c1-noinc", "OOMKilled")
 			p := propose(f, "c1-noinc-p", func(p *dorguv1alpha1.RemediationProposal) { p.Spec.IncidentRef = nil })

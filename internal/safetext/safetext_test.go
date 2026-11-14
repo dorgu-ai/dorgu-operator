@@ -18,6 +18,7 @@ package safetext
 
 import (
 	"testing"
+	"unicode"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -45,10 +46,43 @@ func TestClean(t *testing.T) {
 		{"carriage return never survives", "a\r\nb", true, "a\nb"},
 		{"invalid UTF-8 is replaced", "a\xffb", false, r('a', 0xFFFD, 'b')},
 		{"empty", "", true, ""},
+		{"Unicode tag characters (invisible ASCII)", r('a', 0xE0041, 0xE0042, 'b', 0xE0000, 0xE007F, 'c'), false, "abc"},
+		{"word joiner and invisible operators", r('a', 0x2060, 'b', 0x2061, 0x2064, 'c', 0x2065, 0x206F, 'd'), false, "abcd"},
+		{"Arabic letter mark", r('a', 0x061C, 'b'), false, "ab"},
+		{"soft hyphen", r('a', 0xAD, 'b'), false, "ab"},
+		{"variation selectors", r('a', 0xFE00, 'b', 0xFE0F, 'c', 0xE0100, 'd', 0xE01EF, 'e'), false, "abcde"},
+		{"interlinear annotation", r('a', 0xFFF9, 'b', 0xFFFB, 'c'), false, "abc"},
+		{"left to right isolate and Mongolian vowel separator", r('a', 0x180E, 'b', 0x2066, 'c'), false, "abc"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			assert.Equal(t, tt.want, Clean(tt.in, tt.keepNewlines))
 		})
+	}
+}
+
+// Every character of the format category is removed, so the set cannot fall behind
+// Unicode: this walks the whole code space instead of trusting a list.
+func TestClean_RemovesEveryFormatCharacter(t *testing.T) {
+	for c := rune(0); c <= unicode.MaxRune; c++ {
+		if !unicode.Is(unicode.Cf, c) || c == unicode.ReplacementChar {
+			continue
+		}
+		if got := Clean("a"+string(c)+"b", false); got != "ab" {
+			t.Fatalf("U+%04X (category Cf) survived Clean: %q", c, got)
+		}
+	}
+}
+
+// The step-command rule of the CRD (api/v1.SanitizeStepCommand) refuses control
+// characters, every Cf and the two separators. Clean removes at least that set.
+func TestClean_CoversTheStepCommandCharacterClass(t *testing.T) {
+	for c := rune(0); c <= unicode.MaxRune; c++ {
+		if !unicode.IsControl(c) && !unicode.Is(unicode.Cf, c) && c != 0x2028 && c != 0x2029 {
+			continue
+		}
+		if got := Clean("a"+string(c)+"b", false); got != "ab" {
+			t.Fatalf("U+%04X is refused in a step command but survived Clean: %q", c, got)
+		}
 	}
 }

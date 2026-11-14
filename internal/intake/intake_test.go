@@ -932,6 +932,7 @@ func TestFactsFromIncident(t *testing.T) {
 		{"oom", incident("i", "OOMKilled"), gate.ClassResourceAdjustment, gate.ResourcePathMemory},
 		{"memory saturation", incident("i", "MemorySaturationHigh"), gate.ClassResourceAdjustment, gate.ResourcePathMemory},
 		{"cpu saturation", incident("i", "CPUSaturationCritical"), gate.ClassResourceAdjustment, gate.ResourcePathCPU},
+		{"cpu throttling", incident("i", "CPUThrottling"), gate.ClassResourceAdjustment, gate.ResourcePathCPU},
 		{"crash loop with oom", withOOMContribution, gate.ClassResourceAdjustment, gate.ResourcePathMemory},
 		{"crash loop", plainCrashLoop, "", ""},
 		{"crash loop with no diagnosis", incident("i", "CrashLoopBackOff"), "", ""},

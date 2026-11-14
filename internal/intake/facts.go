@@ -27,7 +27,7 @@ import (
 // rules would recommend, and the persona path that change would touch.
 //
 // It reads recorded detection data, never a proposal's text. The class mapping
-// mirrors the rule engine's: a resource-saturation signal, an OOM kill, or a crash
+// mirrors the rule engine's: a resource-saturation signal, CPU throttling, an OOM kill, or a crash
 // loop correlated with an OOM, is a resource adjustment; everything else is not,
 // so a persona-update proposed for it is refused at Validate/action-class.
 func factsFromIncident(incident *v1.IncidentMemory) gate.Facts {
@@ -45,7 +45,7 @@ func factsFromIncident(incident *v1.IncidentMemory) gate.Facts {
 	case detection.SignalOOMKilled, detection.SignalMemorySaturationCrit, detection.SignalMemorySaturationHigh:
 		facts.SuggestedAction = gate.ClassResourceAdjustment
 		facts.TargetPath = gate.ResourcePathMemory
-	case detection.SignalCPUSaturationHigh, detection.SignalCPUSaturationCritical:
+	case detection.SignalCPUSaturationHigh, detection.SignalCPUSaturationCritical, detection.SignalCPUThrottling:
 		facts.SuggestedAction = gate.ClassResourceAdjustment
 		facts.TargetPath = gate.ResourcePathCPU
 	case detection.SignalCrashLoopBackOff:

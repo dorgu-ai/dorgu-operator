@@ -85,10 +85,10 @@ const (
 	// ReasonNamespaceMismatch: the proposal's namespace is not its target's namespace.
 	ReasonNamespaceMismatch = "TargetNamespaceMismatch"
 
-	// ReasonIncidentUnavailable: the incident the proposal needs could not be read
-	// or created. Unlike the other intake reasons it is not final: the operator
-	// retries.
-	ReasonIncidentUnavailable = "IncidentUnavailable"
+	// ReasonActionInvalid: the API server refused the RemediationAction this
+	// proposal would become as invalid. Retrying cannot help, so it is final; the
+	// condition message carries the server's reason, shortened.
+	ReasonActionInvalid = "ActionInvalid"
 )
 
 // ConditionConverted is the condition the reconciler keeps on a proposal. It is

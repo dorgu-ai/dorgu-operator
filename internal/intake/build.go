@@ -65,8 +65,8 @@ func InstallDecision(action *dorguv1.RemediationAction, dec *gate.Decision) {
 // The source is the planner's only when the proposal was decided with a matched
 // in-process hint (plannerRun): that is the one thing a proposer cannot forge. A
 // proposal that merely says it is the planner, or claims the reserved source
-// "rollback", is recorded as an agent's. Free text from the proposal is stripped of
-// control characters.
+// "rollback", is recorded as an agent's. Free text from the proposal, the claimed
+// username included, is stripped of control and invisible characters.
 func provenanceFor(prop *v1alpha1.RemediationProposal, plannerRun bool) *dorguv1.RemediationProvenance {
 	source := dorguv1.ProposalSourceAgent
 	if plannerRun {
@@ -82,7 +82,7 @@ func provenanceFor(prop *v1alpha1.RemediationProposal, plannerRun bool) *dorguv1
 	}
 	return &dorguv1.RemediationProvenance{
 		Proposal: prop.Name,
-		Proposer: prop.Spec.Proposer,
+		Proposer: dorguv1.ProposerIdentity{Username: cleanUsername(prop.Spec.Proposer.Username)},
 		Source:   source,
 		Agent:    agent,
 	}

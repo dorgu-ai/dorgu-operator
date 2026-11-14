@@ -338,7 +338,9 @@ type RemediationStep struct {
 	// alone.
 	// +optional
 	// +listType=atomic
-	// +kubebuilder:validation:MaxItems=16
+	// The gate keeps at most 32 entries per step (gate.MaxStepSafetyEntries, which a
+	// test holds below this bound), so the limit is room above what it can write.
+	// +kubebuilder:validation:MaxItems=64
 	Safety []StepSafety `json:"safety,omitempty"`
 }
 

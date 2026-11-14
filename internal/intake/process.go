@@ -30,10 +30,25 @@ import (
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/api/v1alpha1"
 	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
+	"github.com/dorgu-ai/dorgu-operator/internal/safetext"
 )
 
 // maxConditionMessage bounds a condition message, which a gate reason can exceed.
 const maxConditionMessage = 1024
+
+// maxAPIMessage bounds how much of an API server's refusal is repeated in a
+// proposal's status.
+const maxAPIMessage = 512
+
+// shortened is an API server's message with control characters removed, cut to
+// maxAPIMessage characters.
+func shortened(msg string) string {
+	msg = safetext.Clean(msg, false)
+	if r := []rune(msg); len(r) > maxAPIMessage {
+		return string(r[:maxAPIMessage]) + "..."
+	}
+	return msg
+}
 
 // Outcome is what Process decided.
 type Outcome struct {
@@ -211,8 +226,8 @@ func (p *Processor) intakeChecks(
 	}
 	if n := countRecentBefore(prop, all, p.rateWindow); n >= p.rateLimit {
 		return p.reject(ctx, prop, nil, v1alpha1.StageIntake, v1alpha1.ReasonRateLimited, nil,
-			fmt.Sprintf("%s has already had %d proposals received in the last %s (limit %d)",
-				prop.Spec.Proposer.Username, n, p.rateWindow, p.rateLimit))
+			fmt.Sprintf("%q has already had %d proposals received in the last %s (limit %d)",
+				cleanUsername(prop.Spec.Proposer.Username), n, p.rateWindow, p.rateLimit))
 	}
 	return nil, nil
 }
@@ -322,6 +337,12 @@ func (p *Processor) convert(
 	draft.Annotations[AnnotationProposalUID] = string(prop.UID)
 
 	action, err := p.createAction(ctx, draft, dec)
+	if apierrors.IsInvalid(err) {
+		// The API server will refuse this action however often it is asked, so the
+		// proposal ends here: an error would make the reconciler retry it forever.
+		return p.reject(ctx, prop, incident, v1alpha1.StageIntake, v1alpha1.ReasonActionInvalid, dec,
+			"the API server refused the RemediationAction this proposal would become: "+shortened(err.Error()))
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -338,32 +359,45 @@ const AnnotationProposalUID = "dorgu.io/proposal-uid"
 // proposal. An action with no status was never proposed (its status write failed):
 // it is removed so the proposal is decided afresh.
 func (p *Processor) existingAction(ctx context.Context, prop *v1alpha1.RemediationProposal) (*dorguv1.RemediationAction, error) {
-	return p.actionFor(ctx, prop, true)
+	return p.actionFor(ctx, prop, true, p.lister)
 }
 
 // FindAction returns the proposed action that exists for the proposal, or nil. It
 // changes nothing. The planner uses it after a failed decision: if the action was
 // created, the proposal is not undone, because that would leave an action whose
-// provenance names a proposal that is gone.
+// provenance names a proposal that is gone. It reads the API server, not the
+// cache: a cache that has not yet seen an action created a moment ago must not
+// make the planner delete the proposal that action names.
 func (p *Processor) FindAction(ctx context.Context, key client.ObjectKey) (*dorguv1.RemediationAction, error) {
 	var prop v1alpha1.RemediationProposal
 	if err := p.reader.Get(ctx, key, &prop); err != nil {
 		return nil, client.IgnoreNotFound(err)
 	}
-	return p.actionFor(ctx, &prop, false)
+	return p.actionFor(ctx, &prop, false, p.reader)
 }
 
+// actionFor finds the action made for this proposal: the one stamped with the
+// proposal's UID. from is where the list comes from (the cache, or the API server
+// when a stale answer would do harm). An action with no phase is unfinished, and is
+// removed when removeUnfinished is set, whether or not it carries provenance: one
+// that lost its provenance and could not be deleted at the time is such an orphan,
+// and must not stand in the way of the proposal's own action. An action with a
+// phase is never removed.
+//
+// The list may be the cache's own objects (UnsafeDisableDeepCopy), so nothing
+// returned aliases it.
 func (p *Processor) actionFor(
-	ctx context.Context, prop *v1alpha1.RemediationProposal, removeUnfinished bool,
+	ctx context.Context, prop *v1alpha1.RemediationProposal, removeUnfinished bool, from client.Reader,
 ) (*dorguv1.RemediationAction, error) {
 	var list dorguv1.RemediationActionList
-	if err := p.lister.List(ctx, &list, client.InNamespace(prop.Namespace)); err != nil {
+	if err := from.List(ctx, &list, client.InNamespace(prop.Namespace), client.UnsafeDisableDeepCopy); err != nil {
 		return nil, fmt.Errorf("listing RemediationActions: %w", err)
 	}
 	for i := range list.Items {
 		ra := &list.Items[i]
 		uid, stamped := ra.Annotations[AnnotationProposalUID]
-		if ra.Spec.Provenance == nil || ra.Spec.Provenance.Proposal != prop.Name || !stamped || uid != string(prop.UID) {
+		if !stamped || uid != string(prop.UID) ||
+			(ra.Spec.Provenance != nil && ra.Spec.Provenance.Proposal != prop.Name) {
 			continue
 		}
 		if ra.Status.Phase == "" {
@@ -380,16 +414,34 @@ func (p *Processor) actionFor(
 				return nil, fmt.Errorf("re-reading the RemediationAction %s: %w", ra.Name, err)
 			}
 			if fresh.Status.Phase != "" {
+				if fresh.Spec.Provenance == nil {
+					continue
+				}
 				return &fresh, nil
 			}
-			if err := p.client.Delete(ctx, &fresh); err != nil && !apierrors.IsNotFound(err) {
+			if err := p.deleteAction(ctx, &fresh); err != nil && !apierrors.IsNotFound(err) {
 				return nil, fmt.Errorf("removing the unfinished RemediationAction %s: %w", ra.Name, err)
 			}
 			continue
 		}
-		return ra, nil
+		if ra.Spec.Provenance == nil {
+			// Not made by this intake (it writes a status only after checking provenance).
+			continue
+		}
+		return ra.DeepCopy(), nil
 	}
 	return nil, nil
+}
+
+// deleteAction removes the action it was given and no other: the delete carries the
+// object's UID, so a name that has since been reused, or an object recreated, is not
+// removed in its place.
+func (p *Processor) deleteAction(ctx context.Context, action *dorguv1.RemediationAction) error {
+	uid := action.UID
+	if uid == "" {
+		return p.client.Delete(ctx, action)
+	}
+	return p.client.Delete(ctx, action, client.Preconditions{UID: &uid})
 }
 
 // createAction writes the RemediationAction and records the gate's decision on its
@@ -416,7 +468,7 @@ func (p *Processor) createAction(
 	// an action with none reads as one the operator proposed itself, which is the
 	// fail-open direction for the approval rules: take it back and close the intake.
 	if action.Spec.Provenance == nil {
-		if delErr := p.client.Delete(ctx, action); delErr != nil && !apierrors.IsNotFound(delErr) {
+		if delErr := p.deleteAction(ctx, action); delErr != nil && !apierrors.IsNotFound(delErr) {
 			p.log.Error(delErr, "could not remove a RemediationAction that lost its provenance; it needs deleting by hand",
 				"name", action.Name, "namespace", action.Namespace)
 		}
@@ -454,7 +506,7 @@ func (p *Processor) createAction(
 	if err != nil {
 		p.log.Error(err, "RemediationAction created but its status could not be written; removing it",
 			"name", action.Name)
-		if delErr := p.client.Delete(ctx, action); delErr != nil && !apierrors.IsNotFound(delErr) {
+		if delErr := p.deleteAction(ctx, action); delErr != nil && !apierrors.IsNotFound(delErr) {
 			p.log.Error(delErr, "could not remove the RemediationAction that has no status; it needs deleting by hand",
 				"name", action.Name, "namespace", action.Namespace)
 		}

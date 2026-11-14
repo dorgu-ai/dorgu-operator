@@ -21,15 +21,38 @@ import (
 	"fmt"
 	"sort"
 	"time"
+	"unicode/utf8"
+
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/dorgu-ai/dorgu-operator/api/v1alpha1"
+	"github.com/dorgu-ai/dorgu-operator/internal/safetext"
 )
+
+// maxUsernameLength is the CRD's bound on proposer.username, in characters.
+const maxUsernameLength = 253
+
+// cleanUsername is a proposer's claimed username as the operator records and
+// prints it: stripped of control and invisible characters and cut to the CRD's
+// bound. It is also what proposals are compared by, so characters nobody can see
+// do not make one proposer into two.
+func cleanUsername(username string) string {
+	cleaned := safetext.Clean(username, false)
+	if utf8.RuneCountInString(cleaned) <= maxUsernameLength {
+		return cleaned
+	}
+	return string([]rune(cleaned)[:maxUsernameLength])
+}
 
 // listProposals reads every proposal in the cluster (from the cache, see Config.Lister). The rate limit counts across
 // namespaces, because one proposer is one identity wherever it writes.
+//
+// The List is read-only (UnsafeDisableDeepCopy): the cache hands out its own objects
+// instead of a copy of every proposal in the cluster for each one decided. Nothing
+// here or in earlierDuplicate and countRecentBefore writes to an item.
 func (p *Processor) listProposals(ctx context.Context) ([]v1alpha1.RemediationProposal, error) {
 	var list v1alpha1.RemediationProposalList
-	if err := p.lister.List(ctx, &list); err != nil {
+	if err := p.lister.List(ctx, &list, client.UnsafeDisableDeepCopy); err != nil {
 		return nil, fmt.Errorf("listing RemediationProposals: %w", err)
 	}
 	return list.Items, nil
@@ -63,7 +86,7 @@ func earlierDuplicate(prop *v1alpha1.RemediationProposal, all []v1alpha1.Remedia
 	for i := range all {
 		other := &all[i]
 		if same(other, prop) || other.Namespace != prop.Namespace ||
-			other.Spec.Proposer.Username != prop.Spec.Proposer.Username ||
+			cleanUsername(other.Spec.Proposer.Username) != cleanUsername(prop.Spec.Proposer.Username) ||
 			other.Spec.IdempotencyKey != prop.Spec.IdempotencyKey ||
 			other.Status.Phase == v1alpha1.PhaseRejected {
 			continue
@@ -86,7 +109,7 @@ func countRecentBefore(prop *v1alpha1.RemediationProposal, all []v1alpha1.Remedi
 	n := 0
 	for i := range all {
 		other := &all[i]
-		if same(other, prop) || other.Spec.Proposer.Username != prop.Spec.Proposer.Username {
+		if same(other, prop) || cleanUsername(other.Spec.Proposer.Username) != cleanUsername(prop.Spec.Proposer.Username) {
 			continue
 		}
 		if before(other, prop) && other.CreationTimestamp.After(cutoff) {
