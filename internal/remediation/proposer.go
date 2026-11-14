@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
@@ -528,6 +529,9 @@ func (p *Proposer) calculateResourceChange(
 	case detection.SignalCPUSaturationHigh, detection.SignalCPUSaturationCritical, detection.SignalCPUThrottling:
 		// A throttled container raises its own CPU limit, sized and bounded exactly as
 		// a memory limit is for an OOM kill. The gate rules on the result.
+		if skip, ok := throttledContainerMismatch(diag, ref); ok {
+			return skip, nil
+		}
 		return p.calculateLimitIncrease(diag, persona, ref, gate.ResourceKeyCPU)
 
 	case detection.SignalCrashLoopBackOff:
@@ -541,6 +545,44 @@ func (p *Proposer) calculateResourceChange(
 	default:
 		return resourceAdjustment{}, nil
 	}
+}
+
+// throttledContainerMismatch refuses to size a CPU proposal from a container the signal
+// is not about. The persona has one resources block and the proposer reads the live
+// limit of workload.PickContainer's container (the one named like the persona, else the
+// first), so with a throttled sidecar it would raise the main container's limit and
+// spend a human's approval on the wrong container. The signal names the throttled
+// container; when the live workload resolved and none of the throttled containers is the
+// one this proposal is sized from, nothing is proposed and the advisory says why. A
+// signal that names no container, or a workload that did not resolve, keeps the
+// behaviour it had. This is a target-identity check, not a safety rule: the gate still
+// rules on whatever is proposed.
+func throttledContainerMismatch(diag diagnosis.Diagnosis, ref *dorguv1.WorkloadRef) (resourceAdjustment, bool) {
+	if !gate.Resolved(ref) || ref.Container == "" {
+		return resourceAdjustment{}, false
+	}
+	var throttled []string
+	for _, cs := range diag.Contributing {
+		if cs.Signal.Type != detection.SignalCPUThrottling {
+			continue
+		}
+		name := cs.Signal.Metadata["container"]
+		if name == "" || name == ref.Container {
+			return resourceAdjustment{}, false
+		}
+		if !slices.Contains(throttled, name) {
+			throttled = append(throttled, name)
+		}
+	}
+	if len(throttled) == 0 {
+		return resourceAdjustment{}, false
+	}
+	return resourceAdjustment{
+		skipCode: SkipContainerMismatch,
+		skipReason: fmt.Sprintf(
+			"the throttled container %q is not %q, the container on Deployment %s that this persona's single resources block describes, "+
+				"so raising that limit would not fix it; raise the CPU limit of %q by hand",
+			throttled[0], ref.Container, ref.Name, throttled[0])}, true
 }
 
 // calculateLimitIncrease sizes a limit increase for one resource dimension.
