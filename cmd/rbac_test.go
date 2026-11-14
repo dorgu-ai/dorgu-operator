@@ -19,6 +19,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -171,19 +172,46 @@ func TestRBAC_NeverGrantsKubeletAccess(t *testing.T) {
 		}
 	}
 
-	chart, err := os.ReadFile(filepath.Join("..", "charts", "dorgu-operator", "templates", "rbac.yaml"))
-	require.NoError(t, err)
-	for doc := range strings.SplitSeq(string(chart), "\n---") {
-		var cr rbacv1.ClusterRole
-		if yaml.Unmarshal([]byte(doc), &cr) != nil || cr.Kind != "ClusterRole" {
-			continue
-		}
+	roles := chartClusterRoles(t)
+	require.NotEmpty(t, roles, "no chart ClusterRole could be parsed, so this test inspected nothing (it used to pass vacuously on {{ }} directives)")
+	for _, cr := range roles {
+		require.NotEmpty(t, cr.Rules, "chart ClusterRole %q parsed with no rules", cr.Name)
 		for _, rule := range cr.Rules {
 			for _, resource := range rule.Resources {
-				assert.False(t, forbidden(resource), "chart role grants %v on %q", rule.Verbs, resource)
+				assert.False(t, forbidden(resource), "chart role %q grants %v on %q", cr.Name, rule.Verbs, resource)
 			}
 		}
 	}
+}
+
+var clusterRoleKind = regexp.MustCompile(`(?m)^kind: ClusterRole$`)
+
+// chartClusterRoles parses the ClusterRoles in the chart's rbac template. The template
+// carries {{ }} directives, which are not YAML, so every line holding one is dropped
+// first: the rules themselves are literal. A document that still does not parse fails
+// the test instead of being skipped.
+func chartClusterRoles(t *testing.T) []rbacv1.ClusterRole {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("..", "charts", "dorgu-operator", "templates", "rbac.yaml"))
+	require.NoError(t, err)
+	var kept []string
+	for line := range strings.SplitSeq(string(raw), "\n") {
+		if !strings.Contains(line, "{{") {
+			kept = append(kept, line)
+		}
+	}
+	var roles []rbacv1.ClusterRole
+	for doc := range strings.SplitSeq(strings.Join(kept, "\n"), "\n---") {
+		if !clusterRoleKind.MatchString(doc) {
+			continue
+		}
+		var cr rbacv1.ClusterRole
+		require.NoError(t, yaml.Unmarshal([]byte(doc), &cr), "chart ClusterRole document does not parse:\n%s", doc)
+		if cr.Kind == "ClusterRole" {
+			roles = append(roles, cr)
+		}
+	}
+	return roles
 }
 
 // The pod metrics grant is read-only and exactly get/list, in both install paths.
