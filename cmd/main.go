@@ -46,6 +46,7 @@ import (
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
 	"github.com/dorgu-ai/dorgu-operator/internal/events"
 	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
+	"github.com/dorgu-ai/dorgu-operator/internal/intake"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation"
 	// +kubebuilder:scaffold:imports
 )
@@ -180,6 +181,14 @@ func main() {
 	var intakeState intakeSetup
 	if cfg.enableHealthCheck {
 		intakeState = newIntakeSetup(mgr.GetAPIReader(), operatorNS, setupLog)
+		// The username above is a claim from the deployment: have the API server confirm it.
+		if identityClient, icErr := kubernetes.NewForConfig(restConfig); icErr != nil {
+			setupLog.Error(icErr, "unable to build the client that verifies the operator's identity; the intake stays closed")
+			intakeState.Preflight.Add(intake.StaticCheck("operator-identity-verified",
+				intake.ReasonOperatorIdentityUnverified, icErr))
+		} else {
+			intakeState.verifyIdentity(intake.WhoAmIFromSelfSubjectReview(identityClient))
+		}
 		preflightCtx, cancelPreflight := context.WithTimeout(context.Background(), preflightTimeout)
 		intakeState.Preflight.Run(preflightCtx)
 		cancelPreflight()

@@ -255,3 +255,19 @@ func TestGeneratedRole_CanReadOnlyTheTwoCRDsThePreflightChecks(t *testing.T) {
 	}
 	assert.True(t, found, "no CRD get rule: the preflight could never pass")
 }
+
+// N-9: the operator asks the API server who it is (SelfSubjectReview), and both the
+// generated role and the chart grant it explicitly.
+func TestRBAC_GrantsSelfSubjectReviewCreate(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "config", "rbac", "role.yaml"))
+	require.NoError(t, err)
+	var role rbacv1.ClusterRole
+	require.NoError(t, yaml.Unmarshal(data, &role))
+	assert.True(t, hasRule(role, "authentication.k8s.io", "selfsubjectreviews", "create"),
+		"the generated role must let the operator create a SelfSubjectReview")
+
+	chart, err := os.ReadFile(filepath.Join("..", "charts", "dorgu-operator", "templates", "rbac.yaml"))
+	require.NoError(t, err)
+	assert.Contains(t, string(chart), `resources: ["selfsubjectreviews"]
+    verbs: ["create"]`, "the chart ClusterRole mirrors it")
+}

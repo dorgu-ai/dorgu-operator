@@ -57,6 +57,16 @@ func newIntakeSetup(reader client.Reader, operatorNS string, log logr.Logger) in
 	}
 }
 
+// verifyIdentity adds the check that the API server agrees about who the operator
+// is. Without a username there is nothing to check: the identity check already
+// fails.
+func (s intakeSetup) verifyIdentity(whoAmI intake.WhoAmI) {
+	if s.Username == "" || whoAmI == nil {
+		return
+	}
+	s.Preflight.Add(intake.IdentityVerifiedCheck(s.Username, whoAmI))
+}
+
 // lateRegistration runs register once the intake's CRD preflight first passes, then
 // never again. The proposal controller cannot be registered while the
 // RemediationProposal CRD is absent (its cache would never sync and the manager would

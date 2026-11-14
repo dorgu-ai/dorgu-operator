@@ -112,3 +112,33 @@ func TestLateRegistration_ARegistrationThatFailsIsTriedAgain(t *testing.T) {
 		t.Fatalf("calls = %d, want 2 (one failure, one success, then done)", calls)
 	}
 }
+
+// N-9: a well-formed but wrong OPERATOR_SERVICE_ACCOUNT is caught against what the
+// API server says, and closes the intake with its own reason.
+func TestNewIntakeSetup_VerifyIdentityFailsClosedOnAMismatch(t *testing.T) {
+	t.Setenv(intake.ServiceAccountEnv, "dorgu-operator")
+	who := func(name string) intake.WhoAmI {
+		return func(context.Context) (string, error) { return name, nil }
+	}
+
+	right := newIntakeSetup(crdOnlyClient(t, installedCRDs()...), testOperatorNS, logr.Discard())
+	right.verifyIdentity(who("system:serviceaccount:dorgu-system:dorgu-operator"))
+	if got := right.Preflight.Run(context.Background()); len(got) != 0 {
+		t.Fatalf("a matching identity must pass, got %v", failureReasons(got))
+	}
+
+	wrong := newIntakeSetup(crdOnlyClient(t, installedCRDs()...), testOperatorNS, logr.Discard())
+	wrong.verifyIdentity(who("system:serviceaccount:dorgu-system:default"))
+	got := failureReasons(wrong.Preflight.Run(context.Background()))
+	if len(got) != 1 || got[0] != intake.ReasonOperatorIdentityMismatch {
+		t.Fatalf("a wrong identity: %v", got)
+	}
+
+	t.Setenv(intake.ServiceAccountEnv, "")
+	none := newIntakeSetup(crdOnlyClient(t, installedCRDs()...), testOperatorNS, logr.Discard())
+	none.verifyIdentity(who("anyone"))
+	got = failureReasons(none.Preflight.Run(context.Background()))
+	if len(got) != 1 || got[0] != intake.ReasonOperatorIdentityUnknown {
+		t.Fatalf("with no configured identity there is nothing to verify, and it is already closed: %v", got)
+	}
+}

@@ -61,7 +61,9 @@ type Check struct {
 	Reason string
 
 	// Run returns nil when the check passes, and an error whose text says what is
-	// wrong and what to do about it when it does not.
+	// wrong and what to do about it when it does not. An error with a
+	// FailureReason() string method is reported with that reason instead of
+	// Reason, for a check that can fail in more than one way.
 	Run func(ctx context.Context) error
 }
 
@@ -131,7 +133,7 @@ func (p *Preflight) Run(ctx context.Context) []Failure {
 	var failures []Failure
 	for _, c := range checks {
 		if err := runCheck(ctx, c); err != nil {
-			failures = append(failures, Failure{Check: c.Name, Reason: c.Reason, Message: err.Error()})
+			failures = append(failures, Failure{Check: c.Name, Reason: failureReason(err, c.Reason), Message: err.Error()})
 		}
 	}
 
