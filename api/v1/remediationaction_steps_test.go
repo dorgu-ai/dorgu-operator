@@ -458,3 +458,65 @@ func TestMaxPlanSteps_IsTheCRDMaxItemsOfSpecSteps(t *testing.T) {
 		t.Fatalf("CRD spec.steps maxItems = %d, MaxPlanSteps = %d", got, MaxPlanSteps)
 	}
 }
+
+// F-7: every control character, DEL, and the Unicode line and paragraph separators
+// are refused, wherever they sit in the command. They let a command rewrite the
+// line a human reads (ESC sequences), or break it (NEL, VT, FF, U+2028, U+2029).
+func isRefusedInCommand(r rune) bool {
+	return r <= 0x1f || (r >= 0x7f && r <= 0x9f) || r == 0x2028 || r == 0x2029
+}
+
+func TestSanitizeStepCommand_RejectsControlAndLineBreakCharacters(t *testing.T) {
+	// The code point list the C3 review used: U+0000 to U+2100, and three more.
+	points := make([]rune, 0, 0x2102)
+	for r := rune(0); r <= 0x2100; r++ {
+		if r >= 0xd800 && r <= 0xdfff {
+			continue // surrogates are not characters
+		}
+		points = append(points, r)
+	}
+	points = append(points, 0xfeff, 0xfffd, 0x1f600)
+
+	for _, r := range points {
+		in := "kubectl get pods" + string(r) + "x"
+		got := SanitizeStepCommand(in)
+		if isRefusedInCommand(r) {
+			if got != "" {
+				t.Errorf("U+%04X was accepted in %q", r, in)
+			}
+			continue
+		}
+		// Only the shell metacharacters otherwise refuse a command.
+		if strings.ContainsRune(stepCommandForbidden, r) {
+			if got != "" {
+				t.Errorf("%q was accepted", in)
+			}
+			continue
+		}
+		if got != in {
+			t.Errorf("U+%04X was refused: %q -> %q", r, in, got)
+		}
+	}
+}
+
+func TestSanitizeStepCommand_NamedControlCharacters(t *testing.T) {
+	for name, r := range map[string]rune{
+		"NUL": 0x00, "BEL": 0x07, "backspace": 0x08, "tab": 0x09, "VT": 0x0b, "FF": 0x0c,
+		"ESC": 0x1b, "DEL": 0x7f, "NEL": 0x85, "CSI": 0x9b, "line separator": 0x2028, "paragraph separator": 0x2029,
+	} {
+		if got := SanitizeStepCommand("kubectl get pods " + string(r) + "-o wide"); got != "" {
+			t.Errorf("%s was accepted: %q", name, got)
+		}
+	}
+	// A terminal escape sequence is the case the rule exists for.
+	if got := SanitizeStepCommand("kubectl get pods \x1b[2K\rkubectl get nodes"); got != "" {
+		t.Errorf("an escape sequence was accepted: %q", got)
+	}
+	// Surrounding whitespace is still trimmed, as before, and ordinary text passes.
+	if got := SanitizeStepCommand("  kubectl get pods -n shop \n"); got != "kubectl get pods -n shop" {
+		t.Errorf("surrounding whitespace: %q", got)
+	}
+	if got := SanitizeStepCommand("kubectl get pods -l 'app=café' -o jsonpath={.items[0].metadata.name}"); got == "" {
+		t.Error("printable non-ASCII text was refused")
+	}
+}

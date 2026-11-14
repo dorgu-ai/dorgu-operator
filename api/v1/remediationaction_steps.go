@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 )
@@ -164,14 +165,26 @@ const stepCommandPrefix = "kubectl "
 // substitution, subshells and variable expansion, and a second line. It is the
 // same set as the step command rule on the CRD (see RemediationStep), so a command
 // that passes SanitizeStepCommand always passes admission.
-const stepCommandForbidden = ";&|<>`$()\n\r"
+const stepCommandForbidden = ";&|<>`$()"
+
+// stepCommandControl reports whether r is a character a command may never contain:
+// every control character (the C0 set U+0000 to U+001F, DEL, and the C1 set U+0080
+// to U+009F, which is unicode.IsControl), and the Unicode line and paragraph
+// separators U+2028 and U+2029. Controls can rewrite the line a human reads
+// (an ESC sequence) or end it (CR, LF, VT, FF, NEL, U+2028, U+2029), so a pasted
+// command is not the command that was shown. Tab is refused too: no kubectl
+// command needs one. It is the class [\p{Cc}\x{2028}\x{2029}] of the CRD rule.
+func stepCommandControl(r rune) bool {
+	return unicode.IsControl(r) || r == '\u2028' || r == '\u2029'
+}
 
 // SanitizeStepCommand returns cmd if it is safe to print as a copy-paste
 // suggestion, and "" otherwise.
 //
 // A step command may be authored by a language model, so it is untrusted input
 // on its way to a human's shell. The bar it has to clear is deliberately blunt:
-// one line, a kubectl invocation, no shell metacharacters, within the CRD's
+// one line, a kubectl invocation, no shell metacharacters and no control or
+// line-break character, within the CRD's
 // length bound. A command that fails any of these is dropped rather than
 // rewritten, because a half-corrected command is worse than none.
 //
@@ -188,7 +201,7 @@ func SanitizeStepCommand(cmd string) string {
 	if !strings.HasPrefix(trimmed, stepCommandPrefix) {
 		return ""
 	}
-	if strings.ContainsAny(trimmed, stepCommandForbidden) {
+	if strings.ContainsAny(trimmed, stepCommandForbidden) || strings.IndexFunc(trimmed, stepCommandControl) >= 0 {
 		return ""
 	}
 	return trimmed

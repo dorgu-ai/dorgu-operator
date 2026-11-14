@@ -366,9 +366,10 @@ spec:
                   - message: only persona-update steps may be autoExecutable
                     rule: '!self.autoExecutable || self.type == ''persona-update'''
                   - message: step command must be a single-line kubectl invocation
-                      with none of ; | & $ ` ( ) < > or a newline
+                      with none of ; | & $ ` ( ) < > and no control or line-break
+                      character
                     rule: '!has(self.command) || (self.command.startsWith(''kubectl
-                      '') && !self.command.matches(''[;|&$`()<>\n\r]''))'
+                      '') && !self.command.matches(r''[;|&$`()<>\p{Cc}\x{2028}\x{2029}]''))'
                 maxItems: 64
                 type: array
                 x-kubernetes-list-type: atomic
@@ -563,9 +564,9 @@ spec:
                         ceilingSource:
                           description: |-
                             CeilingSource says where the limit this verdict applied came from. The
-                            guardrails stage fills it on every verdict it records, so a client never
-                            infers it. Verdicts of other stages and verdicts recorded before it existed
-                            leave it empty.
+                            Guardrails and DedupCooldown stages fill it on every verdict they record, so
+                            a client never infers it. Verdicts of other stages and verdicts recorded
+                            before it existed leave it empty.
                           enum:
                           - Default
                           - ClusterPersona
@@ -813,9 +814,9 @@ spec:
                         ceilingSource:
                           description: |-
                             CeilingSource says where the limit this verdict applied came from. The
-                            guardrails stage fills it on every verdict it records, so a client never
-                            infers it. Verdicts of other stages and verdicts recorded before it existed
-                            leave it empty.
+                            Guardrails and DedupCooldown stages fill it on every verdict they record, so
+                            a client never infers it. Verdicts of other stages and verdicts recorded
+                            before it existed leave it empty.
                           enum:
                           - Default
                           - ClusterPersona

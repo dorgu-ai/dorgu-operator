@@ -238,7 +238,7 @@ type RemediationActionDetail struct {
 // which preserves the operator's non-negotiable guarantee that it never writes
 // workloads. See ValidateAutoExecutable.
 // +kubebuilder:validation:XValidation:rule="!self.autoExecutable || self.type == 'persona-update'",message="only persona-update steps may be autoExecutable"
-// +kubebuilder:validation:XValidation:rule="!has(self.command) || (self.command.startsWith('kubectl ') && !self.command.matches('[;|&$`()<>\\n\\r]'))",message="step command must be a single-line kubectl invocation with none of ; | & $ ` ( ) < > or a newline"
+// +kubebuilder:validation:XValidation:rule="!has(self.command) || (self.command.startsWith('kubectl ') && !self.command.matches(r'[;|&$`()<>\\p{Cc}\\x{2028}\\x{2029}]'))",message="step command must be a single-line kubectl invocation with none of ; | & $ ` ( ) < > and no control or line-break character"
 type RemediationStep struct {
 	// Order is the 1-based execution order of this step within the plan.
 	// +kubebuilder:validation:Minimum=1

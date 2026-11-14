@@ -25,6 +25,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 )
@@ -45,7 +46,6 @@ func TestCommandRule_AcceptsASingleLineKubectlInvocation(t *testing.T) {
 		`kubectl get pods -l "app=web"`,
 		"kubectl get pod web -o jsonpath={.spec.containers[0].image}",
 		"kubectl annotate pod web note=a-b_c.d/e:f=g,h",
-		"kubectl get pods -n shop\t-o wide",
 	} {
 		err := c.Create(ctx, remediation(fmt.Sprintf("ok-%d", i), command))
 		assert.NoError(t, err, "%q must be accepted", command)
@@ -81,6 +81,15 @@ func TestCommandRule_RejectsEveryShellMetacharacterAndNewline(t *testing.T) {
 		"kubectl no arg":   "kubectl",
 		"kubectl prefix":   "kubectlx get pods",
 		"leading space":    " kubectl get pods",
+		"tab":              "kubectl get pods\t-n shop",
+		"escape":           "kubectl get pods \x1b[2K",
+		"nul":              "kubectl get pods \x00",
+		"vertical tab":     "kubectl get pods\x0b-n shop",
+		"form feed":        "kubectl get pods\x0c-n shop",
+		"delete":           "kubectl get pods\x7f",
+		"next line":        "kubectl get pods\u0085-n shop",
+		"line separator":   "kubectl get pods\u2028-n shop",
+		"paragraph sep":    "kubectl get pods\u2029-n shop",
 	}
 	for name, command := range forbidden {
 		t.Run(name, func(t *testing.T) {
@@ -134,4 +143,44 @@ func safeName(s string) string {
 		}
 	}
 	return string(out)
+}
+
+// F-7: the rule on the API server and SanitizeStepCommand must agree on every code
+// point, so a command the planner lets out is always storable and nothing the API
+// server stores is a command the planner would have dropped. The list is the one the
+// C3 review probed: U+0000 to U+2100, U+FEFF, U+FFFD and U+1F600. Dry-run creates
+// run the full validation without storing anything.
+func TestCommandRule_AgreesWithSanitizeStepCommandOnEveryCodePoint(t *testing.T) {
+	c := startEnv(t, filepath.Join("..", "..", "config", "crd", "bases"))
+	ctx := context.Background()
+
+	points := make([]rune, 0, 0x2102)
+	for r := rune(0); r <= 0x2100; r++ {
+		if r >= 0xd800 && r <= 0xdfff {
+			continue
+		}
+		points = append(points, r)
+	}
+	points = append(points, 0xfeff, 0xfffd, 0x1f600)
+
+	accepted := 0
+	for _, r := range points {
+		command := "kubectl get pods" + string(r) + "x"
+		err := c.Create(ctx, remediation("codepoint", command), client.DryRunAll)
+		serverAccepts := err == nil
+		if err != nil && !apierrors.IsInvalid(err) {
+			t.Fatalf("U+%04X: unexpected error %v", r, err)
+		}
+		goAccepts := dorguv1.SanitizeStepCommand(command) == command
+		if serverAccepts != goAccepts {
+			t.Errorf("U+%04X: API server accepts=%v, SanitizeStepCommand accepts=%v", r, serverAccepts, goAccepts)
+		}
+		if serverAccepts {
+			accepted++
+			if (r <= 0x1f) || (r >= 0x7f && r <= 0x9f) || r == 0x2028 || r == 0x2029 {
+				t.Errorf("the API server accepted control or line-break character U+%04X", r)
+			}
+		}
+	}
+	assert.Greater(t, accepted, 8000, "ordinary characters must still be accepted")
 }
