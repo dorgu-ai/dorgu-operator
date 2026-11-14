@@ -205,6 +205,11 @@ const (
 	// expiresAt. At issue it means the spec could not be hashed; at apply it is a v0
 	// ticket, written before ticket v1, which is refused rather than honoured.
 	GuardrailTicketIncomplete = "ticket-incomplete"
+
+	// GuardrailTooManySteps: the plan has more steps than spec.steps allows
+	// (dorguv1.MaxPlanSteps). It is refused with a reason here rather than failing
+	// the create of the RemediationAction on every cycle.
+	GuardrailTooManySteps = "too-many-steps"
 )
 
 // Safety rule names. They are the Rule of a Violation and the Guardrail of the

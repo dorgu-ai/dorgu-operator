@@ -54,6 +54,15 @@ func (validateStage) Run(_ context.Context, cand *Candidate, d *Decision) error 
 		return nil
 	}
 
+	// A plan the CRD cannot hold is refused here, with a reason, not left to fail
+	// the create of the RemediationAction on every cycle (F-9).
+	if len(d.Steps) > dorguv1.MaxPlanSteps {
+		d.refuse(StageValidate, GuardrailTooManySteps,
+			fmt.Sprintf("the plan has %d steps and a plan may have at most %d", len(d.Steps), dorguv1.MaxPlanSteps),
+			map[string]string{"steps": fmt.Sprint(len(d.Steps)), "max": fmt.Sprint(dorguv1.MaxPlanSteps)})
+		return nil
+	}
+
 	if !validateStepTypes(cand, d) {
 		return nil
 	}

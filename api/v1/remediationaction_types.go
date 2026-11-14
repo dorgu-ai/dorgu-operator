@@ -25,6 +25,11 @@ import (
 // RemediationAction Spec types
 // ============================================================================
 
+// MaxPlanSteps is the most steps a plan may have: the maxItems of spec.steps.
+// The kubebuilder marker cannot read a constant, so a test pins the two together.
+// The gate refuses a longer plan (too-many-steps) before anything is created.
+const MaxPlanSteps = 64
+
 // RemediationActionSpec defines the desired state of RemediationAction.
 type RemediationActionSpec struct {
 	// IncidentRef references the IncidentMemory that triggered this remediation.

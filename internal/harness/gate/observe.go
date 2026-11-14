@@ -82,6 +82,7 @@ func (s refusalSite) phases() []Phase {
 // listed here.
 var refusalCatalog = []refusalSite{
 	{Stage: StageValidate, Guardrail: GuardrailTarget},
+	{Stage: StageValidate, Guardrail: GuardrailTooManySteps},
 	{Stage: StageValidate, Guardrail: GuardrailStepType},
 	{Stage: StageValidate, Guardrail: GuardrailActionClass},
 	{Stage: StageValidate, Guardrail: GuardrailFieldAllowlist},
@@ -190,7 +191,7 @@ func allGuardrails() []string {
 		GuardrailNoProposalRecord, GuardrailWorkloadUnbound, GuardrailSpecChanged, GuardrailNoPlan,
 		GuardrailActionClass, GuardrailPolicyUnreadable, GuardrailUnknownMode, GuardrailNotTicketed,
 		GuardrailClusterUnreadable, GuardrailTicket, GuardrailNotApproved, GuardrailTicketMismatch, GuardrailTicketExpired,
-		GuardrailNoApprover, GuardrailTicketIncomplete,
+		GuardrailNoApprover, GuardrailTicketIncomplete, GuardrailTooManySteps,
 	}
 	return all
 }

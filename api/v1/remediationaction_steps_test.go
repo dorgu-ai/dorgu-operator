@@ -421,3 +421,40 @@ func TestRemediationStepCRD_CarriesStructuredSafety(t *testing.T) {
 		[]string{SafetyVerdictClamped, SafetyVerdictRejected, SafetyVerdictDerived},
 		readEnum("verdict"))
 }
+
+// MaxPlanSteps is what the gate enforces; the CRD's maxItems is what the API server
+// enforces. They are one number, and the marker cannot read a constant.
+func TestMaxPlanSteps_IsTheCRDMaxItemsOfSpecSteps(t *testing.T) {
+	raw, err := os.ReadFile("../../config/crd/bases/dorgu.io_remediationactions.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var crd struct {
+		Spec struct {
+			Versions []struct {
+				Schema struct {
+					OpenAPIV3Schema struct {
+						Properties struct {
+							Spec struct {
+								Properties struct {
+									Steps struct {
+										MaxItems int `json:"maxItems"`
+									} `json:"steps"`
+								} `json:"properties"`
+							} `json:"spec"`
+						} `json:"properties"`
+					} `json:"openAPIV3Schema"`
+				} `json:"schema"`
+			} `json:"versions"`
+		} `json:"spec"`
+	}
+	if err := yaml.Unmarshal(raw, &crd); err != nil {
+		t.Fatal(err)
+	}
+	if len(crd.Spec.Versions) == 0 {
+		t.Fatal("the CRD has no versions")
+	}
+	if got := crd.Spec.Versions[0].Schema.OpenAPIV3Schema.Properties.Spec.Properties.Steps.MaxItems; got != MaxPlanSteps {
+		t.Fatalf("CRD spec.steps maxItems = %d, MaxPlanSteps = %d", got, MaxPlanSteps)
+	}
+}
