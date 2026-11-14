@@ -149,6 +149,23 @@ func (p *Preflight) Run(ctx context.Context) []Failure {
 	return failures
 }
 
+// Report closes the intake at once with a failure found outside a check run: the
+// create path noticed something the periodic checks have not seen yet. It lasts until
+// the next Run, whose own answer replaces it.
+func (p *Preflight) Report(f Failure) {
+	p.mu.Lock()
+	for _, existing := range p.failures {
+		if existing == f {
+			p.mu.Unlock()
+			return
+		}
+	}
+	p.failures = append(append([]Failure(nil), p.failures...), f)
+	p.ran = true
+	p.mu.Unlock()
+	p.report([]Failure{f})
+}
+
 // runCheck runs one check, turning a panic or an error with no text into a failure
 // that says something.
 func runCheck(ctx context.Context, c Check) (err error) {

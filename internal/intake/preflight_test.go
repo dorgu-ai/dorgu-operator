@@ -338,3 +338,30 @@ func TestCRDChecks_AReadErrorIsAFailureNotAPass(t *testing.T) {
 		}
 	}
 }
+
+// F-9: the preflight is a periodic read of the CRD. The create itself checks too: an
+// API server running a schema without spec.provenance prunes it silently, and the
+// action it kept would read as one the operator proposed itself.
+func TestProcess_AnActionThatLostItsProvenanceIsRemovedAndNotAccepted(t *testing.T) {
+	w := newWorld(t, Config{}, baseObjects()...)
+	w.p.client = interceptor.NewClient(w.c.(client.WithWatch), interceptor.Funcs{
+		Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+			if ra, ok := obj.(*dorguv1.RemediationAction); ok {
+				ra.Spec.Provenance = nil // what a stale CRD does to the object it returns
+			}
+			return c.Create(ctx, obj, opts...)
+		},
+	})
+	w.create(t, proposal("p", "alice", "k"))
+
+	out, err := w.p.Process(context.Background(), types.NamespacedName{Namespace: testNS, Name: "p"}, nil)
+
+	require.Error(t, err)
+	var notReady *NotReadyError
+	require.ErrorAs(t, err, &notReady)
+	assert.Equal(t, ReasonActionProvenanceMissing, notReady.Failure.Reason)
+	assert.Contains(t, err.Error(), actionCRDFile)
+	assert.Nil(t, out)
+	assert.Empty(t, actionNames(t, w.c), "the provenance-less action was deleted")
+	assert.NotNil(t, w.p.Blocked(), "and the intake closes until the preflight passes again")
+}

@@ -399,6 +399,20 @@ func (p *Processor) createAction(
 	// status write would otherwise be cleared by a gate that never saw it (F9).
 	createdGeneration := action.GetGeneration()
 
+	// The client fills action from the response, so what the API server kept is
+	// what is here. A schema without spec.provenance prunes it without an error, and
+	// an action with none reads as one the operator proposed itself, which is the
+	// fail-open direction for the approval rules: take it back and close the intake.
+	if action.Spec.Provenance == nil {
+		if delErr := p.client.Delete(ctx, action); delErr != nil && !apierrors.IsNotFound(delErr) {
+			p.log.Error(delErr, "could not remove a RemediationAction that lost its provenance; it needs deleting by hand",
+				"name", action.Name, "namespace", action.Namespace)
+		}
+		failure := Failure{Check: "action-provenance", Reason: ReasonActionProvenanceMissing, Message: missingProvenance().Error()}
+		p.preflight.Report(failure)
+		return nil, &NotReadyError{Failure: failure}
+	}
+
 	key := client.ObjectKeyFromObject(action)
 	err := retry.OnError(retry.DefaultBackoff, retriable, func() error {
 		var fresh dorguv1.RemediationAction
