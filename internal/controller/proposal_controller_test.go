@@ -328,6 +328,17 @@ var _ = Describe("RemediationProposal intake", func() {
 			expectRejected(reconcile(p), dorguv1alpha1.StageIntake, dorguv1alpha1.ReasonNotYetSupported)
 		})
 
+		It("refuses an incident detected on another persona with IncidentTargetMismatch", func() {
+			a := setup("c1-persona-a", "OOMKilled")
+			b := setup("c1-persona-b", "ImagePullBackOff")
+			// B's proposal cites A's OOM incident to unlock a memory raise on B.
+			p := propose(b, "c1-cross-persona-p", func(p *dorguv1alpha1.RemediationProposal) {
+				p.Spec.IncidentRef = &dorguv1.IncidentReference{Name: a.incident, Namespace: namespace}
+			})
+
+			expectRejected(reconcile(p), dorguv1alpha1.StageIntake, dorguv1alpha1.ReasonIncidentTargetMismatch)
+		})
+
 		It("rejects at Validate when a persona change is not what the rules recommend", func() {
 			f := setup("c1-validate", "ImagePullBackOff")
 			p := propose(f, "c1-validate-p", nil)
@@ -337,7 +348,24 @@ var _ = Describe("RemediationProposal intake", func() {
 
 		It("rejects at Ground when the persona does not exist", func() {
 			f := setup("c1-ground", "OOMKilled")
-			p := propose(f, "c1-ground-p", func(p *dorguv1alpha1.RemediationProposal) { p.Spec.Target.Name = "c1-no-persona" })
+			// The incident is for the missing persona: an incident for another one is
+			// refused at Intake before the gate looks at the target.
+			missing := &dorguv1.IncidentMemory{
+				ObjectMeta: metav1.ObjectMeta{Name: "c1-no-persona-inc", Namespace: namespace},
+				Spec: dorguv1.IncidentMemorySpec{
+					PersonaRef: dorguv1.PersonaReference{Kind: "ApplicationPersona", Name: "c1-no-persona", Namespace: namespace},
+					Category:   "resource", Severity: "critical",
+					Detection: dorguv1.DetectionInfo{Signal: "OOMKilled", Source: "pod-failure-detector",
+						FirstSeen: metav1.Now(), LastSeen: metav1.Now(),
+						AffectedResources: []dorguv1.ResourceReference{{Kind: "Pod", Name: "c1-no-persona-abc", Namespace: namespace}}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, missing)).To(Succeed())
+			DeferCleanup(func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, missing))).To(Succeed()) })
+			p := propose(f, "c1-ground-p", func(p *dorguv1alpha1.RemediationProposal) {
+				p.Spec.Target.Name = "c1-no-persona"
+				p.Spec.IncidentRef = &dorguv1.IncidentReference{Name: missing.Name, Namespace: namespace}
+			})
 
 			expectRejected(reconcile(p), gate.StageGround, gate.GuardrailPersona)
 		})

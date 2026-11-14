@@ -29,3 +29,7 @@ import (
 type IncidentOpener interface {
 	Open(ctx context.Context, proposal *v1alpha1.RemediationProposal) (*dorguv1.IncidentMemory, error)
 }
+
+// IncidentPhaseResolved is the status phase of an incident that has ended. It
+// mirrors the controller's PhaseResolved (a controller test pins the two together).
+const IncidentPhaseResolved = "Resolved"

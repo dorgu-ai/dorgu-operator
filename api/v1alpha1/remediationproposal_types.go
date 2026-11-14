@@ -68,6 +68,16 @@ const (
 	// ReasonIncidentNotFound: spec.incidentRef names an incident that does not exist.
 	ReasonIncidentNotFound = "IncidentNotFound"
 
+	// ReasonIncidentTargetMismatch: spec.incidentRef names an incident for a
+	// different persona than the proposal's target. An incident unlocks changes to
+	// the persona it was detected on and to no other.
+	ReasonIncidentTargetMismatch = "IncidentTargetMismatch"
+
+	// ReasonIncidentResolved: spec.incidentRef names an incident that is already
+	// Resolved. Dorgu's own planner never proposes against one, so neither may a
+	// proposal from outside.
+	ReasonIncidentResolved = "IncidentResolved"
+
 	// ReasonNotYetSupported: the proposal uses a field the operator does not honour
 	// yet (rollbackOf).
 	ReasonNotYetSupported = "NotYetSupported"
@@ -209,8 +219,9 @@ type ProposalRejection struct {
 	Stage string `json:"stage"`
 
 	// Reason is a machine-readable token. At Intake it is one of RateLimited,
-	// DuplicateIdempotencyKey, IncidentNotFound, NotYetSupported or
-	// TargetNamespaceMismatch. At a gate stage it is the guardrail that refused.
+	// DuplicateIdempotencyKey, IncidentNotFound, IncidentTargetMismatch,
+	// IncidentResolved, NotYetSupported or TargetNamespaceMismatch. At a gate stage
+	// it is the guardrail that refused.
 	// +kubebuilder:validation:MaxLength=63
 	Reason string `json:"reason"`
 }

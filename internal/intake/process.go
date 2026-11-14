@@ -118,7 +118,12 @@ func (p *Processor) Process(ctx context.Context, key client.ObjectKey, hint *Hin
 	var incident *dorguv1.IncidentMemory
 	if hint != nil && hint.Facts.Incident != nil {
 		// The planner recorded this incident before it proposed, and passes it in.
+		// It is held to the same rule as a named one: a bug there must not turn into
+		// a change on the wrong persona.
 		incident = hint.Facts.Incident
+		if out, err := p.checkIncident(ctx, &prop, incident); out != nil || err != nil {
+			return out, err
+		}
 	} else {
 		var out *Outcome
 		var err error
@@ -229,6 +234,10 @@ func (p *Processor) resolveIncident(
 		case err != nil:
 			return nil, nil, fmt.Errorf("reading incident %s/%s: %w", ref.Namespace, ref.Name, err)
 		}
+		out, err := p.checkIncident(ctx, prop, &im)
+		if out != nil || err != nil {
+			return nil, out, err
+		}
 		return &im, nil, nil
 	}
 
@@ -240,6 +249,31 @@ func (p *Processor) resolveIncident(
 		return nil, nil, fmt.Errorf("opening an incident for the proposal: %w", err)
 	}
 	return im, nil, nil
+}
+
+// checkIncident refuses an incident that cannot answer this proposal: one detected
+// on a different persona than the proposal's target (it would unlock a change
+// the detection never justified, and defeat "advisory only without a Dorgu-detected
+// incident"), or one that is already Resolved (the planner never proposes against
+// one). Either way the proposal is Rejected at Intake. An incident that names no
+// persona namespace means its own.
+func (p *Processor) checkIncident(
+	ctx context.Context, prop *v1alpha1.RemediationProposal, im *dorguv1.IncidentMemory,
+) (*Outcome, error) {
+	have := im.Spec.PersonaRef
+	if have.Namespace == "" {
+		have.Namespace = im.Namespace
+	}
+	if want := personaRefOf(prop); have != want {
+		return p.reject(ctx, prop, nil, v1alpha1.StageIntake, v1alpha1.ReasonIncidentTargetMismatch, nil,
+			fmt.Sprintf("incident %s/%s is for %s %s/%s, not the proposal's target %s %s/%s",
+				im.Namespace, im.Name, have.Kind, have.Namespace, have.Name, want.Kind, want.Namespace, want.Name))
+	}
+	if im.Status.Phase == IncidentPhaseResolved {
+		return p.reject(ctx, prop, nil, v1alpha1.StageIntake, v1alpha1.ReasonIncidentResolved, nil,
+			fmt.Sprintf("incident %s/%s is already resolved", im.Namespace, im.Name))
+	}
+	return nil, nil
 }
 
 // convert runs the gate over the proposal and creates the action or rejects it.

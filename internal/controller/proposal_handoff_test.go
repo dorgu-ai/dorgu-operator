@@ -31,6 +31,7 @@ import (
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	dorguv1alpha1 "github.com/dorgu-ai/dorgu-operator/api/v1alpha1"
 	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
+	"github.com/dorgu-ai/dorgu-operator/internal/intake"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation"
 )
 
@@ -138,5 +139,11 @@ func TestProposeRemediation_NoProposerOrResolvedIncidentProposesNothing(t *testi
 	newHandoffReconciler(t, proposer).proposeRemediation(context.Background(), diag, nil)
 	if proposer.calls != 0 {
 		t.Errorf("proposer called %d times for a nil incident, want 0", proposer.calls)
+	}
+}
+
+func TestIntakeResolvedPhaseMirrorsTheControllers(t *testing.T) {
+	if intake.IncidentPhaseResolved != PhaseResolved {
+		t.Fatalf("intake.IncidentPhaseResolved = %q, controller PhaseResolved = %q", intake.IncidentPhaseResolved, PhaseResolved)
 	}
 }

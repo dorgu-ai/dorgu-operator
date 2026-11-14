@@ -580,6 +580,106 @@ func TestIntakeChecks_OnlyAMatchedHintIsExemptFromTheRateLimit(t *testing.T) {
 	})
 }
 
+func memoryRaise() []dorguv1.RemediationStep {
+	return []dorguv1.RemediationStep{{
+		Order: 1, ID: "step-1", Type: dorguv1.StepTypePersonaUpdate, AutoExecutable: true,
+		Patch: &apiextensionsv1.JSON{Raw: []byte(`{"spec":{"resources":{"limits":{"memory":"384Mi"}}}}`)},
+	}}
+}
+
+func incidentOn(name, persona, signal string) *dorguv1.IncidentMemory {
+	im := incident(name, signal)
+	im.Spec.PersonaRef.Name = persona
+	return im
+}
+
+// F-3: an incident on persona A cannot unlock a resource change on persona B.
+func TestProcess_AnIncidentOnAnotherPersonaCannotUnlockAChange(t *testing.T) {
+	objs := append(baseObjects(), persona("victim"), incidentOn("oom-of-web", "web", "OOMKilled"))
+
+	t.Run("a named incident for a different persona is refused at Intake", func(t *testing.T) {
+		w := newWorld(t, Config{}, objs...)
+		p := proposal("mallory-1", "mallory", "k")
+		p.Spec.Target.Name = "victim"
+		p.Spec.IncidentRef = &dorguv1.IncidentReference{Name: "oom-of-web", Namespace: testNS}
+		p.Spec.Steps = memoryRaise()
+		w.create(t, p)
+
+		out := w.process(t, "mallory-1", nil)
+
+		require.Equal(t, v1alpha1.PhaseRejected, out.Phase, out.Message)
+		assert.Equal(t, v1alpha1.StageIntake, out.Rejection.Stage)
+		assert.Equal(t, v1alpha1.ReasonIncidentTargetMismatch, out.Rejection.Reason)
+		var actions dorguv1.RemediationActionList
+		require.NoError(t, w.c.List(context.Background(), &actions))
+		assert.Empty(t, actions.Items, "no action for the victim persona")
+	})
+	t.Run("the incident's own persona is not refused for the target", func(t *testing.T) {
+		w := newWorld(t, Config{}, objs...)
+		p := proposal("alice-1", "alice", "k")
+		p.Spec.IncidentRef = &dorguv1.IncidentReference{Name: "oom-of-web", Namespace: testNS}
+		p.Spec.Steps = memoryRaise()
+		w.create(t, p)
+		assert.NotEqual(t, v1alpha1.ReasonIncidentTargetMismatch, reasonOf(w.process(t, "alice-1", nil)))
+	})
+	t.Run("a persona kind or namespace mismatch counts too", func(t *testing.T) {
+		for name, mutate := range map[string]func(*dorguv1.IncidentMemory){
+			"kind":      func(im *dorguv1.IncidentMemory) { im.Spec.PersonaRef.Kind = "ClusterPersona" },
+			"namespace": func(im *dorguv1.IncidentMemory) { im.Spec.PersonaRef.Namespace = "elsewhere" },
+		} {
+			im := incidentOn("odd", "web", "OOMKilled")
+			mutate(im)
+			w := newWorld(t, Config{}, append(baseObjects(), im)...)
+			p := proposal("p", "alice", "k")
+			p.Spec.IncidentRef = &dorguv1.IncidentReference{Name: "odd", Namespace: testNS}
+			w.create(t, p)
+			assert.Equal(t, v1alpha1.ReasonIncidentTargetMismatch, reasonOf(w.process(t, "p", nil)), name)
+		}
+	})
+	t.Run("an incident that omits its persona namespace means its own", func(t *testing.T) {
+		im := incidentOn("bare", "web", "OOMKilled")
+		im.Spec.PersonaRef.Namespace = ""
+		w := newWorld(t, Config{}, append(baseObjects(), im)...)
+		p := proposal("p", "alice", "k")
+		p.Spec.IncidentRef = &dorguv1.IncidentReference{Name: "bare", Namespace: testNS}
+		w.create(t, p)
+		assert.NotEqual(t, v1alpha1.ReasonIncidentTargetMismatch, reasonOf(w.process(t, "p", nil)))
+	})
+	t.Run("an incident the hint carries is held to the same rule", func(t *testing.T) {
+		w := newWorld(t, Config{OperatorUsername: testOperator}, append(baseObjects(), persona("victim"))...)
+		prop := plannerProposal("planner-p")
+		prop.Spec.Target.Name = "victim"
+		w.create(t, prop)
+		stored := w.get(t, "planner-p")
+		hint := plannerHint(stored)
+		hint.Draft.Spec.PersonaRef.Name = "victim"
+		hint.Facts.Incident = incidentOn("oom-of-web", "web", "OOMKilled")
+		ref := personaRefOf(stored)
+		defer w.p.Locks().Lock(&ref)()
+
+		out := w.process(t, "planner-p", hint)
+
+		assert.Equal(t, v1alpha1.ReasonIncidentTargetMismatch, reasonOf(out))
+	})
+}
+
+// F-3: the planner never proposes against a resolved incident, so an outside
+// proposal may not cite one to unlock a change either.
+func TestProcess_AResolvedIncidentCannotBeCited(t *testing.T) {
+	resolved := incidentOn("old-oom", "web", "OOMKilled")
+	resolved.Status.Phase = IncidentPhaseResolved
+	w := newWorld(t, Config{}, append(baseObjects(), resolved)...)
+	p := proposal("p", "alice", "k")
+	p.Spec.IncidentRef = &dorguv1.IncidentReference{Name: "old-oom", Namespace: testNS}
+	w.create(t, p)
+
+	out := w.process(t, "p", nil)
+
+	require.Equal(t, v1alpha1.PhaseRejected, out.Phase, out.Message)
+	assert.Equal(t, v1alpha1.StageIntake, out.Rejection.Stage)
+	assert.Equal(t, v1alpha1.ReasonIncidentResolved, out.Rejection.Reason)
+}
+
 func reasonOf(out *Outcome) string {
 	if out == nil || out.Rejection == nil {
 		return ""
