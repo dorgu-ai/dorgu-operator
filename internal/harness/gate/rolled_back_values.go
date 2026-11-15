@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"k8s.io/apimachinery/pkg/api/resource"
 
@@ -53,12 +54,23 @@ import (
 // undid nothing and marks nothing. Nothing a proposer or a person can write counts:
 // not a proposal, not spec.prePatchState, not a label.
 //
-// How long it is remembered. For as long as the rollback RemediationAction and the
-// action it undid both exist. There is no timer: the record IS the decision, so
-// deleting the rollback action (an operator's choice, with cluster access) clears it
-// and nothing else does. Contrast the refused-value scrub, which remembers only the
-// plan it is run on. A different value for the same field is not affected, and is
-// held to the normal gate.
+// What is refused is the move, not the number. The decision a person made was about
+// taking a field from the original's baseline to the value it wrote; a plan is
+// withheld only when it would take the field from that same baseline (the live value
+// now, the persona's when the workload did not resolve) to that same value. The same
+// number reached from another starting point (a right-size down from 1Gi to 512Mi, a
+// raise from 384Mi to 512Mi) is another decision and is held to the normal gate.
+// Only an exact quantity matches (512Mi, 536870912 and 0.5Gi are one value; 513Mi is
+// not): a near value is a different decision.
+//
+// How long it is remembered. For a fixed lifetime counted from the rollback's
+// completion (the transition of its Verified condition, written by the operator):
+// DefaultRolledBackValueTTL, 7 days, set by the operator flag
+// --rolled-back-value-ttl and the chart value remediation.rolledBackValueTTL. The mark
+// is in force for that long and lapses AT the boundary. It also ends when the rollback
+// action is deleted, which only a cluster admin can do. Contrast the refused-value
+// scrub, which remembers only the plan it is run on. A different value for the same
+// field is not affected, and is held to the normal gate.
 
 // GuardrailRolledBackValue is the guardrail that withholds a value a person rolled back.
 const GuardrailRolledBackValue = "rolled-back-value"
@@ -71,6 +83,14 @@ type RolledBackValue struct {
 	// Value is what the original action's ticket wrote there and the rollback undid.
 	Value string
 
+	// From is the value the original action moved the field away from (its recorded
+	// baseline), which the rollback restored. The decision a person made was about the
+	// move From to Value, so the mark applies to that move and to no other.
+	From string
+
+	// Until is when the mark lapses: the rollback's completion plus the lifetime.
+	Until time.Time
+
 	// Action is the original action, and Rollback the rollback of it. Both are names in
 	// one namespace, for the sentence that tells a reader where the decision was made.
 	Action   string
@@ -78,9 +98,10 @@ type RolledBackValue struct {
 }
 
 // RolledBackValues derives, from a persona's RemediationActions, every value a person's
-// completed rollback undid. It reads only operator-written records (see the file
-// comment) and is pure: the same actions always give the same answer.
-func RolledBackValues(actions []dorguv1.RemediationAction) []RolledBackValue {
+// completed rollback undid and whose mark has not lapsed at now. It reads only
+// operator-written records (see the file comment) and is pure: the same actions and the
+// same clock always give the same answer.
+func RolledBackValues(actions []dorguv1.RemediationAction, now time.Time, ttl time.Duration) []RolledBackValue {
 	index := make(map[string]*dorguv1.RemediationAction, len(actions))
 	for i := range actions {
 		index[actions[i].Namespace+"/"+actions[i].Name] = &actions[i]
@@ -93,6 +114,10 @@ func RolledBackValues(actions []dorguv1.RemediationAction) []RolledBackValue {
 		originalName := rollbackOfFor(rollback)
 		if originalName == "" || rollback.Status.Phase != phaseCompleted ||
 			rollback.Status.ApplyTicket == nil || rollback.Status.ApplyTicket.Patch == nil {
+			continue
+		}
+		until, lapsed := rolledBackUntil(rollback, now, ttl)
+		if lapsed {
 			continue
 		}
 		original := index[rollback.Namespace+"/"+originalName]
@@ -111,20 +136,35 @@ func RolledBackValues(actions []dorguv1.RemediationAction) []RolledBackValue {
 			if !sameQuantity(restored[field], before[field]) || wrote[field] == "" {
 				continue
 			}
-			key := field + "=" + canonicalQuantity(wrote[field])
+			key := field + "=" + canonicalQuantity(before[field]) + ">" + canonicalQuantity(wrote[field])
 			if seen[key] {
 				continue
 			}
 			seen[key] = true
 			out = append(out, RolledBackValue{
-				Field: field, Value: wrote[field], Action: original.Name, Rollback: rollback.Name,
+				Field: field, Value: wrote[field], From: before[field],
+				Action: original.Name, Rollback: rollback.Name, Until: until,
 			})
 		}
 	}
 	slices.SortFunc(out, func(a, b RolledBackValue) int {
-		return strings.Compare(a.Field+"="+a.Value+"/"+a.Rollback, b.Field+"="+b.Value+"/"+b.Rollback)
+		return strings.Compare(a.Field+"="+a.From+">"+a.Value+"/"+a.Rollback, b.Field+"="+b.From+">"+b.Value+"/"+b.Rollback)
 	})
 	return out
+}
+
+// rolledBackUntil is when the mark a completed rollback leaves lapses (its completion
+// plus ttl), and whether it already has at now. The mark lapses AT the boundary: it is
+// in force for ttl and not a nanosecond longer. A rollback whose completion time
+// cannot be read at all (an object with no creation time, which only a test builds)
+// keeps its mark: forgetting a person's decision is the unsafe way to be wrong.
+func rolledBackUntil(rollback *dorguv1.RemediationAction, now time.Time, ttl time.Duration) (until time.Time, lapsed bool) {
+	completed := rollbackCompletedAt(rollback)
+	if completed.IsZero() {
+		return time.Time{}, false
+	}
+	until = completed.Add(ttl)
+	return until, !now.Before(until)
 }
 
 // RolledBackValues lists the values a person rolled back for the candidate's persona,
@@ -139,14 +179,21 @@ func (g *Gate) RolledBackValues(ctx context.Context, cand *Candidate) ([]RolledB
 	if err != nil {
 		return nil, err
 	}
-	return RolledBackValues(siblings), nil
+	return RolledBackValues(siblings, g.now(), g.RolledBackValueTTL()), nil
 }
 
-// MatchesRolledBack reports whether (field, value) is one of the rolled-back values,
-// comparing quantities by what they mean, so 536870912 is 512Mi.
-func MatchesRolledBack(rolled []RolledBackValue, field, value string) (RolledBackValue, bool) {
+// MatchesRolledBack reports whether moving field from `from` (the value the change is
+// measured against, live or persona) to value is a move a person rolled back. The
+// decision was about the move, not the number: the same value reached from another
+// starting point is a different decision. Quantities are compared by what they mean,
+// so 536870912 is 512Mi, and only an exact quantity matches (a near value is another
+// decision).
+func MatchesRolledBack(rolled []RolledBackValue, field, from, value string) (RolledBackValue, bool) {
+	if from == "" {
+		return RolledBackValue{}, false // no starting point known: not the same move
+	}
 	for _, r := range rolled {
-		if r.Field == field && sameQuantity(r.Value, value) {
+		if r.Field == field && sameQuantity(r.From, from) && sameQuantity(r.Value, value) {
 			return r, true
 		}
 	}
@@ -156,10 +203,14 @@ func MatchesRolledBack(rolled []RolledBackValue, field, value string) (RolledBac
 // RolledBackMessage is Dorgu's sentence for a value withheld because a person rolled it
 // back. Every part of it is from the operator's own records.
 func RolledBackMessage(v RolledBackValue) string {
+	until := ""
+	if !v.Until.IsZero() {
+		until = " until " + v.Until.UTC().Format("2006-01-02 15:04 UTC")
+	}
 	return fmt.Sprintf(
-		"Dorgu left out %s %s: it was rolled back by a person (rollback %s of action %s), so Dorgu will not propose it again. "+
+		"Dorgu left out %s %s: it was rolled back by a person (rollback %s of action %s), so Dorgu will not propose it again%s. "+
 			"A different value is still allowed, and a person can still set this one by hand.",
-		v.Field, v.Value, v.Rollback, v.Action)
+		v.Field, v.Value, v.Rollback, v.Action, until)
 }
 
 // RolledBackRationale replaces the plan's reasoning on a step whose value was withheld.
@@ -201,17 +252,17 @@ func (s guardrailsStage) withholdRolledBack(cand *Candidate, d *Decision, siblin
 	if cand.RollbackOf != "" {
 		return
 	}
-	rolled := RolledBackValues(siblings)
+	rolled := RolledBackValues(siblings, s.g.now(), s.g.RolledBackValueTTL())
 	if len(rolled) == 0 {
 		return
 	}
 
 	var withheld []RolledBackValue
 	for i := range d.Steps {
-		withheld = append(withheld, withholdFromStep(&d.Steps[i], rolled)...)
+		withheld = append(withheld, withholdFromStep(&d.Steps[i], rolled, d)...)
 	}
 	if actionAppliable(d) {
-		hits := rolledBackLeaves(d.Action.Patch.Raw, rolled)
+		hits := rolledBackLeaves(d.Action.Patch.Raw, rolled, baselineValues(d.Action.Patch.Raw, d))
 		if len(hits) > 0 {
 			paths := hitPaths(hits)
 			d.Action.PrePatchState = PrunePatchPaths(d.Action.PrePatchState, paths)
@@ -245,7 +296,15 @@ func (s guardrailsStage) withholdRolledBack(cand *Candidate, d *Decision, siblin
 		"fields": strings.Join(fields, ","),
 	}
 	reason := strings.Join(messages, " ")
-	if hasAutoApplicable(d) || hasAdvice(d) {
+	if hasAutoApplicable(d) {
+		d.clamp(StageGuardrails, GuardrailRolledBackValue, reason, numbers).From(dorguv1.CeilingSourceDefault)
+		return
+	}
+	// Nothing is left to apply. A proposal may keep advice in place of the withheld change
+	// (a considered outcome); an approval or an apply-time re-run has nothing to approve
+	// or apply, and says so for the reason that is true: a person's earlier decision, not
+	// the live workload.
+	if d.Phase == PhaseProposal && hasAdvice(d) {
 		d.clamp(StageGuardrails, GuardrailRolledBackValue, reason, numbers).From(dorguv1.CeilingSourceDefault)
 		return
 	}
@@ -268,11 +327,11 @@ func hitPaths(hits []rolledBackHit) []string {
 }
 
 // rolledBackLeaves finds the leaves of a merge patch that carry a rolled-back value.
-func rolledBackLeaves(raw []byte, rolled []RolledBackValue) []rolledBackHit {
+func rolledBackLeaves(raw []byte, rolled []RolledBackValue, baselines map[string]string) []rolledBackHit {
 	values := PatchLeafValues(raw)
 	var hits []rolledBackHit
 	for _, path := range SortedStringKeys(values) {
-		if r, ok := MatchesRolledBack(rolled, path, values[path]); ok {
+		if r, ok := MatchesRolledBack(rolled, path, baselines[path], values[path]); ok {
 			hits = append(hits, rolledBackHit{path: path, actual: values[path], rolled: r})
 		}
 	}
@@ -281,11 +340,11 @@ func rolledBackLeaves(raw []byte, rolled []RolledBackValue) []rolledBackHit {
 
 // withholdFromStep removes the rolled-back values from one persona-update step, records
 // each as a rejected value, and takes over the words beside it.
-func withholdFromStep(step *dorguv1.RemediationStep, rolled []RolledBackValue) []RolledBackValue {
+func withholdFromStep(step *dorguv1.RemediationStep, rolled []RolledBackValue, d *Decision) []RolledBackValue {
 	if step.Type != dorguv1.StepTypePersonaUpdate || step.Patch == nil {
 		return nil
 	}
-	hits := rolledBackLeaves(step.Patch.Raw, rolled)
+	hits := rolledBackLeaves(step.Patch.Raw, rolled, baselineValues(step.Patch.Raw, d))
 	if len(hits) == 0 {
 		return nil
 	}
@@ -322,6 +381,30 @@ func hasAdvice(d *Decision) bool {
 	return false
 }
 
+// RolledBackRestOfPlanNote closes the refusal of a plan whose diagnosed change was
+// withheld because a person rolled it back while another change still applied: the
+// other change does not answer the incident, so it is not proposed in its place.
+const RolledBackRestOfPlanNote = " The rest of this plan does not change what the incident is about, so none of it is proposed."
+
+// RolledBackReason is Dorgu's sentence for the value the guardrail withheld for field in
+// d, or "" when it withheld none. For a caller (the proposer) that must say the same
+// thing as the gate does.
+func RolledBackReason(d *Decision, field string) string { return rolledBackReason(d, field) }
+
+// rolledBackReason is the sentence the guardrail recorded for field.
+func rolledBackReason(d *Decision, field string) string {
+	if d == nil {
+		return ""
+	}
+	for _, v := range d.Verdicts {
+		if v.Guardrail == GuardrailRolledBackValue && v.Verdict != dorguv1.GateVerdictPass &&
+			slices.Contains(strings.Split(v.Numbers["fields"], ","), field) {
+			return v.Reason
+		}
+	}
+	return ""
+}
+
 // withheldRolledBack reports whether the guardrail withheld a value for field.
 func withheldRolledBack(d *Decision, field string) bool {
 	for _, v := range d.Verdicts {
@@ -331,4 +414,19 @@ func withheldRolledBack(d *Decision, field string) bool {
 		}
 	}
 	return false
+}
+
+// rollbackCompletedAt is when a completed rollback finished: the transition of its
+// Verified condition (which only the operator writes, and which is what moves the
+// action to Completed), else the time it was applied, else its creation.
+func rollbackCompletedAt(ra *dorguv1.RemediationAction) time.Time {
+	for _, c := range ra.Status.Conditions {
+		if c.Type == "Verified" && c.Status == "True" && !c.LastTransitionTime.IsZero() {
+			return c.LastTransitionTime.Time
+		}
+	}
+	if ra.Status.AppliedAt != nil && !ra.Status.AppliedAt.IsZero() {
+		return ra.Status.AppliedAt.Time
+	}
+	return ra.CreationTimestamp.Time
 }

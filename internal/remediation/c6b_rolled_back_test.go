@@ -111,9 +111,15 @@ func c6bRollbackAction(mutate ...func(*dorguv1.RemediationAction)) *dorguv1.Reme
 // c6bWorld is the memhog world after the rollback: persona and Deployment at 64Mi.
 func c6bWorld(t *testing.T, actions ...client.Object) (*Proposer, *dorguv1.IncidentMemory, client.Client) {
 	t.Helper()
-	persona := personaWithLimits(groundedPersona, "200m", c6bBefore)
+	return c6bWorldAt(t, c6bBefore, actions...)
+}
+
+// c6bWorldAt is the same world with the persona and the Deployment holding memory.
+func c6bWorldAt(t *testing.T, memory string, actions ...client.Object) (*Proposer, *dorguv1.IncidentMemory, client.Client) {
+	t.Helper()
+	persona := personaWithLimits(groundedPersona, "200m", memory)
 	deploy := liveDeployment(groundedPersona,
-		map[corev1.ResourceName]string{corev1.ResourceMemory: c6bBefore, corev1.ResourceCPU: "200m"},
+		map[corev1.ResourceName]string{corev1.ResourceMemory: memory, corev1.ResourceCPU: "200m"},
 		map[corev1.ResourceName]string{corev1.ResourceMemory: "32Mi", corev1.ResourceCPU: "50m"})
 	incident := newTestIncident(defaultNamespace, "oom", groundedPersona, "OOMKilled")
 
@@ -308,4 +314,111 @@ func TestC6b_AIPath_TheSameBytesInAnotherNotationAreTheSameValue(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, result.Proposed, "refused: %s", result.SkipReason)
 	assert.False(t, result.Action.HasAutoApplicableChange(), "134217728 is 128Mi")
+}
+
+func c6bCPUStep() planner.PlannedStep {
+	return planner.PlannedStep{
+		Order: 2, Type: "persona-update", Risk: "low", Description: "Raise the CPU limit", Rationale: "more headroom",
+		Patch: json.RawMessage(`{"spec":{"resources":{"limits":{"cpu":"300m"}}}}`),
+	}
+}
+
+func TestC6b_AIPath_AWithheldMemoryStepDoesNotLeaveAnAutoExecutableCPUOnlyProposal(t *testing.T) {
+	// Review F-1: an OOM incident whose memory step is withheld must not become a CPU-only
+	// proposal a person is asked to approve as "the fix".
+	p, incident, c := c6bRolledBackWorld(t)
+	p.planner = &stubPlanner{plan: c6bAIPlan(c6bPersonaStep(c6bRolled), c6bCPUStep())}
+	before := c6bActionCount(t, c)
+
+	result, err := p.Propose(context.Background(), newOOMDiagnosis(defaultNamespace, groundedPersona, detection.SeverityCritical), incident)
+
+	require.NoError(t, err)
+	require.False(t, result.Proposed, "a CPU change was offered for an out-of-memory incident: %s", c6bPatchesOf(result))
+	assert.Equal(t, gate.StageGuardrails, result.Stage)
+	assert.Equal(t, gate.GuardrailRolledBackValue, result.Reason)
+	assert.Contains(t, result.SkipReason, "rolled back by a person")
+	assert.Contains(t, result.SkipReason, c6bRolled)
+	assert.Equal(t, before, c6bActionCount(t, c), "nothing is recorded for a plan that is refused")
+}
+
+func c6bPatchesOf(r *ProposalResult) string {
+	if r == nil || r.Action == nil {
+		return ""
+	}
+	return c6bPatches(r.Action)
+}
+
+func TestC6b_AIPath_TheSameValueFromAnotherStartingPointIsStillProposed(t *testing.T) {
+	// Review F-2: a person rolled 64Mi to 128Mi back. At 100Mi the same number is a raise
+	// of 1.28x, another decision, and it is held to the normal gate only.
+	p, incident, _ := c6bWorldAt(t, "100Mi", c6bOriginalAction(), c6bRollbackAction())
+	p.planner = &stubPlanner{plan: c6bAIPlan(c6bPersonaStep(c6bRolled), c6bAdviceStep(2, "Watch the container."))}
+
+	result, err := p.Propose(context.Background(), newOOMDiagnosis(defaultNamespace, groundedPersona, detection.SeverityCritical), incident)
+
+	require.NoError(t, err)
+	require.True(t, result.Proposed, "refused: %s", result.SkipReason)
+	require.True(t, result.Action.HasAutoApplicableChange())
+	assert.JSONEq(t, `{"spec":{"resources":{"limits":{"memory":"128Mi"}}}}`, c6bPatches(result.Action))
+	assert.NotContains(t, result.Action.Spec.Explanation, "rolled back by a person")
+}
+
+func TestC6b_MatchRolledBackNeedsTheSameMove(t *testing.T) {
+	rolled := []gate.RolledBackValue{{Field: c6bField, From: c6bBefore, Value: c6bRolled, Action: "a", Rollback: "b"}}
+	patch := []byte(`{"spec":{"resources":{"limits":{"memory":"128Mi"}}}}`)
+
+	assert.Len(t, matchRolledBack(rolled, patch, map[string]string{c6bField: "64Mi"}), 1)
+	assert.Empty(t, matchRolledBack(rolled, patch, map[string]string{c6bField: "100Mi"}))
+	assert.Empty(t, matchRolledBack(rolled, patch, nil), "no starting point known is not the same move")
+}
+
+func TestC6b_PlanningBaselinesAreTheLiveValueElseThePersonas(t *testing.T) {
+	persona := personaWithLimits(groundedPersona, "200m", "96Mi")
+	patch := []byte(`{"spec":{"resources":{"limits":{"memory":"128Mi"}}}}`)
+
+	// No resolved workload: the persona's value is the baseline.
+	assert.Equal(t, map[string]string{c6bField: "96Mi"}, planningBaselines(patch, persona, nil))
+
+	// A resolved workload that sets the limit: the live value wins over the persona's.
+	ref := &dorguv1.WorkloadRef{
+		Kind: "Deployment", Name: groundedPersona, Namespace: defaultNamespace, Container: groundedPersona,
+		ObservedResources: &dorguv1.ObservedResources{Limits: &dorguv1.ResourceValues{Memory: "64Mi"}},
+	}
+	assert.Equal(t, map[string]string{c6bField: "64Mi"}, planningBaselines(patch, persona, ref))
+}
+
+func TestC6b_RefuseRolledBackOnlyFix(t *testing.T) {
+	held := []gate.RolledBackValue{{Field: c6bField, From: c6bBefore, Value: c6bRolled, Action: c6bOriginal, Rollback: c6bRollback}}
+	step := func(patch string, auto bool) dorguv1.RemediationStep {
+		return dorguv1.RemediationStep{
+			Order: 1, ID: "step-1", Type: dorguv1.StepTypePersonaUpdate, AutoExecutable: auto, Patch: mustJSON(patch),
+		}
+	}
+	advice := dorguv1.RemediationStep{Order: 2, ID: "step-2", Type: dorguv1.StepTypeManual, Description: "read the logs"}
+	cpu := `{"spec":{"resources":{"limits":{"cpu":"300m"}}}}`
+	mem := `{"spec":{"resources":{"limits":{"memory":"96Mi"}}}}`
+	action := func(steps ...dorguv1.RemediationStep) *dorguv1.RemediationAction {
+		return &dorguv1.RemediationAction{Spec: dorguv1.RemediationActionSpec{Steps: steps}}
+	}
+
+	t.Run("an unrelated change that would still apply is refused with the person's sentence", func(t *testing.T) {
+		got := refuseRolledBackOnlyFix(action(step(cpu, true)), nil, held, c6bField)
+		require.NotNil(t, got)
+		assert.Equal(t, gate.GuardrailRolledBackValue, got.Reason)
+		assert.Equal(t, gate.StageGuardrails, got.Stage)
+		assert.Contains(t, got.SkipReason, gate.RolledBackMessage(held[0]))
+		assert.Contains(t, got.SkipReason, "none of it is proposed")
+	})
+	t.Run("advice alone is the considered outcome", func(t *testing.T) {
+		assert.Nil(t, refuseRolledBackOnlyFix(action(advice), nil, held, c6bField))
+	})
+	t.Run("a different memory value still answers the incident", func(t *testing.T) {
+		assert.Nil(t, refuseRolledBackOnlyFix(action(step(mem, true)), nil, held, c6bField))
+	})
+	t.Run("nothing was withheld", func(t *testing.T) {
+		assert.Nil(t, refuseRolledBackOnlyFix(action(step(cpu, true)), nil, nil, c6bField))
+	})
+	t.Run("no diagnosed field", func(t *testing.T) {
+		assert.Nil(t, refuseRolledBackOnlyFix(action(step(cpu, true)), nil, held, ""))
+	})
 }

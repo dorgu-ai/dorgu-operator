@@ -19,7 +19,9 @@ package adversarial
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-logr/logr"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -161,6 +163,12 @@ func TestOP30ForgedOrUnfinishedRollbackRecordsMarkNothing(t *testing.T) {
 		"a rollback that failed":             func(ra *dorguv1.RemediationAction) { setPhase(t, ra, phaseFailed) },
 		"an annotation on an agent's action": asSource(dorguv1.ProposalSourceAgent),
 		"an annotation on a planner action":  asSource(dorguv1.ProposalSourceDorguPlanner),
+		// Provenance and annotation are right and the rollback Completed, but its ticket
+		// wrote 384Mi over the 256Mi baseline: it undid nothing the original did, so it
+		// must not mark 512Mi. This is the check the other forgeries do not reach.
+		"a completed rollback whose ticket wrote 384Mi, not the recorded baseline": func(ra *dorguv1.RemediationAction) {
+			asRollbackThatWrote(t, ra, "384Mi")
+		},
 	}
 	marked := map[string]int{}
 	for name, forge := range cases {
@@ -214,13 +222,122 @@ func asNotARollback(t *testing.T, ra *dorguv1.RemediationAction, source string) 
 		f.Spec.Steps = nil
 	})
 	forged = createHandMadeRA(t, forged, "")
-	forged.Status.Phase = "Completed"
+	forged.Status.Phase = phaseCompletedForged
 	forged.Status.ApplyTicket = ra.Status.ApplyTicket.DeepCopy()
 	if err := k8sClient.Status().Update(ctx, forged); err != nil {
 		t.Fatalf("recording the forged ticket: %v", err)
 	}
 	// The real rollback is taken out of the picture so only the forgery is read.
 	setPhase(t, ra, phaseFailed)
+}
+
+// asRollbackThatWrote replaces the genuine rollback with a Completed rollback that has the
+// right provenance and annotation but whose apply ticket wrote value instead of the
+// original's recorded baseline.
+func asRollbackThatWrote(t *testing.T, ra *dorguv1.RemediationAction, value string) {
+	t.Helper()
+	ctx := context.Background()
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(ra), ra); err != nil {
+		t.Fatal(err)
+	}
+	name := "ra-forged-wrote-" + strings.ToLower(value)
+	forged := newRA(ra.Namespace, name, withProposer(operatorUsername), func(f *dorguv1.RemediationAction) {
+		f.Annotations = map[string]string{dorguv1.AnnotationRollbackOf: rollbackRA}
+		f.Spec.Provenance.Source = dorguv1.ProposalSourceRollback
+		f.Spec.Action.Patch = memoryPatch(value)
+		f.Spec.Action.PrePatchState = memoryPatch(raisedMemory)
+		f.Spec.Steps = nil
+	})
+	forged = createHandMadeRA(t, forged, "")
+	forged.Status.Phase = phaseCompletedForged
+	forged.Status.ApplyTicket = ra.Status.ApplyTicket.DeepCopy()
+	forged.Status.ApplyTicket.Patch = memoryPatch(value)
+	if err := k8sClient.Status().Update(ctx, forged); err != nil {
+		t.Fatalf("recording the forged ticket: %v", err)
+	}
+	setPhase(t, ra, phaseFailed)
+}
+
+// phaseCompletedForged is the phase a forged rollback record claims.
+const phaseCompletedForged = "Completed"
+
+// raiseCandidate is the plan the next OOM would bring: one persona step setting memory.
+func raiseCandidate(ns string) gate.Candidate {
+	return gate.Candidate{
+		Target: dorguv1.PersonaReference{Kind: kindPersona, Name: appName, Namespace: ns}, Namespace: ns, Name: "ra-next",
+		Source: dorguv1.PlanSourceAIAnthropic, IncidentRef: dorguv1.IncidentReference{Name: incidentName, Namespace: ns},
+		Steps: []dorguv1.RemediationStep{{
+			Order: 1, ID: "step-1", Type: dorguv1.StepTypePersonaUpdate, AutoExecutable: true,
+			Description: "set memory", Rationale: "oom", Patch: memoryPatch(raisedMemory),
+		}},
+		Facts: gate.Facts{SuggestedAction: gate.ClassResourceAdjustment},
+	}
+}
+
+// OP-32: the memory is of a move, not of a number. A person rolled 256Mi to 512Mi back.
+// An attacker who can get one person to roll one change back must not thereby ban the
+// number 512Mi from every other starting point for the field: from 1Gi (a right-size
+// down) the same value is another decision and goes to the normal gate. The control is
+// the same plan from the same starting point, which stays withheld.
+func TestOP32RolledBackMoveDoesNotBanTheNumberFromOtherStartingPoints(t *testing.T) {
+	ns, _ := completedRollbackFixture(t, "op-32")
+
+	same, err := testGate().Run(testCtx(t), raiseCandidate(ns), gate.PhaseProposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withheld := !same.Allowed()
+	if _, guardrail := same.RefusedBy(); guardrail != gate.GuardrailRolledBackValue {
+		withheld = false
+	}
+
+	setLiveMemory(t, ns, "1Gi")
+	other, err := testGate().Run(testCtx(t), raiseCandidate(ns), gate.PhaseProposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var carriesVerdict bool
+	for _, v := range other.Verdicts {
+		if v.Guardrail == gate.GuardrailRolledBackValue && v.Verdict != dorguv1.GateVerdictPass {
+			carriesVerdict = true
+		}
+	}
+
+	Expect(t, "OP-32", withheld && other.Allowed() && !carriesVerdict, fmt.Sprintf(
+		"from 256Mi: withheld=%v; from 1Gi: allowed=%v withheld-verdict=%v (%s)",
+		withheld, other.Allowed(), carriesVerdict, other.SkipReason()))
+}
+
+// OP-33: the memory ends. One approver's rollback is a single approval, and it must not
+// become a permanent veto on the planner. At the same cluster state the value is
+// withheld inside the lifetime and offered again once the clock is past it (counted from
+// the rollback's own completion), with no one deleting anything.
+func TestOP33RolledBackValueLapsesAfterItsLifetime(t *testing.T) {
+	ns, _ := completedRollbackFixture(t, "op-33")
+
+	within, err := testGate().Run(testCtx(t), raiseCandidate(ns), gate.PhaseProposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, guardrail := within.RefusedBy()
+	withheldInside := !within.Allowed() && guardrail == gate.GuardrailRolledBackValue
+
+	later := gate.New(k8sClient, logr.Discard(), gate.WithReader(k8sClient),
+		gate.WithClock(func() time.Time { return time.Now().Add(gate.DefaultRolledBackValueTTL + time.Hour) }))
+	after, err := later.Run(testCtx(t), raiseCandidate(ns), gate.PhaseProposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var carriesVerdict bool
+	for _, v := range after.Verdicts {
+		if v.Guardrail == gate.GuardrailRolledBackValue && v.Verdict != dorguv1.GateVerdictPass {
+			carriesVerdict = true
+		}
+	}
+
+	Expect(t, "OP-33", withheldInside && after.Allowed() && !carriesVerdict, fmt.Sprintf(
+		"inside the lifetime: withheld=%v; past it: allowed=%v withheld-verdict=%v (%s)",
+		withheldInside, after.Allowed(), carriesVerdict, after.SkipReason()))
 }
 
 // OP-31: a person with every write on remediationactions tries to forge the mark (put

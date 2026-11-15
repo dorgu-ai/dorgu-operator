@@ -104,6 +104,37 @@ default, never an empty flag.
 {{- end -}}
 
 {{/*
+How long a value a person rolled back stays withheld, validated the way the operator
+validates --rolled-back-value-ttl: a Go duration, positive and at most 2160h (90 days).
+A value the operator would refuse at startup fails the chart here instead. The fallback
+keeps a --reuse-values upgrade from an older release rendering the default, never an
+empty flag.
+*/}}
+{{- define "dorgu-operator.rolledBackValueTTL" -}}
+{{- $raw := dig "rolledBackValueTTL" "168h" (.Values.remediation | default dict) -}}
+{{- if not (kindIs "string" $raw) -}}
+{{- fail (printf "remediation.rolledBackValueTTL must be a duration string such as 168h or 48h, got %v (%s): a bare number has no unit" $raw (kindOf $raw)) -}}
+{{- end -}}
+{{- if not (regexMatch "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$" $raw) -}}
+{{- fail (printf "remediation.rolledBackValueTTL %q is not a duration such as 168h, 90m or 36h30m (a number and a unit: ns, us, ms, s, m, h)" $raw) -}}
+{{- end -}}
+{{- $units := dict "ns" 0.000000001 "us" 0.000001 "µs" 0.000001 "ms" 0.001 "s" 1.0 "m" 60.0 "h" 3600.0 -}}
+{{- $seconds := 0.0 -}}
+{{- range $part := regexFindAll "[0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h)" $raw -1 -}}
+{{- $number := regexFind "^[0-9]+(\\.[0-9]+)?" $part | float64 -}}
+{{- $unit := regexFind "(ns|us|µs|ms|s|m|h)$" $part -}}
+{{- $seconds = addf $seconds (mulf $number (get $units $unit)) -}}
+{{- end -}}
+{{- if le $seconds 0.0 -}}
+{{- fail (printf "remediation.rolledBackValueTTL %q must be positive: a memory that lapses before it begins is refused by the operator at startup" $raw) -}}
+{{- end -}}
+{{- if gt $seconds 7776000.0 -}}
+{{- fail (printf "remediation.rolledBackValueTTL %q is longer than 2160h (90 days), the most the operator accepts" $raw) -}}
+{{- end -}}
+{{- $raw -}}
+{{- end -}}
+
+{{/*
 Labels of the admission policies and bindings. They carry nothing that changes from release
 to release (no chart version), so config/admission/policies.yaml, rendered from the same
 template for the kustomize install and the envtest suites, stays equal to the chart's.

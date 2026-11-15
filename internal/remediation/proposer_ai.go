@@ -163,6 +163,9 @@ func (p *Proposer) gateAndPersistPlan(
 	if err != nil {
 		return nil, err
 	}
+	if refusal := refuseRolledBackOnlyFix(action, dec, heldBack, diagnosisTargetPath(diag)); refusal != nil {
+		return refusal, nil
+	}
 
 	// A persona-update step with no patch applies nothing and instructs nobody.
 	// Whatever could be filled in has been by now, so anything still empty is

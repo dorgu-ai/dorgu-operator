@@ -72,6 +72,10 @@ type Gate struct {
 	// life it honours at apply. Always positive (see WithTicketTTL).
 	ticketTTL time.Duration
 
+	// rolledBackValueTTL is how long a value a person rolled back stays withheld, counted
+	// from the rollback's completion. Always positive (see WithRolledBackValueTTL).
+	rolledBackValueTTL time.Duration
+
 	now    func() time.Time
 	stages []Stage
 
@@ -142,6 +146,30 @@ func WithTicketTTL(ttl time.Duration) Option {
 			g.ticketTTL = ttl
 		}
 	}
+}
+
+// DefaultRolledBackValueTTL is how long a value a person rolled back stays withheld
+// from the planner, counted from the rollback's completion.
+const DefaultRolledBackValueTTL = 7 * 24 * time.Hour
+
+// WithRolledBackValueTTL sets how long a value a person rolled back is not proposed
+// again. A zero or negative value is ignored and leaves the default
+// (DefaultRolledBackValueTTL): a memory that lapses before it begins would make every
+// rollback forgotten at once.
+func WithRolledBackValueTTL(ttl time.Duration) Option {
+	return func(g *Gate) {
+		if ttl > 0 {
+			g.rolledBackValueTTL = ttl
+		}
+	}
+}
+
+// RolledBackValueTTL is how long this gate withholds a value a person rolled back.
+func (g *Gate) RolledBackValueTTL() time.Duration {
+	if g == nil || g.rolledBackValueTTL <= 0 {
+		return DefaultRolledBackValueTTL
+	}
+	return g.rolledBackValueTTL
 }
 
 // TicketTTL is how long a ticket issued by this gate stays valid.

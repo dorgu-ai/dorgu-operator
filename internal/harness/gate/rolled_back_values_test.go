@@ -65,7 +65,7 @@ func sibs(actions ...*dorguv1.RemediationAction) []dorguv1.RemediationAction {
 }
 
 func TestRolledBackValues_ACompletedRollbackMarksTheValueItUndid(t *testing.T) {
-	got := RolledBackValues(sibs(appliedAction(), completedRollback()))
+	got := rolledValues(sibs(appliedAction(), completedRollback()))
 
 	require.Len(t, got, 1)
 	assert.Equal(t, memLimit, got[0].Field)
@@ -80,7 +80,7 @@ func TestRolledBackValues_OnlyACompletedRollbackCounts(t *testing.T) {
 	} {
 		t.Run("rollback in phase "+phase, func(t *testing.T) {
 			rb := completedRollback(func(ra *dorguv1.RemediationAction) { ra.Status.Phase = phase })
-			assert.Empty(t, RolledBackValues(sibs(appliedAction(), rb)),
+			assert.Empty(t, rolledValues(sibs(appliedAction(), rb)),
 				"a rollback that did not complete undid nothing, so it must not mark a value refused")
 		})
 	}
@@ -118,7 +118,7 @@ func TestRolledBackValues_AForgedRecordMarksNothing(t *testing.T) {
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
-			assert.Empty(t, RolledBackValues(sibs(appliedAction(), completedRollback(mutate))))
+			assert.Empty(t, rolledValues(sibs(appliedAction(), completedRollback(mutate))))
 		})
 	}
 }
@@ -132,7 +132,7 @@ func TestRolledBackValues_TheOriginalMustBeTheOperatorsOwnRecordOfAnAppliedChang
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
-			assert.Empty(t, RolledBackValues(sibs(appliedAction(mutate), completedRollback())))
+			assert.Empty(t, rolledValues(sibs(appliedAction(mutate), completedRollback())))
 		})
 	}
 }
@@ -146,7 +146,7 @@ func TestRolledBackValues_OnlyTheFieldsTheRollbackRestoredAreMarked(t *testing.T
 		ra.Status.ApplyTicket.Patch = memPatch(beforeMemory)
 	})
 
-	got := RolledBackValues(sibs(original, rb))
+	got := rolledValues(sibs(original, rb))
 
 	require.Len(t, got, 1, "the cpu change was not undone, so it is not refused")
 	assert.Equal(t, memLimit, got[0].Field)
@@ -154,7 +154,7 @@ func TestRolledBackValues_OnlyTheFieldsTheRollbackRestoredAreMarked(t *testing.T
 	rbBoth := completedRollback(func(ra *dorguv1.RemediationAction) {
 		ra.Status.ApplyTicket.Patch = jsonOf(`{"spec":{"resources":{"limits":{"memory":"256Mi","cpu":"250m"}}}}`)
 	})
-	assert.Len(t, RolledBackValues(sibs(original, rbBoth)), 2)
+	assert.Len(t, rolledValues(sibs(original, rbBoth)), 2)
 }
 
 func TestRolledBackValues_TheSameQuantityInAnotherNotationIsTheSameValue(t *testing.T) {
@@ -162,18 +162,18 @@ func TestRolledBackValues_TheSameQuantityInAnotherNotationIsTheSameValue(t *test
 	rb := completedRollback(func(ra *dorguv1.RemediationAction) { ra.Status.ApplyTicket.Patch = memPatch("268435456") })
 	original.Status.Gate.PrePatchState = memPatch("256Mi")
 
-	require.Len(t, RolledBackValues(sibs(original, rb)), 1)
+	require.Len(t, rolledValues(sibs(original, rb)), 1)
 }
 
 func TestRolledBackValues_TwoRollbacksOfOneValueAreListedOnce(t *testing.T) {
 	again := completedRollback(func(ra *dorguv1.RemediationAction) { ra.Name = "ra-rollback-2" })
-	got := RolledBackValues(sibs(appliedAction(), completedRollback(), again))
+	got := rolledValues(sibs(appliedAction(), completedRollback(), again))
 	assert.Len(t, got, 1)
 }
 
 func TestRolledBackValues_NothingToRememberWithoutSiblings(t *testing.T) {
-	assert.Empty(t, RolledBackValues(nil))
-	assert.Empty(t, RolledBackValues(sibs(appliedAction())))
+	assert.Empty(t, rolledValues(nil))
+	assert.Empty(t, rolledValues(sibs(appliedAction())))
 }
 
 // --- the guardrail ---
@@ -188,9 +188,9 @@ func recurrenceGate(t *testing.T) *Gate {
 	return rollbackGate(t, objs...)
 }
 
-func advisoryStep(order int32) dorguv1.RemediationStep {
+func advisoryStep() dorguv1.RemediationStep {
 	return dorguv1.RemediationStep{
-		Order: order, ID: "step-2", Type: dorguv1.StepTypeManual, Description: "read the logs", Rationale: "oom",
+		Order: 2, ID: secondStepID, Type: dorguv1.StepTypeManual, Description: "read the logs", Rationale: "oom",
 	}
 }
 
@@ -223,7 +223,7 @@ func TestRolledBackValue_ALegacyActionThatRepeatsItIsRefused(t *testing.T) {
 func TestRolledBackValue_TheRepeatedValueIsWithdrawnAndTheAdviceStays(t *testing.T) {
 	g := recurrenceGate(t)
 
-	dec := run(t, g, planCandidate(personaUpdateStep(memPatch("536870912")), advisoryStep(2)), PhaseProposal)
+	dec := run(t, g, planCandidate(personaUpdateStep(memPatch("536870912")), advisoryStep()), PhaseProposal)
 
 	require.True(t, dec.Allowed(), "refused: %s", dec.SkipReason())
 	assert.Equal(t, ResultClamp, dec.Result)
@@ -376,11 +376,16 @@ func TestRolledBackValue_AWithheldValueForAnotherFieldDoesNotExcuseAPlanThatChan
 	// carries a memory step that is withheld and nothing for CPU: it still applies
 	// nothing for what was diagnosed, and is refused as such.
 	g := recurrenceGate(t)
-	cand := planCandidate(personaUpdateStep(memPatch(wroteMemory)), advisoryStep(2))
+	cand := planCandidate(personaUpdateStep(memPatch(wroteMemory)), advisoryStep())
 	cand.Final = true
 	cand.Facts.TargetPath = cpuLimit
 
 	dec := run(t, g, cand, PhaseProposal)
 
 	assert.Equal(t, "refuse", verdictKind(dec, GuardrailNothingApplies))
+}
+
+// rolledValues is RolledBackValues at the test clock with the default lifetime.
+func rolledValues(actions []dorguv1.RemediationAction) []RolledBackValue {
+	return RolledBackValues(actions, fixedNow, DefaultRolledBackValueTTL)
 }

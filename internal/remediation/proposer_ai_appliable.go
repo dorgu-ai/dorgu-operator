@@ -94,7 +94,7 @@ func (p *Proposer) ensureAppliableResourcePlan(
 	// offered: the plan stays advisory, which is a considered outcome, and the
 	// explanation says why (explainRolledBack).
 	if raw, marshalErr := json.Marshal(change.patch); marshalErr == nil {
-		if held := matchRolledBack(rolledBack, raw); len(held) > 0 {
+		if held := matchRolledBack(rolledBack, raw, planningBaselines(raw, persona, ref)); len(held) > 0 {
 			p.logger.Info("the rule engine would size a value a person rolled back; the plan stays advisory",
 				"action", action.Name, "field", target)
 			return true, held, nil

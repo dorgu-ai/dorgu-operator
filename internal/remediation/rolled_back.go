@@ -34,13 +34,13 @@ import (
 // sentence is Dorgu's (gate.RolledBackMessage).
 
 // matchRolledBack returns the rolled-back values a merge patch carries.
-func matchRolledBack(rolled []gate.RolledBackValue, patch []byte) []gate.RolledBackValue {
+func matchRolledBack(rolled []gate.RolledBackValue, patch []byte, baselines map[string]string) []gate.RolledBackValue {
 	if len(rolled) == 0 || len(patch) == 0 {
 		return nil
 	}
 	var out []gate.RolledBackValue
 	for field, value := range gate.PatchLeafValues(patch) {
-		if r, ok := gate.MatchesRolledBack(rolled, field, value); ok {
+		if r, ok := gate.MatchesRolledBack(rolled, field, baselines[field], value); ok {
 			out = append(out, r)
 		}
 	}
@@ -85,4 +85,65 @@ func stepsRecord(action *dorguv1.RemediationAction, message string) bool {
 		}
 	}
 	return false
+}
+
+// planningBaselines is, for each resource leaf of a patch, the value the change is
+// measured against: the live container's when the workload resolved, otherwise the
+// persona's. It is the same baseline the gate uses, so the planner and the gate agree
+// on which move a rolled-back value belongs to.
+func planningBaselines(patch []byte, persona *dorguv1.ApplicationPersona, ref *dorguv1.WorkloadRef) map[string]string {
+	out := make(map[string]string)
+	for _, path := range gate.PatchLeafPaths(patch) {
+		if !gate.IsResourcePath(path) {
+			continue
+		}
+		if live, ok := gate.ObservedValue(ref, path); ok {
+			out[path] = live
+			continue
+		}
+		if !gate.Resolved(ref) {
+			if v := personaLimit(persona, strings.TrimPrefix(path, gate.PathPrefixLimits)); v != "" {
+				out[path] = v
+			}
+		}
+	}
+	return out
+}
+
+// refuseRolledBackOnlyFix refuses a plan whose diagnosed change was withheld because a
+// person rolled it back while another change would still apply (review F-1). The gate's
+// completeness check makes the same call on a plan that reaches it as final; the
+// proposer's own repair (the rule engine sizing the diagnosed change) can mark the plan
+// advisory-allowed, which is right when nothing applies and wrong when an unrelated
+// change does: an out-of-memory incident must not become an auto-executable CPU-only
+// proposal because its memory step was withheld rather than capped.
+//
+// A plan that keeps only advice is the considered outcome and is not refused.
+func refuseRolledBackOnlyFix(
+	action *dorguv1.RemediationAction, dec *gate.Decision, heldBack []gate.RolledBackValue, target string,
+) *ProposalResult {
+	if target == "" || !action.HasAutoApplicableChange() ||
+		gate.AppliesDiagnosedChange(action.Spec.Steps, action.Spec.Action, target) {
+		return nil
+	}
+	var reason string
+	if len(heldBack) > 0 {
+		messages := make([]string, 0, len(heldBack))
+		for _, r := range heldBack {
+			messages = append(messages, gate.RolledBackMessage(r))
+		}
+		slices.Sort(messages)
+		reason = strings.Join(slices.Compact(messages), " ")
+	} else {
+		reason = gate.RolledBackReason(dec, target)
+	}
+	if reason == "" {
+		return nil
+	}
+	return &ProposalResult{
+		SkipReason: reason + gate.RolledBackRestOfPlanNote,
+		Stage:      gate.StageGuardrails,
+		Reason:     gate.GuardrailRolledBackValue,
+		Decision:   dec,
+	}
 }
