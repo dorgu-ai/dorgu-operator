@@ -35,6 +35,6 @@ func TestC4bN1_BlindnessAtCollectTimeHoldsEvenIfTheSourceRecoversBeforeResolve(t
 		require.NoError(t, err)
 	}
 
-	require.NoError(t, r.resolveClearedHolding(ctx, map[string]bool{}, blindAtCollect))
+	require.NoError(t, r.resolveClearedHolding(ctx, map[string]bool{}, detection.ResolutionSnapshot{BlindFamilies: blindAtCollect}))
 	assert.Equal(t, PhaseDetected, phaseOf(t, c, im), "it was blind when the signals were collected")
 }

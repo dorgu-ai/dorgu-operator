@@ -4,10 +4,12 @@ import (
 	"context"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	metricsv1beta1 "k8s.io/metrics/pkg/apis/metrics/v1beta1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -47,12 +49,14 @@ func TestEngine_BlindnessAndStreakStateIsSafeUnderConcurrentReadersAndAWriter(t 
 	run(func(int) {
 		_ = engine.ResolutionBlind(SignalCPUThrottling)
 		_ = engine.ResolutionBlindFamilies()
+		_ = engine.ResolutionSnapshot()
 		_ = engine.FamilyBlind(FamilyCPUThrottling)
 	})
 	// The collector's own readers.
 	run(func(int) {
 		_ = c.Blind()
 		_ = c.ResolutionBlind()
+		_ = c.ResolutionPending()
 	})
 	// A flapping source: gone, unreadable, quiet and hot, so every state is rewritten.
 	run(func(i int) {
@@ -94,4 +98,73 @@ func TestEngine_BlindnessAndStreakStateIsSafeUnderConcurrentReadersAndAWriter(t 
 	require.Len(t, signals, 1, "three consecutive hot cycles after the flapping stopped")
 	assert.False(t, engine.ResolutionBlind(SignalCPUThrottling))
 	assert.Empty(t, engine.ResolutionBlindFamilies())
+}
+
+// blockingMetrics is a metrics.k8s.io whose PodMetrics call waits for the test, so a
+// Collect can be held in the middle of a read.
+type blockingMetrics struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (*blockingMetrics) Available(context.Context) (bool, error) { return true, nil }
+func (b *blockingMetrics) PodMetrics(context.Context) ([]metricsv1beta1.PodMetrics, error) {
+	close(b.entered)
+	<-b.release
+	return nil, nil
+}
+
+// The readers of the collector's view (Blind, ResolutionBlind, ResolutionPending) are
+// guarded by the view lock. The race detector only sees a missing lock when the two
+// accesses happen to overlap, so this asks the question directly: a reader must wait for a
+// writer that holds the lock, and must not wait for a Collect that does not.
+func TestCollector_TheViewReadersWaitForTheViewLockAndNotForACollect(t *testing.T) {
+	readers := map[string]func(c *CPUThrottlingCollector){
+		"Blind":             func(c *CPUThrottlingCollector) { _ = c.Blind() },
+		"ResolutionBlind":   func(c *CPUThrottlingCollector) { _ = c.ResolutionBlind() },
+		"ResolutionPending": func(c *CPUThrottlingCollector) { _ = c.ResolutionPending() },
+	}
+	const settle = 50 * time.Millisecond
+	const patience = 5 * time.Second
+
+	for name, read := range readers {
+		t.Run(name+" waits for a writer", func(t *testing.T) {
+			c := newThrottleCollector(t, nil)
+			c.viewMu.Lock()
+			done := make(chan struct{})
+			go func() { read(c); close(done) }()
+			select {
+			case <-done:
+				c.viewMu.Unlock()
+				t.Fatalf("%s returned while a writer held the view lock: it reads the view unlocked", name)
+			case <-time.After(settle):
+			}
+			c.viewMu.Unlock()
+			select {
+			case <-done:
+			case <-time.After(patience):
+				t.Fatalf("%s never returned after the writer let go", name)
+			}
+		})
+
+		t.Run(name+" does not wait for a Collect", func(t *testing.T) {
+			metrics := &blockingMetrics{entered: make(chan struct{}), release: make(chan struct{})}
+			c := newThrottleCollector(t, []client.Object{limitedPod()}, WithMetricsSource(metrics))
+			collected := make(chan struct{})
+			go func() { _, _ = c.Collect(context.Background()); close(collected) }()
+			<-metrics.entered // Collect holds its own lock and is inside the read
+
+			done := make(chan struct{})
+			go func() { read(c); close(done) }()
+			select {
+			case <-done:
+			case <-time.After(patience):
+				close(metrics.release)
+				<-collected
+				t.Fatalf("%s waited behind a Collect that was in the middle of a read", name)
+			}
+			close(metrics.release)
+			<-collected
+		})
+	}
 }

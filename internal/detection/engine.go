@@ -80,6 +80,40 @@ type ResolutionBlinder interface {
 	ResolutionBlind() bool
 }
 
+// ContainerRef names one container of one pod.
+type ContainerRef struct {
+	Namespace, Pod, Container string
+}
+
+// ResolutionPender is a second optional addition to FamilyCollector, for a collector
+// whose source can be warm as a whole and still new to one container. ResolutionPending
+// names the containers that look as if they may be affected but have not been read for
+// long enough to raise a signal: a pod pinned at its CPU limit for one cycle is not yet a
+// CPUThrottling signal, and its silence is not evidence that the incident is over. It is
+// asked only by incident resolution, which holds an incident whose workload has one.
+type ResolutionPender interface {
+	ResolutionPending() []ContainerRef
+}
+
+// ResolutionSnapshot is what incident resolution needs to know about the collectors'
+// silence, taken in one pass: which families are blind, and which containers are pending.
+// The zero value holds nothing.
+type ResolutionSnapshot struct {
+	// BlindFamilies is every family ResolutionBlind holds.
+	BlindFamilies map[Family]bool
+	// PendingContainers is, per family, the containers ResolutionPending names.
+	PendingContainers map[Family]map[ContainerRef]bool
+}
+
+// Blind reports whether the family was resolution-blind when the snapshot was taken.
+func (s ResolutionSnapshot) Blind(family Family) bool { return s.BlindFamilies[family] }
+
+// Pending reports whether the container was pending for the family when the snapshot
+// was taken.
+func (s ResolutionSnapshot) Pending(family Family, ref ContainerRef) bool {
+	return s.PendingContainers[family][ref]
+}
+
 // Engine orchestrates signal collection from all registered collectors.
 type Engine struct {
 	collectors []SignalCollector
@@ -130,19 +164,43 @@ func (e *Engine) ResolutionBlind(t SignalType) bool {
 // verifier cycle that runs the collectors again before the resolve step cannot flip
 // the answer.
 func (e *Engine) ResolutionBlindFamilies() map[Family]bool {
+	return e.ResolutionSnapshot().BlindFamilies
+}
+
+// ResolutionSnapshot is ResolutionBlindFamilies plus the containers each family's
+// collector says are pending (ResolutionPender), taken under one lock so the two
+// describe the same moment.
+func (e *Engine) ResolutionSnapshot() ResolutionSnapshot {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	held := map[Family]bool{}
+	snap := ResolutionSnapshot{
+		BlindFamilies:     map[Family]bool{},
+		PendingContainers: map[Family]map[ContainerRef]bool{},
+	}
 	for _, c := range e.collectors {
 		fc, ok := c.(FamilyCollector)
-		if !ok || !e.collectorBlindLocked(fc, true) {
+		if !ok {
 			continue
 		}
-		for _, family := range fc.Families() {
-			held[family] = true
+		if e.collectorBlindLocked(fc, true) {
+			for _, family := range fc.Families() {
+				snap.BlindFamilies[family] = true
+			}
+		}
+		pender, ok := fc.(ResolutionPender)
+		if !ok {
+			continue
+		}
+		for _, ref := range pender.ResolutionPending() {
+			for _, family := range fc.Families() {
+				if snap.PendingContainers[family] == nil {
+					snap.PendingContainers[family] = map[ContainerRef]bool{}
+				}
+				snap.PendingContainers[family][ref] = true
+			}
 		}
 	}
-	return held
+	return snap
 }
 
 func (e *Engine) familyBlind(family Family, resolution bool) bool {

@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"sort"
 	"sync"
 	"time"
 
@@ -106,7 +107,7 @@ const (
 	msgPrometheusActive    = "CPU throttling detection reads the throttled-period ratio from Prometheus: 25% or more of periods throttled."
 	msgFallback            = "The Prometheus endpoint in spec.metrics.prometheus.url could not be read, so CPU throttling detection reads metrics.k8s.io instead."
 	msgFallbackNoData      = "The Prometheus endpoint in spec.metrics.prometheus.url answered with no CPU throttling series for the containers in this cluster " +
-		"(cAdvisor metrics may not be scraped), so CPU throttling detection reads metrics.k8s.io instead."
+		"(cAdvisor metrics may not be scraped, or their CFS counters never advance), so CPU throttling detection reads metrics.k8s.io instead."
 	msgFallbackURLInvalid = "spec.metrics.prometheus.url is not a valid http or https URL, so CPU throttling detection reads metrics.k8s.io instead."
 	msgNoSource           = "CPU throttling detection is off: metrics.k8s.io is not served and spec.metrics.prometheus.url is not set. " +
 		"Install metrics-server or set spec.metrics.prometheus.url on the ClusterPersona."
@@ -115,7 +116,7 @@ const (
 	msgPrometheusDown = "CPU throttling detection is off: the Prometheus endpoint in spec.metrics.prometheus.url could not be read and " +
 		"metrics.k8s.io is not available."
 	msgPrometheusNoData = "CPU throttling detection is off: the Prometheus endpoint in spec.metrics.prometheus.url answered with no CPU throttling series " +
-		"for the containers in this cluster and metrics.k8s.io is not available."
+		"for the containers in this cluster, or only series with no CFS periods, and metrics.k8s.io is not available."
 	msgPrometheusURLInvalid = "CPU throttling detection is off: spec.metrics.prometheus.url is not a valid http or https URL and " +
 		"metrics.k8s.io is not available."
 	msgSourceLost = "CPU throttling detection is off: metrics.k8s.io was served and is not any more, so a quiet cycle proves nothing."
@@ -195,9 +196,25 @@ type CPUThrottlingCollector struct {
 	// noData is set by a cycle in which metrics.k8s.io answered but named none of the
 	// containers that have a CPU limit (guarded by mu).
 	noData bool
+
+	// reads counts, per container, the consecutive metrics.k8s.io cycles that listed it,
+	// hot or quiet. A container needs CPUUsageConsecutiveCycles of them before its silence
+	// is evidence (guarded by mu).
+	reads map[countKey]int
+	// throttled remembers the containers that have raised a signal and are still in the
+	// cluster. One that drops out of the source is unknown, not quiet (guarded by mu).
+	throttled map[countKey]bool
+	// pendingNow is what the latest good cycle found pending (guarded by mu); pending is
+	// the copy ResolutionPending reads (guarded by viewMu).
+	pendingNow []ContainerRef
+	pending    []ContainerRef
 }
 
 type containerKey struct{ namespace, pod, container string }
+
+func (k containerKey) ref() ContainerRef {
+	return ContainerRef{Namespace: k.namespace, Pod: k.pod, Container: k.container}
+}
 
 // countKey is what a streak belongs to: one container of one pod instance. The UID
 // makes a StatefulSet's recreated db-0 a new pod that starts from zero, where the
@@ -207,7 +224,11 @@ type countKey struct {
 	containerKey
 }
 
-var _ FamilyCollector = (*CPUThrottlingCollector)(nil)
+var (
+	_ FamilyCollector   = (*CPUThrottlingCollector)(nil)
+	_ ResolutionBlinder = (*CPUThrottlingCollector)(nil)
+	_ ResolutionPender  = (*CPUThrottlingCollector)(nil)
+)
 
 // CPUThrottlingOption configures a CPUThrottlingCollector.
 type CPUThrottlingOption func(*CPUThrottlingCollector)
@@ -269,6 +290,8 @@ func NewCPUThrottlingCollector(pods client.Reader, logger logr.Logger, opts ...C
 		now:        time.Now,
 		logs:       NewLogThrottle(LogRepeatInterval),
 		counts:     map[countKey]int{},
+		reads:      map[countKey]int{},
+		throttled:  map[countKey]bool{},
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -308,6 +331,20 @@ func (c *CPUThrottlingCollector) ResolutionBlind() bool {
 	return !c.haveStatus || !c.lastStatus.Active || !c.warm
 }
 
+// ResolutionPending implements ResolutionPender: the containers that read at or above the
+// usage line in the latest cycle without yet having the CPUUsageConsecutiveCycles that
+// raise a signal, and the containers that did raise one and have not been read for that
+// many cycles since (they left the source, or a cycle could not look). A pod pinned at its
+// limit that is new to a source that is warm as a whole is the case it exists for: the
+// source's warm-up says it can see, and this says it has not yet seen this container.
+// Containers of pods that are gone, finished or terminating are not listed. The result is
+// sorted and the caller's to keep.
+func (c *CPUThrottlingCollector) ResolutionPending() []ContainerRef {
+	c.viewMu.RLock()
+	defer c.viewMu.RUnlock()
+	return slices.Clone(c.pending)
+}
+
 // advanceWarmUp folds one finished cycle into the warm-up count and reports whether the
 // source is warm. Called with c.mu held.
 func (c *CPUThrottlingCollector) advanceWarmUp(status SourceStatus, err error) bool {
@@ -338,16 +375,18 @@ func (c *CPUThrottlingCollector) Collect(ctx context.Context) ([]Signal, error) 
 	}
 
 	c.noData = false
+	c.pendingNow = nil
 	signals, status, err := c.observe(ctx, now)
 	c.haveLast, c.lastRun, c.lastSignals, c.lastErr = true, now, slices.Clone(signals), err
 	warm := c.advanceWarmUp(status, err)
 	if err != nil {
 		// A cycle that could not look breaks every streak: three consecutive cycles
 		// means three that all read the metrics.
-		c.counts = map[countKey]int{}
+		c.resetStreaks()
 	}
+	pending := slices.Clone(c.pendingNow)
 	c.viewMu.Lock()
-	c.haveStatus, c.lastStatus, c.warm = true, status, warm
+	c.haveStatus, c.lastStatus, c.warm, c.pending = true, status, warm, pending
 	c.viewMu.Unlock()
 
 	if c.sink != nil {
@@ -357,8 +396,15 @@ func (c *CPUThrottlingCollector) Collect(ctx context.Context) ([]Signal, error) 
 	return signals, err
 }
 
-// errPrometheusNoData says the Prometheus endpoint answered, with nothing about any
-// container in this cluster that has a CPU limit.
+// resetStreaks starts every usage streak and reading streak over. What a throttled
+// container is remembered for survives: not having looked is not having seen it quiet.
+func (c *CPUThrottlingCollector) resetStreaks() {
+	c.counts = map[countKey]int{}
+	c.reads = map[countKey]int{}
+}
+
+// errPrometheusNoData says the Prometheus endpoint answered, with nothing measured about
+// any container in this cluster that has a CPU limit: no series for one, or only 0/0.
 var errPrometheusNoData = errors.New("prometheus returned no series for any container with a CPU limit")
 
 // observe runs one cycle. Prometheus, when it answers with data, decides; otherwise
@@ -384,8 +430,10 @@ func (c *CPUThrottlingCollector) observe(ctx context.Context, now time.Time) ([]
 			// The query answers for every container, including quiet ones, so an answer
 			// that names none of the containers that could be throttled means the endpoint
 			// has no cAdvisor data (not scraped, relabelled, an outage). It is not a source
-			// that saw "nothing throttled".
-			if len(pods) > 0 && !namesAKnownContainer(got, pods) {
+			// that saw "nothing throttled". Neither is one whose every known container is
+			// 0/0: the CFS counters exist and never advance. A mix, with at least one
+			// container that measured a ratio, is a cluster that is quiet.
+			if len(pods) > 0 && !measuresAKnownContainer(got, pods) {
 				promErr = errPrometheusNoData
 			} else {
 				samples, promUsed = got, true
@@ -399,9 +447,13 @@ func (c *CPUThrottlingCollector) observe(ctx context.Context, now time.Time) ([]
 	return c.fromMetricsServer(ctx, promErr, pods, now)
 }
 
-// namesAKnownContainer reports whether any sample is about a container in the index.
-func namesAKnownContainer(samples []ThrottleSample, pods podIndex) bool {
+// measuresAKnownContainer reports whether any sample is about a container in the index and
+// carries a measured ratio (not 0/0).
+func measuresAKnownContainer(samples []ThrottleSample, pods podIndex) bool {
 	for _, s := range samples {
+		if s.NoPeriods {
+			continue
+		}
 		if _, _, ok := pods.lookup(containerKey{s.Namespace, s.Pod, s.Container}); ok {
 			return true
 		}
@@ -447,7 +499,9 @@ func (c *CPUThrottlingCollector) fromPrometheus(
 ) ([]Signal, SourceStatus, error) {
 	status := SourceStatus{Active: true, Source: CPUThrottlingSourcePrometheus, Reason: ReasonPrometheusActive, Message: msgPrometheusActive}
 	// The usage counts belong to metrics.k8s.io; switching source starts them over.
-	c.counts = map[countKey]int{}
+	// Prometheus measures throttling directly, so nothing is remembered or pending.
+	c.resetStreaks()
+	c.throttled = map[countKey]bool{}
 
 	seen := map[containerKey]bool{}
 	signals := make([]Signal, 0, len(samples))
@@ -508,7 +562,7 @@ func (c *CPUThrottlingCollector) fromMetricsServer(
 		return nil, readFailed(), fmt.Errorf("probing metrics.k8s.io: %w", err)
 	}
 	if !present {
-		c.counts = map[countKey]int{}
+		c.resetStreaks()
 		switch {
 		case c.everSawMetrics:
 			return nil, SourceStatus{Source: CPUThrottlingSourceNone, Reason: ReasonMetricsSourceLost, Message: msgSourceLost},
@@ -565,7 +619,7 @@ func (c *CPUThrottlingCollector) logFallback(err error, fault promFault, now tim
 
 // noMetricsServer is the case where metrics.k8s.io is not an option at all.
 func (c *CPUThrottlingCollector) noMetricsServer(promErr error) ([]Signal, SourceStatus, error) {
-	c.counts = map[countKey]int{}
+	c.resetStreaks()
 	if promErr != nil {
 		return nil, classifyPromFault(promErr).downStatus(), fmt.Errorf("prometheus unusable and metrics.k8s.io is not in use: %w", promErr)
 	}
@@ -586,6 +640,8 @@ func (c *CPUThrottlingCollector) usageSignals(
 	ctx context.Context, items []metricsv1beta1.PodMetrics, pods podIndex, now time.Time,
 ) ([]Signal, error) {
 	next := map[countKey]int{}
+	reads := map[countKey]int{}
+	hot := map[countKey]bool{} // at the line, streak still under CPUUsageConsecutiveCycles
 	var signals []Signal
 	excluded := map[string]bool{}
 
@@ -597,6 +653,8 @@ func (c *CPUThrottlingCollector) usageSignals(
 			if !ok {
 				continue // no such pod, or no CPU limit to be throttled by
 			}
+			ck := countKey{uid: pod.UID, containerKey: key}
+			reads[ck] = c.reads[ck] + 1
 			usage := cm.Usage.Cpu().MilliValue()
 			if usage*100 < limit.MilliValue()*cpuUsageLimitPercent {
 				continue
@@ -613,10 +671,10 @@ func (c *CPUThrottlingCollector) usageSignals(
 				continue
 			}
 
-			ck := countKey{uid: pod.UID, containerKey: key}
 			cycles := c.counts[ck] + 1
 			next[ck] = cycles
 			if cycles < CPUUsageConsecutiveCycles {
+				hot[ck] = true
 				continue
 			}
 			pct := float64(usage) / float64(limit.MilliValue()) * 100
@@ -638,7 +696,66 @@ func (c *CPUThrottlingCollector) usageSignals(
 		}
 	}
 	c.counts = next
+	c.reads = reads
+	c.settlePending(pods, next, reads, hot)
 	return signals, nil
+}
+
+// settlePending updates what is remembered as throttled and what is pending after a good
+// metrics.k8s.io cycle. A container is pending when it is at the usage line without a
+// signal yet, or when it raised a signal and has not been read CPUUsageConsecutiveCycles
+// cycles in a row since. A remembered container is forgotten when it has been read that
+// long (and is not hot: a hot one keeps its signal), or when its pod is gone, finished or
+// terminating.
+func (c *CPUThrottlingCollector) settlePending(pods podIndex, streaks, reads map[countKey]int, hot map[countKey]bool) {
+	pending := map[ContainerRef]bool{}
+	remembered := map[countKey]bool{}
+	for ck := range hot {
+		pending[ck.ref()] = true
+	}
+	for ck := range c.throttled {
+		if !stillRunning(pods, ck) {
+			continue
+		}
+		if reads[ck] >= CPUUsageConsecutiveCycles && streaks[ck] < CPUUsageConsecutiveCycles {
+			continue // read long enough, and quiet: its silence is evidence again
+		}
+		remembered[ck] = true
+		if reads[ck] < CPUUsageConsecutiveCycles {
+			pending[ck.ref()] = true
+		}
+	}
+	for ck, n := range streaks {
+		if n >= CPUUsageConsecutiveCycles {
+			remembered[ck] = true
+		}
+	}
+	c.throttled = remembered
+
+	c.pendingNow = make([]ContainerRef, 0, len(pending))
+	for ref := range pending {
+		c.pendingNow = append(c.pendingNow, ref)
+	}
+	sort.Slice(c.pendingNow, func(i, j int) bool {
+		a, b := c.pendingNow[i], c.pendingNow[j]
+		if a.Namespace != b.Namespace {
+			return a.Namespace < b.Namespace
+		}
+		if a.Pod != b.Pod {
+			return a.Pod < b.Pod
+		}
+		return a.Container < b.Container
+	})
+}
+
+// stillRunning reports whether the pod instance a streak belongs to is still in the
+// cluster and can still report usage.
+func stillRunning(pods podIndex, ck countKey) bool {
+	pod, _, ok := pods.lookup(ck.containerKey)
+	if !ok || pod.UID != ck.uid || pod.DeletionTimestamp != nil {
+		return false
+	}
+	return pod.Status.Phase != corev1.PodSucceeded && pod.Status.Phase != corev1.PodFailed
 }
 
 // containerMeta is the metadata every CPUThrottling signal carries. "container" is
