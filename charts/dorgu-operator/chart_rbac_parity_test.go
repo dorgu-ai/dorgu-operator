@@ -110,3 +110,34 @@ func TestChartCoversGeneratedRole(t *testing.T) {
 			"(Helm installs would lack them):\n  %s", strings.Join(gaps, "\n  "))
 	}
 }
+
+// The intake's preflight reads the RemediationProposal and RemediationAction CRDs. The
+// chart must grant exactly that: get, on those two names, and nothing wider.
+func TestChartCanReadOnlyTheTwoCRDsThePreflightChecks(t *testing.T) {
+	found := false
+	for doc := range strings.SplitSeq(helmTemplate(t), "\n---") {
+		var role rbacv1.ClusterRole
+		if err := yaml.Unmarshal([]byte(doc), &role); err != nil {
+			continue
+		}
+		for _, rule := range role.Rules {
+			for _, resource := range rule.Resources {
+				if resource != "customresourcedefinitions" {
+					continue
+				}
+				found = true
+				if strings.Join(rule.Verbs, ",") != "get" {
+					t.Errorf("verbs on customresourcedefinitions = %v, want only get", rule.Verbs)
+				}
+				got := append([]string(nil), rule.ResourceNames...)
+				sort.Strings(got)
+				if strings.Join(got, ",") != "remediationactions.dorgu.io,remediationproposals.dorgu.io" {
+					t.Errorf("resourceNames = %v, want exactly the two intake CRDs", got)
+				}
+			}
+		}
+	}
+	if !found {
+		t.Error("the chart ClusterRole has no get on customresourcedefinitions: the preflight could never pass")
+	}
+}

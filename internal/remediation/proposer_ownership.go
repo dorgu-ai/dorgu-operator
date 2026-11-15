@@ -27,6 +27,7 @@ import (
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
 	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
+	"github.com/dorgu-ai/dorgu-operator/internal/intake"
 )
 
 // applyOwnershipShaping makes the plan match whoever owns the Deployment.
@@ -338,7 +339,7 @@ func (p *Proposer) adviseAndSeal(
 	if refusal != nil {
 		return nil, refusal
 	}
-	installDecision(action, sealed)
+	intake.InstallDecision(action, sealed)
 	return sealed, nil
 }
 

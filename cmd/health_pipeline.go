@@ -24,9 +24,11 @@ import (
 	"github.com/go-logr/logr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/dorgu-ai/dorgu-operator/internal/controller"
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
 	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
 	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
+	"github.com/dorgu-ai/dorgu-operator/internal/intake"
 	"github.com/dorgu-ai/dorgu-operator/internal/llm"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation/planner"
@@ -49,6 +51,10 @@ type healthPipeline struct {
 	// Planner is nil unless AI remediation planning is enabled and configured.
 	Planner planner.Planner
 
+	// Intake decides every RemediationProposal. The proposer and the proposal
+	// reconciler share it, so they share one rate limit and one set of persona locks.
+	Intake *intake.Processor
+
 	Proposer *remediation.Proposer
 }
 
@@ -60,12 +66,16 @@ type healthPipeline struct {
 //
 // It makes no network calls: LLM clients are constructed but not used.
 func buildHealthPipeline(
-	c client.Client,
+	clients clusterClients,
 	reader client.Reader,
 	cfg operatorConfig,
 	operatorNS string,
+	setup intakeSetup,
 	log logr.Logger,
 ) healthPipeline {
+	// c is the guarded client: nothing built here may create a RemediationAction
+	// except through the intake, which alone is given clients.Intake.
+	c := clients.Guarded
 	// The gate is built first because it is the single deny-list and the single
 	// decision point: it gates the remediation proposer and the diagnosis
 	// provider's model call alike.
@@ -132,7 +142,20 @@ func buildHealthPipeline(
 		}
 	}
 
-	var proposerOpts []remediation.ProposerOption
+	// One intake for everyone: Dorgu's planner proposes through it as the operator
+	// ServiceAccount, and the proposal reconciler decides everyone else's.
+	proposalIntake := intake.New(intake.Config{
+		Client:           clients.Intake,
+		Reader:           reader,
+		Lister:           c, // the manager's cached reads: see intake.Config.Lister
+		Gate:             g,
+		Incidents:        &controller.ProposalIncidents{Client: c},
+		OperatorUsername: setup.Username,
+		Preflight:        setup.Preflight,
+		Logger:           log,
+	})
+
+	proposerOpts := []remediation.ProposerOption{remediation.WithIntake(proposalIntake)}
 	if aiPlanner != nil {
 		proposerOpts = append(proposerOpts, remediation.WithPlanner(aiPlanner))
 	}
@@ -142,6 +165,7 @@ func buildHealthPipeline(
 		DiagnosisProviders: providers,
 		DiagnosisEngine:    diagnosis.NewEngine(log, providers...),
 		Planner:            aiPlanner,
+		Intake:             proposalIntake,
 		Proposer:           remediation.NewProposer(c, g, log, proposerOpts...),
 	}
 }

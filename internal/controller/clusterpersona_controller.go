@@ -32,6 +32,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
+	"github.com/dorgu-ai/dorgu-operator/internal/intake"
 )
 
 const (
@@ -62,6 +63,11 @@ const (
 	// An entry that is not (a wildcard, a capital letter) can never match a real
 	// namespace, so it protects nothing while looking as if it does.
 	ConditionExcludeNamespaces = "ExcludeNamespacesValid"
+
+	// ConditionIntakeReady reports whether the proposal intake is open. While it is
+	// False the operator converts no RemediationProposal and Dorgu's planner neither
+	// plans nor proposes; detection, diagnosis and existing actions are unaffected.
+	ConditionIntakeReady = "ProposalIntakeReady"
 )
 
 // ClusterPersonaReconciler reconciles a ClusterPersona object.
@@ -73,6 +79,16 @@ type ClusterPersonaReconciler struct {
 	// OperatorNamespaceUnknown is set when POD_NAMESPACE (and the service-account
 	// file) did not say which namespace the operator runs in.
 	OperatorNamespaceUnknown bool
+
+	// IntakeReadiness says whether the proposal intake is open (the operator knows
+	// its own identity and the CRDs it writes are installed and current). Nil when
+	// the health pipeline is off, in which case no condition is written.
+	IntakeReadiness IntakeReadiness
+}
+
+// IntakeReadiness reports why the proposal intake is closed.
+type IntakeReadiness interface {
+	Failures() []intake.Failure
 }
 
 // +kubebuilder:rbac:groups=dorgu.io,resources=clusterpersonas,verbs=get;list;watch;create;update;patch;delete
@@ -246,6 +262,8 @@ func (r *ClusterPersonaReconciler) reportSafetyConfiguration(persona *dorguv1.Cl
 			"OperatorNamespaceKnown", "The deny-list protects the operator's own namespace.")
 	}
 
+	r.reportIntakeReadiness(persona)
+
 	var excluded []string
 	if persona.Spec.Policies != nil && persona.Spec.Policies.SelfHealing != nil {
 		excluded = persona.Spec.Policies.SelfHealing.ExcludeNamespaces
@@ -260,6 +278,26 @@ func (r *ClusterPersonaReconciler) reportSafetyConfiguration(persona *dorguv1.Cl
 	}
 	upsertCondition(&persona.Status.Conditions, ConditionExcludeNamespaces, metav1.ConditionTrue,
 		"AllValid", "Every excludeNamespaces entry is a valid namespace name.")
+}
+
+// reportIntakeReadiness writes the ProposalIntakeReady condition.
+func (r *ClusterPersonaReconciler) reportIntakeReadiness(persona *dorguv1.ClusterPersona) {
+	if r.IntakeReadiness == nil {
+		return
+	}
+	failures := r.IntakeReadiness.Failures()
+	if len(failures) == 0 {
+		upsertCondition(&persona.Status.Conditions, ConditionIntakeReady, metav1.ConditionTrue,
+			"IntakeOpen", "The proposal intake is open: proposals are converted and Dorgu's planner proposes.")
+		return
+	}
+	parts := make([]string, 0, len(failures))
+	for _, f := range failures {
+		parts = append(parts, f.Message)
+	}
+	upsertCondition(&persona.Status.Conditions, ConditionIntakeReady, metav1.ConditionFalse, failures[0].Reason,
+		"The proposal intake is CLOSED: no proposal is converted and Dorgu's planner does not plan or propose until this is fixed; "+
+			"detection, diagnosis and existing actions continue. "+strings.Join(parts, " "))
 }
 
 // invalidNamespaceNames returns the entries that are not DNS-1123 labels, which is

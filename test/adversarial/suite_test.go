@@ -30,6 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
+	dorguv1alpha1 "github.com/dorgu-ai/dorgu-operator/api/v1alpha1"
 )
 
 // The suite boots one envtest API server, the same way the controller suite
@@ -53,6 +54,11 @@ func run(m *testing.M) int {
 	}
 	if err := dorguv1.AddToScheme(scheme); err != nil {
 		fmt.Fprintf(os.Stderr, "adding dorgu scheme: %v\n", err)
+		return 1
+	}
+
+	if err := dorguv1alpha1.AddToScheme(scheme); err != nil {
+		fmt.Fprintf(os.Stderr, "adding dorgu v1alpha1 scheme: %v\n", err)
 		return 1
 	}
 

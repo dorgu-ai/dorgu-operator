@@ -27,6 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
+	dorguv1alpha1 "github.com/dorgu-ai/dorgu-operator/api/v1alpha1"
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
 	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
 	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
@@ -84,7 +85,7 @@ func TestProposer_CPUThrottling_RaisesTheLiveCPULimit(t *testing.T) {
 			incident := newTestIncident(defaultNamespace, "cpu-throttle", "my-app", "CPUThrottling")
 			c := fake.NewClientBuilder().WithScheme(newWorkloadScheme()).
 				WithRuntimeObjects(persona, deploy).
-				WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+				WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
 			proposer := NewProposer(c, gate.New(c, testLogger()), testLogger())
 			result, err := proposer.Propose(context.Background(),
@@ -109,7 +110,7 @@ func TestProposer_CPUThrottling_NeverIntroducesACPULimit(t *testing.T) {
 	incident := newTestIncident(defaultNamespace, "cpu-throttle", "my-app", "CPUThrottling")
 	c := fake.NewClientBuilder().WithScheme(newWorkloadScheme()).
 		WithRuntimeObjects(persona, deploy).
-		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
 	proposer := NewProposer(c, gate.New(c, testLogger()), testLogger())
 	result, err := proposer.Propose(context.Background(),
@@ -127,7 +128,7 @@ func TestProposer_CPUThrottling_ObserveModeProposesNothing(t *testing.T) {
 	incident := newTestIncident(defaultNamespace, "cpu-throttle", "my-app", "CPUThrottling")
 	c := fake.NewClientBuilder().WithScheme(newWorkloadScheme()).
 		WithRuntimeObjects(persona, deploy, cp).
-		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
 	proposer := NewProposer(c, gate.New(c, testLogger()), testLogger())
 	result, err := proposer.Propose(context.Background(),
@@ -142,7 +143,7 @@ func TestProposer_CPUThrottling_ProtectedNamespaceProposesNothing(t *testing.T) 
 	incident := newTestIncident(defaultNamespace, "cpu-throttle", "my-app", "CPUThrottling")
 	c := fake.NewClientBuilder().WithScheme(newWorkloadScheme()).
 		WithRuntimeObjects(persona, deploy).
-		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
 	proposer := NewProposer(c, gate.New(c, testLogger(), gate.WithProtectedNamespaces(defaultNamespace)), testLogger())
 	result, err := proposer.Propose(context.Background(),
@@ -158,7 +159,7 @@ func TestProposer_CPUThrottling_SecondIncidentSameFixIsDeduped(t *testing.T) {
 	second := newTestIncident(defaultNamespace, "cpu-b", "my-app", "CPUThrottling")
 	c := fake.NewClientBuilder().WithScheme(newWorkloadScheme()).
 		WithRuntimeObjects(persona, deploy).
-		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 	proposer := NewProposer(c, gate.New(c, testLogger()), testLogger())
 	diag := newCPUThrottlingDiagnosis(detection.SeverityWarning)
 

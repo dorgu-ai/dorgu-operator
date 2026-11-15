@@ -180,6 +180,67 @@ spec:
                 description: PlanSummary is the AI root-cause / plan explanation for
                   the ordered plan.
                 type: string
+              provenance:
+                description: |-
+                  Provenance records which RemediationProposal this action was converted from
+                  and who proposed it. The operator writes it and it is immutable: it can be
+                  neither added to an action that has none nor changed once set. An action
+                  without provenance predates v0.14 and is treated as proposed by the operator
+                  ServiceAccount.
+                properties:
+                  agent:
+                    description: Agent is informational detail about the agent behind
+                      the proposal.
+                    properties:
+                      name:
+                        description: Name of the agent or tool.
+                        maxLength: 128
+                        type: string
+                      runID:
+                        description: RunID identifies the agent run that produced
+                          the proposal.
+                        maxLength: 128
+                        type: string
+                      version:
+                        description: Version of the agent or tool.
+                        maxLength: 64
+                        type: string
+                    type: object
+                  proposal:
+                    description: Proposal is the name of the RemediationProposal,
+                      in the action's namespace.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                  proposer:
+                    description: Proposer is who wrote the proposal.
+                    properties:
+                      username:
+                        description: Username is the authenticated Kubernetes username
+                          of the proposer.
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                    required:
+                    - username
+                    type: object
+                  requestedBy:
+                    description: |-
+                      RequestedBy is the human on whose behalf the proposal was made, when one
+                      exists. A ticketed rollback records its requester here.
+                    maxLength: 253
+                    type: string
+                  source:
+                    description: Source is the proposal's source (see the ProposalSource*
+                      constants).
+                    maxLength: 63
+                    minLength: 1
+                    type: string
+                required:
+                - proposal
+                - proposer
+                - source
+                type: object
               rollback:
                 description: Rollback configures automatic rollback behavior.
                 properties:
@@ -240,9 +301,11 @@ spec:
                     description:
                       description: Description is a human-readable summary of the
                         action.
+                      maxLength: 1024
                       type: string
                     id:
                       description: ID is a stable, per-plan identifier for the step.
+                      maxLength: 128
                       type: string
                     order:
                       description: Order is the 1-based execution order of this step
@@ -261,6 +324,7 @@ spec:
                     rationale:
                       description: Rationale explains why this step is proposed (AI
                         reasoning).
+                      maxLength: 4000
                       type: string
                     risk:
                       description: Risk is the assessed risk level of applying this
@@ -282,6 +346,8 @@ spec:
                         clean-room run #4 saw it directly beside the model's claim that a 16x
                         change was "well within a 2x ceiling". A guardrail's verdict is Dorgu's
                         alone.
+                        The gate keeps at most 32 entries per step (gate.MaxStepSafetyEntries, which a
+                        test holds below this bound), so the limit is room above what it can write.
                       items:
                         description: |-
                           StepSafety is one guardrail verdict on one field of a step.
@@ -294,33 +360,40 @@ spec:
                               Baseline is the value the guardrail measured against: the live workload's
                               value when it could be read, the persona's otherwise. Empty when the rule
                               did not measure a change (a derived patch has nothing to compare).
+                            maxLength: 253
                             type: string
                           field:
                             description: Field is the persona-spec path ruled on,
                               e.g. "spec.resources.limits.memory".
+                            maxLength: 253
                             type: string
                           maxRatio:
                             description: MaxRatio is the largest multiple the guardrail
                               allows, e.g. "2.0x".
+                            maxLength: 253
                             type: string
                           message:
                             description: Message is Dorgu's one-line rendering of
                               the verdict, ready to print.
+                            maxLength: 1024
                             type: string
                           permitted:
                             description: |-
                               Permitted is the value that will actually be applied for this field, and
                               is exactly what the step's patch carries. Empty means nothing will be
                               applied for this field.
+                            maxLength: 253
                             type: string
                           ratio:
                             description: Ratio is the requested change as a multiple
                               of Baseline, e.g. "16.0x".
+                            maxLength: 253
                             type: string
                           requested:
                             description: |-
                               Requested is the value the plan asked for. Empty when the plan named a
                               change without giving a value.
+                            maxLength: 253
                             type: string
                           rule:
                             description: Rule identifies the guardrail that ruled.
@@ -343,6 +416,7 @@ spec:
                         - rule
                         - verdict
                         type: object
+                      maxItems: 64
                       type: array
                       x-kubernetes-list-type: atomic
                     type:
@@ -486,6 +560,11 @@ spec:
             - personaRef
             - trustLevel
             type: object
+            x-kubernetes-validations:
+            - message: spec.provenance is written by the operator when it converts
+                a proposal and cannot be added or changed
+              rule: 'has(oldSelf.provenance) ? (has(self.provenance) && self.provenance
+                == oldSelf.provenance) : !has(self.provenance)'
           status:
             description: Status defines the observed state of RemediationAction.
             properties:

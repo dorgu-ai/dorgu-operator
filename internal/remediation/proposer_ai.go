@@ -29,6 +29,7 @@ import (
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
 	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
+	"github.com/dorgu-ai/dorgu-operator/internal/intake"
 	"github.com/dorgu-ai/dorgu-operator/internal/metrics"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation/planner"
 	"github.com/dorgu-ai/dorgu-operator/internal/workload"
@@ -54,7 +55,7 @@ func (p *Proposer) proposeWithPlanner(
 ) (*ProposalResult, error) {
 	workloadRef := pre.WorkloadRef
 
-	rc, err := planner.BuildContext(ctx, p.client, diag, incident)
+	rc, err := planner.BuildContext(ctx, p.client, diag, incident, planner.WithTrustedProposer(p.intake.OperatorUsername()))
 	if err != nil {
 		return nil, fmt.Errorf("building remediation context: %w", err)
 	}
@@ -143,7 +144,7 @@ func (p *Proposer) gateAndPersistPlan(
 		}
 		return refusal, nil
 	}
-	installDecision(action, dec)
+	intake.InstallDecision(action, dec)
 
 	// CR-01: a plan that diagnoses a resource change and then applies nothing is
 	// not a fix, however well it reads. Give the plan the deterministic patch the
@@ -264,7 +265,9 @@ func (p *Proposer) gateAndPersistPlan(
 
 	// status.gate is the seal's decision: the first run ruled on a draft of this
 	// plan, and the seal on the object about to be written (R7).
-	return p.persist(ctx, action, sealed)
+	facts := factsFor(diag, incident)
+	facts.AdvisoryAllowed = ruleEngineDeclined
+	return p.persist(ctx, action, sealed, facts)
 }
 
 // advisorySteps returns the plan's steps without its persona-updates, renumbered
@@ -334,8 +337,8 @@ func mapPlannedSteps(
 			Order:          ps.Order,
 			ID:             fmt.Sprintf("step-%d", ps.Order),
 			Type:           ps.Type,
-			Description:    ps.Description,
-			Rationale:      ps.Rationale,
+			Description:    dorguv1.BoundText(ps.Description, dorguv1.MaxStepDescriptionLength),
+			Rationale:      dorguv1.BoundText(ps.Rationale, dorguv1.MaxStepRationaleLength),
 			Risk:           ps.Risk,
 			AutoExecutable: ps.Type == dorguv1.StepTypePersonaUpdate,
 			Command:        advisoryCommand(ps),

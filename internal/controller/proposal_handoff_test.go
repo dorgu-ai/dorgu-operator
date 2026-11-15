@@ -19,15 +19,19 @@ package controller
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/go-logr/logr"
+	"github.com/go-logr/logr/funcr"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
+	dorguv1alpha1 "github.com/dorgu-ai/dorgu-operator/api/v1alpha1"
 	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
+	"github.com/dorgu-ai/dorgu-operator/internal/intake"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation"
 )
 
@@ -97,6 +101,25 @@ func TestProposeRemediation_QuietWhenSkippedOrFailed(t *testing.T) {
 	}
 }
 
+// F-2: an intake refusal of the planner's own proposal is not a gate stage, so it
+// is not recorded on the incident; it must at least be logged.
+func TestProposeRemediation_AnIntakeRefusalOfThePlannerIsLogged(t *testing.T) {
+	var lines []string
+	sink := funcr.New(func(prefix, args string) { lines = append(lines, prefix+args) }, funcr.Options{})
+	proposer := &stubProposer{result: &remediation.ProposalResult{
+		SkipReason: "too many", Stage: dorguv1alpha1.StageIntake, Reason: dorguv1alpha1.ReasonRateLimited,
+	}}
+	r := newHandoffReconciler(t, proposer)
+	r.Logger = sink
+
+	diag, incident := handoffFixtures()
+	r.proposeRemediation(context.Background(), diag, incident)
+
+	if len(lines) == 0 || !strings.Contains(strings.Join(lines, "\n"), "RateLimited") {
+		t.Fatalf("the intake refusal was not logged: %q", lines)
+	}
+}
+
 func TestProposeRemediation_NoProposerOrResolvedIncidentProposesNothing(t *testing.T) {
 	diag, incident := handoffFixtures()
 
@@ -116,5 +139,11 @@ func TestProposeRemediation_NoProposerOrResolvedIncidentProposesNothing(t *testi
 	newHandoffReconciler(t, proposer).proposeRemediation(context.Background(), diag, nil)
 	if proposer.calls != 0 {
 		t.Errorf("proposer called %d times for a nil incident, want 0", proposer.calls)
+	}
+}
+
+func TestIntakeResolvedPhaseMirrorsTheControllers(t *testing.T) {
+	if intake.IncidentPhaseResolved != PhaseResolved {
+		t.Fatalf("intake.IncidentPhaseResolved = %q, controller PhaseResolved = %q", intake.IncidentPhaseResolved, PhaseResolved)
 	}
 }

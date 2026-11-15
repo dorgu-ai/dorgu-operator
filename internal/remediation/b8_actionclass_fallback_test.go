@@ -29,6 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
+	dorguv1alpha1 "github.com/dorgu-ai/dorgu-operator/api/v1alpha1"
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
 	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation/planner"
@@ -70,7 +71,7 @@ func memoryRaisePlusAdvice() *planner.RemediationPlan {
 func TestActionClassRefusal_FallsBackToTheAdvisorySteps(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(newTestScheme()).
 		WithRuntimeObjects(newTestPersona(defaultNamespace, "my-app")).
-		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 	cp := &planCounter{plan: memoryRaisePlusAdvice()}
 	p := NewProposer(c, gate.New(c, testLogger()), testLogger(), WithPlanner(cp))
 	diag := newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical)
@@ -111,7 +112,7 @@ func TestActionClassRefusal_FallsBackToTheAdvisorySteps(t *testing.T) {
 func TestActionClassRefusal_FallbackDoesNotLoop(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(newTestScheme()).
 		WithRuntimeObjects(newTestPersona(defaultNamespace, "my-app")).
-		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 	cp := &planCounter{plan: memoryRaisePlusAdvice()}
 	p := NewProposer(c, gate.New(c, testLogger()), testLogger(), WithPlanner(cp))
 	diag := newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical)
@@ -140,7 +141,7 @@ func TestActionClassRefusal_FallbackDoesNotLoop(t *testing.T) {
 func TestActionClassRefusal_AMemoryOnlyPlanIsStillRefused(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(newTestScheme()).
 		WithRuntimeObjects(newTestPersona(defaultNamespace, "my-app")).
-		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 	plan := memoryRaisePlusAdvice()
 	plan.Steps = plan.Steps[:1]
 	p := NewProposer(c, gate.New(c, testLogger()), testLogger(), WithPlanner(&planCounter{plan: plan}))
@@ -162,7 +163,7 @@ func TestActionClassRefusal_AMemoryOnlyPlanIsStillRefused(t *testing.T) {
 func TestActionClassRefusal_AFailedFallbackStillReportsTheRefusal(t *testing.T) {
 	truth := fake.NewClientBuilder().WithScheme(newTestScheme()).
 		WithRuntimeObjects(newTestPersona(defaultNamespace, "my-app")).
-		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 	pc := &planCounter{plan: memoryRaisePlusAdvice()}
 	c := interceptor.NewClient(truth, interceptor.Funcs{
 		List: func(ctx context.Context, w client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {

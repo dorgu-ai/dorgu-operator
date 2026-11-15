@@ -29,6 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
+	dorguv1alpha1 "github.com/dorgu-ai/dorgu-operator/api/v1alpha1"
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
 	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
 	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
@@ -71,7 +72,7 @@ func TestProposer_Dedup_SkipsWhenActiveExists(t *testing.T) {
 
 			c := fake.NewClientBuilder().WithScheme(scheme).
 				WithRuntimeObjects(persona, ra).
-				WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+				WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
 			safety := gate.New(c, testLogger())
 			// A working planner is wired to prove dedup runs BEFORE the AI path.
@@ -102,7 +103,7 @@ func TestProposer_Dedup_ProposesWhenPriorTerminal(t *testing.T) {
 
 	c := fake.NewClientBuilder().WithScheme(scheme).
 		WithRuntimeObjects(persona, ra).
-		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
 	safety := gate.New(c, testLogger())
 	p := NewProposer(c, safety, testLogger())
@@ -122,7 +123,7 @@ func TestProposer_Dedup_IgnoresOtherIncident(t *testing.T) {
 
 	c := fake.NewClientBuilder().WithScheme(scheme).
 		WithRuntimeObjects(persona, other).
-		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
 	safety := gate.New(c, testLogger())
 	p := NewProposer(c, safety, testLogger())
@@ -142,7 +143,7 @@ func TestProposer_AIXorRule_ValidPlan(t *testing.T) {
 
 	c := fake.NewClientBuilder().WithScheme(scheme).
 		WithRuntimeObjects(persona).
-		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
 	safety := gate.New(c, testLogger())
 	p := NewProposer(c, safety, testLogger(), WithPlanner(&stubPlanner{plan: threeStepPlan()}))
@@ -167,7 +168,7 @@ func TestProposer_AIXorRule_PlannerError(t *testing.T) {
 
 	c := fake.NewClientBuilder().WithScheme(scheme).
 		WithRuntimeObjects(persona).
-		WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
 	safety := gate.New(c, testLogger())
 	p := NewProposer(c, safety, testLogger(), WithPlanner(&stubPlanner{err: errors.New("model down")}))
@@ -310,7 +311,7 @@ func TestProposer_TargetDedup(t *testing.T) {
 
 			c := fake.NewClientBuilder().WithScheme(scheme).
 				WithRuntimeObjects(persona, tt.existing).
-				WithStatusSubresource(&dorguv1.RemediationAction{}).Build()
+				WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
 			safety := gate.New(c, testLogger())
 			// A working planner proves target dedup runs BEFORE the AI path.

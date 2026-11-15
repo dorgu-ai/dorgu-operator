@@ -70,6 +70,13 @@ type RemediationContext struct {
 	// carried WITH their status (phase + verification result) so the planner can
 	// prefer fixes that previously succeeded and avoid ones that failed.
 	PastRemediations []dorguv1.RemediationAction
+
+	// TrustedProposer is the username of Dorgu's own planner (the operator's
+	// ServiceAccount). A past action's explanation reaches the prompt only when its
+	// provenance says this proposer's own planner run wrote it. Any other
+	// explanation is text from outside (an agent's rationale becomes the action's
+	// explanation) and never reaches a model. Empty means no explanation is shown.
+	TrustedProposer string
 }
 
 // WorkloadContext is the live workload the incident concerns, as read from the

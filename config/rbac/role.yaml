@@ -25,6 +25,15 @@ rules:
   - list
   - watch
 - apiGroups:
+  - apiextensions.k8s.io
+  resourceNames:
+  - remediationactions.dorgu.io
+  - remediationproposals.dorgu.io
+  resources:
+  - customresourcedefinitions
+  verbs:
+  - get
+- apiGroups:
   - apps
   resources:
   - deployments
@@ -42,6 +51,12 @@ rules:
   - list
   - watch
 - apiGroups:
+  - authentication.k8s.io
+  resources:
+  - selfsubjectreviews
+  verbs:
+  - create
+- apiGroups:
   - coordination.k8s.io
   resources:
   - leases
@@ -55,6 +70,7 @@ rules:
   - applicationpersonas
   - clusterpersonas
   - incidentmemories
+  - remediationproposals
   verbs:
   - create
   - delete
@@ -77,6 +93,7 @@ rules:
   - clusterpersonas/status
   - incidentmemories/status
   - remediationactions/status
+  - remediationproposals/status
   verbs:
   - get
   - patch

@@ -36,6 +36,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
+	dorguv1alpha1 "github.com/dorgu-ai/dorgu-operator/api/v1alpha1"
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
 	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
 )
@@ -50,6 +51,7 @@ func truthScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 	scheme := runtime.NewScheme()
 	require.NoError(t, dorguv1.AddToScheme(scheme))
+	require.NoError(t, dorguv1alpha1.AddToScheme(scheme))
 	require.NoError(t, corev1.AddToScheme(scheme))
 	require.NoError(t, appsv1.AddToScheme(scheme))
 	return scheme
@@ -204,7 +206,7 @@ func resolverFor(t *testing.T, objects ...client.Object) (*HealthCheckReconciler
 	c := fake.NewClientBuilder().
 		WithScheme(truthScheme(t)).
 		WithObjects(objects...).
-		WithStatusSubresource(&dorguv1.IncidentMemory{}, &dorguv1.ApplicationPersona{}).
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.IncidentMemory{}, &dorguv1.ApplicationPersona{}).
 		Build()
 
 	logger, _ := newRecordingLogger()
@@ -370,7 +372,7 @@ func TestResolveCleared_UnreadableClusterKeepsIncidentOpen(t *testing.T) {
 	base := fake.NewClientBuilder().
 		WithScheme(truthScheme(t)).
 		WithObjects(im).
-		WithStatusSubresource(&dorguv1.IncidentMemory{}).
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.IncidentMemory{}).
 		Build()
 
 	c := interceptor.NewClient(base, interceptor.Funcs{
@@ -558,7 +560,7 @@ func TestReconcile_Acceptance_FourBrokenAppsAreFourIncidents(t *testing.T) {
 	c := fake.NewClientBuilder().
 		WithScheme(truthScheme(t)).
 		WithObjects(objects...).
-		WithStatusSubresource(&dorguv1.IncidentMemory{}, &dorguv1.ApplicationPersona{}).
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.IncidentMemory{}, &dorguv1.ApplicationPersona{}).
 		Build()
 
 	logger, _ := newRecordingLogger()
@@ -627,7 +629,7 @@ func TestReconcile_UnclaimedWorkloadBecomesAnUnattributedIncident(t *testing.T) 
 	c := fake.NewClientBuilder().
 		WithScheme(truthScheme(t)).
 		WithObjects(objects...).
-		WithStatusSubresource(&dorguv1.IncidentMemory{}, &dorguv1.ApplicationPersona{}).
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.IncidentMemory{}, &dorguv1.ApplicationPersona{}).
 		Build()
 
 	logger, _ := newRecordingLogger()
@@ -676,7 +678,7 @@ func TestReconcile_UnclaimedWorkloadBecomesAnUnattributedIncident(t *testing.T) 
 func TestProcessDiagnosis_UnattributedIncidentProposesNothing(t *testing.T) {
 	c := fake.NewClientBuilder().
 		WithScheme(truthScheme(t)).
-		WithStatusSubresource(&dorguv1.IncidentMemory{}).
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.IncidentMemory{}).
 		Build()
 
 	proposer := &countingProposer{}
@@ -740,7 +742,7 @@ func notFoundFor(key client.ObjectKey) error {
 func TestCreateIncident_F05_SurvivesTheNotFoundRace(t *testing.T) {
 	base := fake.NewClientBuilder().
 		WithScheme(truthScheme(t)).
-		WithStatusSubresource(&dorguv1.IncidentMemory{}).
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.IncidentMemory{}).
 		Build()
 
 	diag := aiDiagnosis()
@@ -777,7 +779,7 @@ func TestCreateIncident_F05_SurvivesTheNotFoundRace(t *testing.T) {
 func TestCreateIncident_RetriesNotFoundOnTheStatusWrite(t *testing.T) {
 	base := fake.NewClientBuilder().
 		WithScheme(truthScheme(t)).
-		WithStatusSubresource(&dorguv1.IncidentMemory{}).
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.IncidentMemory{}).
 		Build()
 
 	calls := 0
@@ -813,7 +815,7 @@ func TestUpdateExistingIncident_RetriesNotFound(t *testing.T) {
 	base := fake.NewClientBuilder().
 		WithScheme(truthScheme(t)).
 		WithObjects(im).
-		WithStatusSubresource(&dorguv1.IncidentMemory{}).
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.IncidentMemory{}).
 		Build()
 
 	nf := &notFounder{name: im.Name, fail: 2}
@@ -848,7 +850,7 @@ func TestCreateIncident_AdoptsAnIncidentTheCacheMissed(t *testing.T) {
 	base := fake.NewClientBuilder().
 		WithScheme(truthScheme(t)).
 		WithObjects(existing).
-		WithStatusSubresource(&dorguv1.IncidentMemory{}).
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.IncidentMemory{}).
 		Build()
 
 	logger, sink := newRecordingLogger()
@@ -876,7 +878,7 @@ func TestCreateIncident_AdoptsAnIncidentTheCacheMissed(t *testing.T) {
 func TestCreateIncident_UnrecoverableNotFoundIsStillReportedLoudly(t *testing.T) {
 	base := fake.NewClientBuilder().
 		WithScheme(truthScheme(t)).
-		WithStatusSubresource(&dorguv1.IncidentMemory{}).
+		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.IncidentMemory{}).
 		Build()
 
 	c := interceptor.NewClient(base, interceptor.Funcs{

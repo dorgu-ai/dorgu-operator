@@ -41,13 +41,35 @@ rules:
   - apiGroups: ["dorgu.io"]
     resources: ["incidentmemories/status"]
     verbs: ["get", "update", "patch"]
-  # RemediationAction CRD (created by proposer; lifecycle managed by remediation controller)
+  # RemediationAction CRD (created by the proposal reconciler from an accepted
+  # RemediationProposal; lifecycle managed by remediation controller)
   - apiGroups: ["dorgu.io"]
     resources: ["remediationactions"]
     verbs: ["get", "list", "watch", "create", "update", "patch"]
   - apiGroups: ["dorgu.io"]
     resources: ["remediationactions/status"]
     verbs: ["get", "update", "patch"]
+  # RemediationProposal CRD: the one intake for Dorgu's own planner and for any
+  # agent. The operator writes the proposals its planner makes, answers every
+  # proposal in status, and prunes Rejected ones after 7 days (delete).
+  - apiGroups: ["dorgu.io"]
+    resources: ["remediationproposals"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["dorgu.io"]
+    resources: ["remediationproposals/status"]
+    verbs: ["get", "update", "patch"]
+  # The proposal intake's preflight reads exactly two CRDs, by name, to check that
+  # the RemediationProposal CRD is installed and that the RemediationAction CRD has
+  # spec.provenance. Without this the intake stays closed (fail closed).
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    resourceNames: ["remediationactions.dorgu.io", "remediationproposals.dorgu.io"]
+    verbs: ["get"]
+  # The operator asks the API server who it is (SelfSubjectReview) and closes the
+  # proposal intake if that is not the ServiceAccount it was configured as.
+  - apiGroups: ["authentication.k8s.io"]
+    resources: ["selfsubjectreviews"]
+    verbs: ["create"]
   # DorguEvent CRD (event pipeline). `delete` is the retention and cap cleaner
   # pruning dorgu's own records, which without it grew without bound in etcd. It
   # is scoped to dorgu.io/dorguevents and to no workload kind, so the published

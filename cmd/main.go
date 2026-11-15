@@ -21,11 +21,13 @@ import (
 	"crypto/tls"
 	"fmt"
 	"os"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/discovery"
@@ -39,10 +41,12 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
+	dorguv1alpha1 "github.com/dorgu-ai/dorgu-operator/api/v1alpha1"
 	"github.com/dorgu-ai/dorgu-operator/internal/controller"
 	"github.com/dorgu-ai/dorgu-operator/internal/detection"
 	"github.com/dorgu-ai/dorgu-operator/internal/events"
 	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
+	"github.com/dorgu-ai/dorgu-operator/internal/intake"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation"
 	// +kubebuilder:scaffold:imports
 )
@@ -56,8 +60,14 @@ func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
 	utilruntime.Must(dorguv1.AddToScheme(scheme))
+	utilruntime.Must(dorguv1alpha1.AddToScheme(scheme))
+	// CustomResourceDefinitions are read (two of them, by name) by the intake's preflight.
+	utilruntime.Must(apiextensionsv1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
+
+// preflightTimeout bounds the first run of the intake preflight at startup.
+const preflightTimeout = 30 * time.Second
 
 func main() {
 	cfg := parseFlags()
@@ -142,6 +152,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Every component is handed clients.Guarded, which refuses to create or change a
+	// RemediationAction; only the intake gets clients.Intake. This is the one call of
+	// mgr.GetClient() in this file.
+	clients := newClusterClients(mgr.GetClient())
+
 	// Register the spec.nodeName Pod field index in the manager cache before it
 	// starts. The resource-saturation checker lists pods-by-node through it; the
 	// cache otherwise rejects the field selector with
@@ -157,6 +172,32 @@ func main() {
 	// without it) depend on the answer.
 	operatorNS := operatorNamespace()
 
+	// The proposal intake's preflight: the operator's own identity, the RemediationProposal
+	// CRD, and spec.provenance in the RemediationAction CRD. While any of them fails the
+	// intake is closed (nothing is converted, planned or proposed) and the operator says
+	// so on the ClusterPersona; detection and everything else carry on, and the operator
+	// does not crash-loop. The checks run once now, before anything is registered, and
+	// then every minute.
+	var intakeState intakeSetup
+	if cfg.enableHealthCheck {
+		intakeState = newIntakeSetup(mgr.GetAPIReader(), operatorNS, setupLog)
+		// The username above is a claim from the deployment: have the API server confirm it.
+		if identityClient, icErr := kubernetes.NewForConfig(restConfig); icErr != nil {
+			setupLog.Error(icErr, "unable to build the client that verifies the operator's identity; the intake stays closed")
+			intakeState.Preflight.Add(intake.StaticCheck("operator-identity-verified",
+				intake.ReasonOperatorIdentityUnverified, icErr))
+		} else {
+			intakeState.verifyIdentity(intake.WhoAmIFromSelfSubjectReview(identityClient))
+		}
+		preflightCtx, cancelPreflight := context.WithTimeout(context.Background(), preflightTimeout)
+		intakeState.Preflight.Run(preflightCtx)
+		cancelPreflight()
+		if err := mgr.Add(intakeState.Preflight); err != nil {
+			setupLog.Error(err, "unable to add the intake preflight")
+			os.Exit(1)
+		}
+	}
+
 	// Create discovery client for ClusterPersona controller
 	discoveryClient, err := discovery.NewDiscoveryClientForConfig(restConfig)
 	if err != nil {
@@ -165,7 +206,7 @@ func main() {
 	}
 
 	if err := (&controller.ApplicationPersonaReconciler{
-		Client:        mgr.GetClient(),
+		Client:        clients.Guarded,
 		Scheme:        mgr.GetScheme(),
 		PrometheusURL: cfg.prometheusURL,
 	}).SetupWithManager(mgr); err != nil {
@@ -177,13 +218,17 @@ func main() {
 		setupLog.Info("Prometheus integration enabled", "url", cfg.prometheusURL)
 	}
 
-	if err := (&controller.ClusterPersonaReconciler{
-		Client:          mgr.GetClient(),
+	clusterPersonaReconciler := &controller.ClusterPersonaReconciler{
+		Client:          clients.Guarded,
 		Scheme:          mgr.GetScheme(),
 		DiscoveryClient: discoveryClient,
 
 		OperatorNamespaceUnknown: operatorNS == "",
-	}).SetupWithManager(mgr); err != nil {
+	}
+	if intakeState.Preflight != nil {
+		clusterPersonaReconciler.IntakeReadiness = intakeState.Preflight
+	}
+	if err := clusterPersonaReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ClusterPersona")
 		os.Exit(1)
 	}
@@ -193,7 +238,7 @@ func main() {
 		if controller.ArgoCDCRDExists(discoveryClient) {
 			setupLog.Info("ArgoCD integration enabled, setting up watcher")
 			if err := (&controller.ArgoCDWatcher{
-				Client:  mgr.GetClient(),
+				Client:  clients.Guarded,
 				Scheme:  mgr.GetScheme(),
 				Enabled: true,
 			}).SetupWithManager(mgr); err != nil {
@@ -212,7 +257,7 @@ func main() {
 	// Auto-create ClusterPersona on startup if none exists (ArgoCD-style bootstrap).
 	if cfg.autoCreateClusterPersona {
 		bootstrap := &controller.ClusterPersonaBootstrap{
-			Client:         mgr.GetClient(),
+			Client:         clients.Guarded,
 			Log:            setupLog.WithName("bootstrap"),
 			EnsureInterval: cfg.clusterPersonaEnsureInterval,
 		}
@@ -238,17 +283,17 @@ func main() {
 		// 1. Assemble the deny-list, diagnosis providers, AI planner and proposer.
 		// buildHealthPipeline is the one place they are wired together, and it is
 		// built first because detection reads the same deny-list the gate does.
-		pipeline := buildHealthPipeline(mgr.GetClient(), mgr.GetAPIReader(), cfg, operatorNS, setupLog)
+		pipeline := buildHealthPipeline(clients, mgr.GetAPIReader(), cfg, operatorNS, intakeState, setupLog)
 		diagnosisEngine := pipeline.DiagnosisEngine
 
 		// 2. Create detection collectors. The pod collector skips the namespaces the
 		// gate would refuse (F-13), so platform namespaces raise no incidents.
-		nodeCollector := detection.NewNodeCollector(mgr.GetClient(), setupLog)
-		podCollector := newPodCollector(mgr.GetClient(), pipeline.Gate, setupLog,
+		nodeCollector := detection.NewNodeCollector(clients.Guarded, setupLog)
+		podCollector := newPodCollector(clients.Guarded, pipeline.Gate, setupLog,
 			podCollectorOptions(cfg, mgr.GetAPIReader())...)
-		resourceCollector := detection.NewResourceCollector(mgr.GetClient(), setupLog)
+		resourceCollector := detection.NewResourceCollector(clients.Guarded, setupLog)
 		controlPlaneCollector := detection.NewControlPlaneCollector(
-			mgr.GetClient(), clientset.CoreV1().RESTClient(), setupLog,
+			clients.Guarded, clientset.CoreV1().RESTClient(), setupLog,
 		)
 
 		collectors := []detection.SignalCollector{
@@ -268,15 +313,15 @@ func main() {
 			mc = metricsClientset
 		}
 		if cfg.enableMetricsServer && mc != nil {
-			collectors = append(collectors, detection.NewMetricsCollector(mc, mgr.GetClient(), setupLog))
+			collectors = append(collectors, detection.NewMetricsCollector(mc, clients.Guarded, setupLog))
 		}
 		collectors = append(collectors,
-			newCPUThrottlingCollector(mgr.GetClient(), pipeline.Gate, mc, cfg, setupLog))
+			newCPUThrottlingCollector(clients.Guarded, pipeline.Gate, mc, cfg, setupLog))
 
 		// 3. Create detection engine.
 		detectionEngine := detection.NewEngine(setupLog, collectors...)
 		detectionEngine.SetPersonaCorrelator(
-			detection.NewPersonaCorrelator(mgr.GetClient(), setupLog.WithName("persona-correlator")),
+			detection.NewPersonaCorrelator(clients.Guarded, setupLog.WithName("persona-correlator")),
 		)
 
 		// 4. Event pipeline: off unless --enable-event-pipeline (nothing reads its
@@ -290,7 +335,7 @@ func main() {
 		// pipeline, not a rename. Left for its own change.
 		//nolint:staticcheck // SA1019: migrating to the new events API is a separate change
 		recorder := mgr.GetEventRecorderFor(events.OperatorEventSource)
-		eventPipe := buildEventPipeline(cfg, mgr.GetClient(), clientset, recorder, setupLog)
+		eventPipe := buildEventPipeline(cfg, clients.Guarded, clientset, recorder, setupLog)
 		if err := eventPipe.register(mgr); err != nil {
 			setupLog.Error(err, "unable to start the event pipeline")
 			os.Exit(1)
@@ -302,7 +347,7 @@ func main() {
 
 		// 7. Start health check reconciler.
 		healthReconciler := &controller.HealthCheckReconciler{
-			Client:            mgr.GetClient(),
+			Client:            clients.Guarded,
 			Detection:         detectionEngine,
 			Diagnosis:         diagnosisEngine,
 			EventStore:        eventPipe.Store,
@@ -324,20 +369,38 @@ func main() {
 
 		// 8. Register incident controller.
 		if err := (&controller.IncidentController{
-			Client: mgr.GetClient(),
+			Client: clients.Guarded,
 			Logger: setupLog.WithName("incident-controller"),
 		}).SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create incident controller")
 			os.Exit(1)
 		}
 
+		// 8b. Register the proposal reconciler: the one intake for every
+		// RemediationProposal, and the only code that creates a RemediationAction.
+		// It is registered as soon as the RemediationProposal CRD exists, which is
+		// now or, if the CRD has not been applied yet, whenever it is (a manager
+		// whose proposal cache cannot sync exits, so the operator must not register
+		// the controller early).
+		proposals := &lateRegistration{
+			log: setupLog,
+			register: func() error {
+				return (&controller.ProposalReconciler{
+					Client:    clients.Guarded,
+					Processor: pipeline.Intake,
+				}).SetupWithManager(mgr)
+			},
+		}
+		intakeState.Preflight.Subscribe(proposals.onChecks)
+		proposals.onChecks(intakeState.Preflight.Failures())
+
 		// 9. Register remediation controller (executor + verifier + rollback).
-		executor := remediation.NewExecutor(mgr.GetClient(), pipeline.Gate, setupLog)
-		verifier := remediation.NewVerifier(detectionEngine, mgr.GetClient(), setupLog)
-		rollbackHandler := remediation.NewRollback(mgr.GetClient(), setupLog)
+		executor := remediation.NewExecutor(clients.Guarded, pipeline.Gate, setupLog)
+		verifier := remediation.NewVerifier(detectionEngine, clients.Guarded, setupLog)
+		rollbackHandler := remediation.NewRollback(clients.Guarded, setupLog)
 
 		if err := (&controller.RemediationController{
-			Client:   mgr.GetClient(),
+			Client:   clients.Guarded,
 			Gate:     pipeline.Gate,
 			Executor: executor,
 			Verifier: verifier,

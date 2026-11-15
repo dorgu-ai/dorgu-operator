@@ -165,3 +165,32 @@ func endSentence(text string) string {
 	}
 	return trimmed
 }
+
+// MaxStepSafetyEntries is the most `safety` entries the gate leaves on one step.
+//
+// The gate writes one entry for each field it strips or refuses, and a plan can
+// carry any number of fields, so the records need a bound of their own: the field is
+// capped by the API server (the CRDs allow more than this, with room for a change in
+// how many entries a rule writes), and a record the API server refuses fails the
+// whole RemediationAction create. capStepSafety keeps the first
+// MaxStepSafetyEntries-1 and replaces the rest with one entry saying how many.
+const MaxStepSafetyEntries = 32
+
+// capStepSafety bounds every step's Safety to MaxStepSafetyEntries. It runs once,
+// after every stage, so whatever rules wrote the entries, the total is bounded.
+func capStepSafety(steps []dorguv1.RemediationStep) {
+	for i := range steps {
+		safety := steps[i].Safety
+		if len(safety) <= MaxStepSafetyEntries {
+			continue
+		}
+		kept := safety[:MaxStepSafetyEntries-1]
+		omitted := len(safety) - len(kept)
+		steps[i].Safety = append(append([]dorguv1.StepSafety(nil), kept...), dorguv1.StepSafety{
+			Rule:    dorguv1.SafetyRulePlanValidation,
+			Verdict: dorguv1.SafetyVerdictRejected,
+			Field:   "(more fields)",
+			Message: fmt.Sprintf("%d more changes to this step were left out the same way; only the first %d are listed.", omitted, len(kept)),
+		})
+	}
+}

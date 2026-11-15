@@ -23,6 +23,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
+	dorguv1alpha1 "github.com/dorgu-ai/dorgu-operator/api/v1alpha1"
 	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
 	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
 	"github.com/dorgu-ai/dorgu-operator/internal/metrics"
@@ -72,6 +73,13 @@ func (r *HealthCheckReconciler) proposeRemediation(
 		// advice) are not refusals and are not.
 		if gate.IsStage(result.Stage) {
 			r.recordProposalRefusal(ctx, incident, result)
+		}
+		// The intake refusing Dorgu's own proposal (it is not a gate stage, so it is
+		// not recorded on the incident) is rare after the planner's rate-limit
+		// exemption, and a silent skip is how it was once missed: say so.
+		if result.Stage == dorguv1alpha1.StageIntake {
+			r.Logger.Info("the proposal intake refused Dorgu's own proposal",
+				"incident", incident.Name, "reason", result.Reason, "message", result.SkipReason)
 		}
 		// A proposal that is outstanding answers any earlier refusal.
 		if result.Stage == remediation.StageDeferred {

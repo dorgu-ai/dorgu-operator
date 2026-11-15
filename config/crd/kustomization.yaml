@@ -7,6 +7,7 @@ resources:
 - bases/dorgu.io_dorguevents.yaml
 - bases/dorgu.io_incidentmemories.yaml
 - bases/dorgu.io_remediationactions.yaml
+- bases/dorgu.io_remediationproposals.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

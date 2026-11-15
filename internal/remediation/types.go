@@ -57,6 +57,9 @@ const (
 	SkipGateUnavailable = "gate-unavailable"
 	// SkipPlanChanged: the final plan differed from what the gate cleared.
 	SkipPlanChanged = "plan-changed-after-gate"
+	// SkipIntakeClosed: the proposal intake is closed (see intake.Preflight), so
+	// nothing is planned or proposed.
+	SkipIntakeClosed = "intake-closed"
 )
 
 // ProposalResult wraps a RemediationAction with metadata about why it was proposed.

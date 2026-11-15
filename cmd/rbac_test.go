@@ -234,3 +234,40 @@ func TestRBAC_PodMetricsAreReadOnly(t *testing.T) {
 	assert.NotContains(t, string(chart), "nodes/proxy")
 	assert.NotContains(t, string(chart), "nodes/metrics")
 }
+
+// TestGeneratedRole_CanReadOnlyTheTwoCRDsThePreflightChecks: the intake's preflight
+// reads the RemediationProposal and RemediationAction CRDs. Without this grant it can
+// never pass and the intake stays closed; with more than get on those two names it
+// would be a way to edit the CRDs. The chart's role is checked in the chart package.
+func TestGeneratedRole_CanReadOnlyTheTwoCRDsThePreflightChecks(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "config", "rbac", "role.yaml"))
+	require.NoError(t, err)
+	var role rbacv1.ClusterRole
+	require.NoError(t, yaml.Unmarshal(data, &role))
+	found := false
+	for _, rule := range role.Rules {
+		if !contains(rule.Resources, "customresourcedefinitions") {
+			continue
+		}
+		found = true
+		assert.Equal(t, []string{"get"}, rule.Verbs)
+		assert.ElementsMatch(t, []string{"remediationactions.dorgu.io", "remediationproposals.dorgu.io"}, rule.ResourceNames)
+	}
+	assert.True(t, found, "no CRD get rule: the preflight could never pass")
+}
+
+// N-9: the operator asks the API server who it is (SelfSubjectReview), and both the
+// generated role and the chart grant it explicitly.
+func TestRBAC_GrantsSelfSubjectReviewCreate(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "config", "rbac", "role.yaml"))
+	require.NoError(t, err)
+	var role rbacv1.ClusterRole
+	require.NoError(t, yaml.Unmarshal(data, &role))
+	assert.True(t, hasRule(role, "authentication.k8s.io", "selfsubjectreviews", "create"),
+		"the generated role must let the operator create a SelfSubjectReview")
+
+	chart, err := os.ReadFile(filepath.Join("..", "charts", "dorgu-operator", "templates", "rbac.yaml"))
+	require.NoError(t, err)
+	assert.Contains(t, string(chart), `resources: ["selfsubjectreviews"]
+    verbs: ["create"]`, "the chart ClusterRole mirrors it")
+}

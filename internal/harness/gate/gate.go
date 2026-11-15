@@ -229,6 +229,7 @@ func (g *Gate) evaluate(ctx context.Context, cand Candidate, phase Phase, metric
 			break
 		}
 	}
+	capStepSafety(d.Steps)
 	return d, nil
 }
 
