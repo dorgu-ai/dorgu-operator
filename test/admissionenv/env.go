@@ -288,15 +288,13 @@ func (e *Env) waitEnforcing(ctx context.Context) error {
 	// The approval gate acts on status writes and uses the authorizer, so it can come up
 	// after the other two. Probe it with a dry run it always denies: the operator never
 	// approves (ServiceAccountCannotApprove).
-	if err := e.waitApprovalGateEnforcing(ctx, deadline); err != nil {
-		return err
-	}
-	// And the operator, whose writes the policies must never refuse: a policy that was
-	// changed and put back can still trust another identity as the operator for a moment.
+	// The operator, whose writes the policies must never refuse: a policy that was changed
+	// and put back can still trust another identity as the operator for a moment. The gate's
+	// probe below needs the operator to be able to make an action, so this comes first.
 	for {
 		err := e.Operator.Create(ctx, ProbeAction(), client.DryRunAll)
 		if err == nil {
-			return nil
+			break
 		}
 		if time.Now().After(deadline) {
 			return fmt.Errorf("the operator is still refused after 45s (last probe answer: %v)", err)
@@ -307,6 +305,7 @@ func (e *Env) waitEnforcing(ctx context.Context) error {
 		case <-time.After(200 * time.Millisecond):
 		}
 	}
+	return e.waitApprovalGateEnforcing(ctx, deadline)
 }
 
 // WaitEnforcing returns once the policies enforce as shipped again: each denies what it
