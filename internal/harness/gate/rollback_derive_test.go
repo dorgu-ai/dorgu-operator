@@ -248,6 +248,30 @@ func TestDeriveRollback_NothingToRestoreWhenTheWorkloadAlreadyHoldsTheBaseline(t
 	requireRefused(t, problem, RollbackReasonNothingToRestore)
 }
 
+func TestDeriveRollback_NothingToRestoreSaysWhenThePersonaWasLeftStale(t *testing.T) {
+	// A person put the Deployment back by hand. The persona still holds what the change
+	// set, which would trip the next ticket's persona-versus-live check, so the refusal
+	// names it.
+	g := rollbackGate(t, deployment(beforeMemory), persona(wroteMemory))
+
+	_, problem := derive(t, g, appliedAction())
+
+	requireRefused(t, problem, RollbackReasonNothingToRestore)
+	assert.Contains(t, problem.Message, "ApplicationPersona")
+	assert.Contains(t, problem.Message, memLimit)
+	assert.Contains(t, problem.Message, wroteMemory, "what the persona still says")
+	assert.Contains(t, problem.Message, beforeMemory, "what the workload holds")
+}
+
+func TestDeriveRollback_NothingToRestoreStaysShortWhenThePersonaAgrees(t *testing.T) {
+	g := rollbackGate(t, deployment(beforeMemory), persona(beforeMemory))
+
+	_, problem := derive(t, g, appliedAction())
+
+	requireRefused(t, problem, RollbackReasonNothingToRestore)
+	assert.NotContains(t, problem.Message, "ApplicationPersona")
+}
+
 func TestDeriveRollback_ComparesQuantitiesNotStrings(t *testing.T) {
 	g := rollbackGate(t, deployment(wroteMemory), persona("0.5Gi"))
 

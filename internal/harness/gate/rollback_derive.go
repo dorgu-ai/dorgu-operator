@@ -143,12 +143,18 @@ func (g *Gate) DeriveRollback(ctx context.Context, action *dorguv1.RemediationAc
 		return nil, problem, err
 	}
 
-	var restore []string
+	var restore, stalePersona []string
 	for _, path := range fields {
 		liveValue, _ := ObservedValue(live, path)
 		switch {
 		case sameQuantity(liveValue, before[path]):
-			// Already put back: nothing to do for this field.
+			// Already put back on the workload: nothing to restore for this field. The
+			// persona may not have followed (a person put the Deployment back by hand),
+			// which the refusal below says, because the next ticket measures the
+			// persona against the live workload.
+			if sameQuantity(current[path], wrote[path]) && !sameQuantity(current[path], before[path]) {
+				stalePersona = append(stalePersona, path)
+			}
 		case sameQuantity(liveValue, wrote[path]):
 			if !sameQuantity(current[path], wrote[path]) && !sameQuantity(current[path], before[path]) {
 				return nil, rollbackRefusal(RollbackReasonWorkloadDrifted,
@@ -163,8 +169,17 @@ func (g *Gate) DeriveRollback(ctx context.Context, action *dorguv1.RemediationAc
 		}
 	}
 	if len(restore) == 0 {
-		return nil, rollbackRefusal(RollbackReasonNothingToRestore,
-			"the live workload already holds the values recorded before the change, so there is nothing to restore"), nil
+		msg := "the live workload already holds the values recorded before the change, so there is nothing to restore"
+		if len(stalePersona) > 0 {
+			slices.Sort(stalePersona)
+			parts := make([]string, 0, len(stalePersona))
+			for _, path := range stalePersona {
+				parts = append(parts, fmt.Sprintf("%s is still %s, and the workload holds %s", path, shown(current[path]), shown(before[path])))
+			}
+			msg += ". The ApplicationPersona was not put back with it: " + strings.Join(parts, "; ") +
+				". Edit the persona to match the workload, or the next change is measured against a value the workload does not hold"
+		}
+		return nil, rollbackRefusal(RollbackReasonNothingToRestore, "%s", msg), nil
 	}
 	slices.Sort(restore)
 

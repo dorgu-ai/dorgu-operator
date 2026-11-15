@@ -104,6 +104,11 @@ type RollbackOutcome struct {
 	// message can say how to finish it: a ticketed rollback of that action.
 	Action          string
 	ActionNamespace string
+
+	// ByRollback is true when the action that was rolled back is itself a ticketed
+	// rollback (its provenance source is rollback). Such an action cannot be rolled
+	// back again, so the advisory must not offer the command that would be refused.
+	ByRollback bool
 }
 
 // Diverged reports whether the live workload kept any part of the change.
@@ -139,6 +144,7 @@ func (o RollbackOutcome) Reason() string {
 func (r *Rollback) InspectRollback(ctx context.Context, action *dorguv1.RemediationAction) RollbackOutcome {
 	outcome := r.inspectRollback(ctx, action)
 	outcome.Action, outcome.ActionNamespace = action.Name, action.Namespace
+	outcome.ByRollback = action.Spec.Provenance != nil && action.Spec.Provenance.Source == dorguv1.ProposalSourceRollback
 	return outcome
 }
 
@@ -252,6 +258,10 @@ func (o RollbackOutcome) Message() string {
 			o.Ref.Namespace, o.Ref.Name)
 	}
 
+	if o.ByRollback {
+		return o.rolledBackRollbackMessage()
+	}
+
 	fields := make([]string, 0, len(o.Divergences))
 	for _, d := range o.Divergences {
 		fields = append(fields, fmt.Sprintf("%s is %s, and was %s", d.Field, d.Live, d.Intended))
@@ -265,6 +275,35 @@ func (o RollbackOutcome) Message() string {
 		o.Ref.Container, o.Ref.Namespace, o.Ref.Name,
 		gate.HumanFieldList(fields),
 		o.revertInstruction())
+}
+
+// rolledBackRollbackMessage is the advisory for a ticketed rollback that itself ended
+// RolledBack: the restored value did not hold, so the operator put the persona back to
+// what it held before the rollback, and the Deployment keeps the rollback's values.
+//
+// It is not the ordinary advisory. The person asked for exactly what the workload now
+// holds, so "rolled back but NOT the workload" is the wrong story, and the command the
+// ordinary one offers (`dorgu remediation rollback`) would be refused as a rollback of
+// a rollback. What a person can do is move one side to meet the other.
+func (o RollbackOutcome) rolledBackRollbackMessage() string {
+	fields := make([]string, 0, len(o.Divergences))
+	changes := make([]resourceChange, 0, len(o.Divergences))
+	for _, d := range o.Divergences {
+		fields = append(fields, fmt.Sprintf("%s is %s (it was %s before the rollback)", d.Field, d.Live, d.Intended))
+		changes = append(changes, resourceChange{Key: d.Field, Value: d.Intended})
+	}
+
+	back := "To go back to the earlier values instead, change the Deployment yourself with your own credentials: Dorgu holds no write access to it."
+	if o.Ref.ManagedBy != dorguv1.ManagedByUnmanaged {
+		back = "To go back to the earlier values instead: " + ownerInstruction(o.Ref, changes, "") + " " + whyDorguWillNotPatch(o.Ref)
+	}
+
+	return fmt.Sprintf(
+		"This rollback did not hold: verification degraded, so Dorgu put the ApplicationPersona back to the values it had before the rollback. "+
+			"Container %q on Deployment %s/%s keeps the values the rollback set: %s. The persona and the workload now disagree. "+
+			"Dorgu will not roll a rollback back, because that would re-apply the change it undid, which is a decision for a person to make as a new proposal. "+
+			"To keep the rollback's values, edit the ApplicationPersona's resource limits to match the workload. %s",
+		o.Ref.Container, o.Ref.Namespace, o.Ref.Name, gate.HumanFieldList(fields), back)
 }
 
 // revertInstruction says how to finish the rollback, in the form this

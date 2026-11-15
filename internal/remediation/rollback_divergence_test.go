@@ -269,3 +269,73 @@ func TestF8_NoTicketMeansNothingToCompare(t *testing.T) {
 	assert.False(t, outcome.Diverged())
 	assert.Equal(t, ReasonWorkloadUnreadable, outcome.Reason())
 }
+
+// C6 review F-3: a rollback action (a person's ticketed rollback) can itself end
+// RolledBack, when the restored value starves the app and verification degrades. The
+// operator then puts the persona back to what it held before the rollback and the
+// Deployment keeps the rollback's values. Offering `dorgu remediation rollback` on it
+// sends the person to a refusal (RollbackOfRollback), so the advisory says what is
+// actually possible.
+//
+//	before the change   persona 512Mi   deployment 16Mi    (action A had raised it, then was rolled back)
+//	rollback R applied  persona   8Mi   deployment  8Mi
+//	R rolled back       persona 16Mi    deployment  8Mi
+func rolledBackRollback(managedBy string) *dorguv1.RemediationAction {
+	action := driftedAction(managedBy)
+	action.Name = "ra-rollback"
+	action.Spec.Provenance = &dorguv1.RemediationProvenance{
+		Proposal: "rb", Proposer: dorguv1.ProposerIdentity{Username: "system:serviceaccount:dorgu-system:dorgu-operator"},
+		Source: dorguv1.ProposalSourceRollback, RequestedBy: "alice@example.com",
+	}
+	action.Status.ApplyTicket.Patch = mustJSON(`{"spec":{"resources":{"limits":{"memory":"8Mi"}}}}`)
+	action.Status.Gate.Observed.LiveValues = &dorguv1.ObservedResources{
+		Limits: &dorguv1.ResourceValues{CPU: "500m", Memory: "16Mi"},
+	}
+	action.Status.Gate.PrePatchState = mustJSON(`{"spec":{"resources":{"limits":{"memory":"16Mi"}}}}`)
+	return action
+}
+
+func TestRollback_F3_ARolledBackRollbackIsNeverSentToTheRollbackCommand(t *testing.T) {
+	for name, managedBy := range map[string]string{"unmanaged": dorguv1.ManagedByUnmanaged, "helm": dorguv1.ManagedByHelm} {
+		t.Run(name, func(t *testing.T) {
+			var objs []func(*appsv1.Deployment)
+			if managedBy == dorguv1.ManagedByHelm {
+				objs = append(objs, helmOwned)
+			}
+			r := rollbackFor(driftedDeployment("8Mi", objs...))
+
+			outcome := r.InspectRollback(context.Background(), rolledBackRollback(managedBy))
+
+			require.True(t, outcome.Diverged())
+			message := outcome.Message()
+			assert.NotContains(t, message, "dorgu remediation rollback", "that command would be refused: a rollback is not rolled back")
+			assert.NotContains(t, message, "kubectl set")
+			assert.Contains(t, message, "drift/drifted", "it names the workload")
+			assert.Contains(t, message, "8Mi", "and what the workload keeps: the rollback's value")
+			assert.Contains(t, message, "16Mi", "and what it held before the rollback")
+			assert.Contains(t, message, "keeps the values the rollback set", "and says whose values they are")
+			assert.Contains(t, message, "will not roll a rollback back", "it says why there is no command")
+			assert.Contains(t, message, "ApplicationPersona", "and what can be done to the persona")
+			assert.NotContains(t, message, "Rollback restored the ApplicationPersona but NOT the workload",
+				"the person who asked for the restore is not told the restore is the problem")
+			assert.Equal(t, ReasonWorkloadDiverged, outcome.Reason())
+		})
+	}
+}
+
+func TestRollback_F3_AnOwnedWorkloadIsPointedAtItsOwner(t *testing.T) {
+	r := rollbackFor(driftedDeployment("8Mi", helmOwned))
+
+	message := r.InspectRollback(context.Background(), rolledBackRollback(dorguv1.ManagedByHelm)).Message()
+
+	assert.Contains(t, message, "Helm release", "the owner path is how the workload is changed")
+	assert.Contains(t, message, "16Mi", "the value to go back to is named")
+}
+
+func TestRollback_F3_AnOrdinaryRolledBackActionStillGetsTheRollbackCommand(t *testing.T) {
+	r := rollbackFor(driftedDeployment("16Mi"))
+
+	message := r.InspectRollback(context.Background(), driftedAction(dorguv1.ManagedByUnmanaged)).Message()
+
+	assert.Contains(t, message, "dorgu remediation rollback ra-drifted -n drift")
+}
