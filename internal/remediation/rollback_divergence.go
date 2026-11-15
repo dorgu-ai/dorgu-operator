@@ -99,6 +99,11 @@ type RollbackOutcome struct {
 
 	// Unreadable says why no comparison was possible, and is empty when one was.
 	Unreadable string
+
+	// Action and ActionNamespace name the action that was rolled back, so the
+	// message can say how to finish it: a ticketed rollback of that action.
+	Action          string
+	ActionNamespace string
 }
 
 // Diverged reports whether the live workload kept any part of the change.
@@ -132,6 +137,12 @@ func (o RollbackOutcome) Reason() string {
 // failed because the advisory beside it could not be computed, so an unreadable
 // workload becomes an outcome that says so rather than an error that hides it.
 func (r *Rollback) InspectRollback(ctx context.Context, action *dorguv1.RemediationAction) RollbackOutcome {
+	outcome := r.inspectRollback(ctx, action)
+	outcome.Action, outcome.ActionNamespace = action.Name, action.Namespace
+	return outcome
+}
+
+func (r *Rollback) inspectRollback(ctx context.Context, action *dorguv1.RemediationAction) RollbackOutcome {
 	ticket := action.Status.ApplyTicket
 	if ticket == nil || ticket.WorkloadUID == "" || action.Status.Gate == nil || action.Status.Gate.Observed == nil {
 		return RollbackOutcome{
@@ -259,15 +270,19 @@ func (o RollbackOutcome) Message() string {
 // revertInstruction says how to finish the rollback, in the form this
 // workload's owner permits.
 //
-// An unmanaged workload gets the command, because a direct write is what
-// unmanaged means and the reader would otherwise have to compose it themselves
-// from four values printed above. Everything else, including unknown, gets the
-// same owner-shaped instruction the plan itself would have used: a rollback
-// advisory is not an exemption from the ownership rule, and handing a Helm user
-// a `kubectl set resources` here would recreate F-02 on the way out.
+// An unmanaged workload gets the ticketed rollback (P2-D10, `dorgu remediation
+// rollback`): Dorgu works out the restore from what it recorded before the change,
+// a person approves it like any other action, and the CLI applies it with their own
+// credentials. It is refused, with the reason, if the workload has changed since, so
+// this never hands out a value for someone to type. Everything else, including unknown,
+// gets the same owner-shaped instruction the plan itself would have used: a rollback
+// advisory is not an exemption from the ownership rule, and handing a Helm user a
+// `kubectl set resources` here would recreate F-02 on the way out.
 func (o RollbackOutcome) revertInstruction() string {
 	if o.Ref.ManagedBy == dorguv1.ManagedByUnmanaged {
-		return "To finish the rollback: " + revertCommand(o.Ref, o.Divergences)
+		return fmt.Sprintf("To finish the rollback, run: dorgu remediation rollback %s -n %s. "+
+			"Dorgu works out the restore from what it recorded before the change, you approve it as usual, "+
+			"and it refuses if the workload has changed since.", o.Action, o.ActionNamespace)
 	}
 
 	changes := make([]resourceChange, 0, len(o.Divergences))
@@ -276,31 +291,6 @@ func (o RollbackOutcome) revertInstruction() string {
 	}
 	return "To finish the rollback: " + ownerInstruction(o.Ref, changes, "") +
 		" " + whyDorguWillNotPatch(o.Ref)
-}
-
-// revertCommand builds the one kubectl invocation that puts every diverged
-// field back, grouped the way `kubectl set resources` expects.
-func revertCommand(ref *dorguv1.WorkloadRef, divergences []WorkloadDivergence) string {
-	limits := make([]string, 0, 2)
-	requests := make([]string, 0, 2)
-	for _, d := range divergences {
-		key := d.Field[strings.LastIndex(d.Field, ".")+1:] + "=" + d.Intended
-		if strings.Contains(d.Field, ".requests.") {
-			requests = append(requests, key)
-			continue
-		}
-		limits = append(limits, key)
-	}
-
-	cmd := fmt.Sprintf("kubectl set resources deployment/%s -n %s --containers=%s",
-		ref.Name, ref.Namespace, ref.Container)
-	if len(limits) > 0 {
-		cmd += " --limits=" + strings.Join(limits, ",")
-	}
-	if len(requests) > 0 {
-		cmd += " --requests=" + strings.Join(requests, ",")
-	}
-	return cmd
 }
 
 // containerNamed picks the container the workload ref names, falling back to

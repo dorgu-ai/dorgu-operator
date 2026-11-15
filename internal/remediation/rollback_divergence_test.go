@@ -169,8 +169,10 @@ func TestRollback_CR502_PersonaOnlyRollbackIsReported(t *testing.T) {
 	assert.Contains(t, message, "resources.limits.memory", "and the field")
 	assert.Contains(t, message, "16Mi", "and what is live")
 	assert.Contains(t, message, "8Mi", "and what it held before the remediation")
-	assert.Contains(t, message, "kubectl set resources deployment/drifted",
-		"and what to run, because this workload is unmanaged")
+	assert.Contains(t, message, "dorgu remediation rollback ra-drifted -n drift",
+		"and what to run: a ticketed rollback, because this workload is unmanaged")
+	assert.NotContains(t, message, "kubectl set resources",
+		"the operator no longer hands out a write command; the rollback is derived from what it recorded and approved by a person")
 	assert.Equal(t, ReasonWorkloadDiverged, outcome.Reason())
 }
 
@@ -236,8 +238,10 @@ func TestRollback_CR502_MultipleFieldsAreAllNamed(t *testing.T) {
 	require.Len(t, outcome.Divergences, 2)
 	assert.Equal(t, "resources.limits.memory", outcome.Divergences[0].Field)
 	assert.Equal(t, "resources.requests.memory", outcome.Divergences[1].Field)
-	assert.Contains(t, outcome.Message(), "--limits=memory=8Mi")
-	assert.Contains(t, outcome.Message(), "--requests=memory=8Mi")
+	assert.Contains(t, outcome.Message(), "resources.limits.memory is 16Mi, and was 8Mi")
+	assert.Contains(t, outcome.Message(), "resources.requests.memory is 16Mi, and was 8Mi")
+	assert.Contains(t, outcome.Message(), "dorgu remediation rollback ra-drifted -n drift",
+		"one ticketed rollback restores every field")
 }
 
 // F8: the report is built from the ticket and status.gate. A replaced Deployment
