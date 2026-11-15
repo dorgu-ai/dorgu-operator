@@ -52,6 +52,7 @@ var Catalogue = []string{
 	"OP-17", "OP-18", "OP-19",
 	"OP-20", "OP-21", "OP-22", "OP-23", "OP-24",
 	"OP-25", "OP-26", "OP-27", "OP-28",
+	"OP-29", "OP-30", "OP-31",
 }
 
 // openScenarios is the single list of holes the harness does not close yet.

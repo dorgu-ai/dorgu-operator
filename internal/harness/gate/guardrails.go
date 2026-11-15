@@ -47,6 +47,7 @@ const (
 	phaseFailed    = "Failed"
 
 	phaseRolledBack = "RolledBack"
+	phaseCompleted  = "Completed"
 	phaseTicketed   = "Ticketed"
 
 	// conditionApplied mirrors the controller's Applied condition type, whose
@@ -97,6 +98,12 @@ func (s guardrailsStage) Run(ctx context.Context, cand *Candidate, d *Decision) 
 func (s guardrailsStage) completeness(cand *Candidate, d *Decision) {
 	target := cand.Facts.TargetPath
 	if target == "" || cand.Facts.AdvisoryAllowed {
+		return
+	}
+	if withheldRolledBack(d, target) {
+		// The change was diagnosed and then withheld because a person rolled it back
+		// (C6b). The plan applies nothing for that reason, which is already recorded and
+		// said; refusing it again as "applies nothing" would blame it twice.
 		return
 	}
 	if DeployerOwned(d.WorkloadRef) {
@@ -171,6 +178,7 @@ func (s guardrailsStage) personaWide(ctx context.Context, cand *Candidate, d *De
 	}
 	s.concurrent(cand, d, siblings)
 	s.failedCooldown(cand, d, siblings)
+	s.withholdRolledBack(cand, d, siblings)
 	return nil
 }
 

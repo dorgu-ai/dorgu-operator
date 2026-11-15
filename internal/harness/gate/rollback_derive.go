@@ -202,7 +202,7 @@ func (g *Gate) DeriveRollback(ctx context.Context, action *dorguv1.RemediationAc
 
 // rollbackEligibility is the part of the decision that needs only the action.
 func rollbackEligibility(action *dorguv1.RemediationAction) *RollbackProblem {
-	if action.Status.Phase != "Completed" && action.Status.Phase != phaseRolledBack {
+	if action.Status.Phase != phaseCompleted && action.Status.Phase != phaseRolledBack {
 		return rollbackRefusal(RollbackReasonNotApplied,
 			"the action is %s: only an action that ended Completed or RolledBack applied a change there is to roll back", phaseOrNone(action.Status.Phase))
 	}
