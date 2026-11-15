@@ -80,7 +80,8 @@ type ThrottleSample struct {
 	Namespace string
 	Pod       string
 	Container string
-	// Ratio is throttled periods over periods, in [0, 1].
+	// Ratio is throttled periods over periods, in [0, 1]. An idle container (0/0, which
+	// Prometheus reports as NaN) is 0.
 	Ratio float64
 }
 
@@ -293,7 +294,8 @@ func sanitizeForError(in string) string {
 }
 
 // sampleFrom checks one series. Namespace, pod and container must be valid
-// Kubernetes names, and the value a finite number in [0, 1]; anything else is dropped.
+// Kubernetes names, and the value a number in [0, 1] or NaN (an idle container, read as
+// ratio 0); anything else is dropped.
 func sampleFrom(raw json.RawMessage) (ThrottleSample, bool) {
 	var series promSeries
 	if err := json.Unmarshal(raw, &series); err != nil || len(series.Value) != 2 {
@@ -312,7 +314,17 @@ func sampleFrom(raw json.RawMessage) (ThrottleSample, bool) {
 		return ThrottleSample{}, false
 	}
 	ratio, err := strconv.ParseFloat(text, 64)
-	if err != nil || math.IsNaN(ratio) || math.IsInf(ratio, 0) || ratio < 0 || ratio > 1 {
+	if err != nil {
+		return ThrottleSample{}, false
+	}
+	// The ratio is 0/0 for a container that ran no CFS periods in the window, which
+	// Prometheus writes as NaN. The container exists and the endpoint answered for it:
+	// it was idle, so nothing is throttled. Dropping it would make an idle but healthy
+	// cluster look as if cAdvisor were not scraped at all.
+	if math.IsNaN(ratio) {
+		ratio = 0
+	}
+	if math.IsInf(ratio, 0) || ratio < 0 || ratio > 1 {
 		return ThrottleSample{}, false
 	}
 	return ThrottleSample{Namespace: ns, Pod: pod, Container: container, Ratio: ratio}, true

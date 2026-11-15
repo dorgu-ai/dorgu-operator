@@ -70,6 +70,16 @@ type FamilyCollector interface {
 	Blind() bool
 }
 
+// ResolutionBlinder is an optional addition to FamilyCollector for a collector whose
+// silence needs history to mean anything: a usage signal that is raised only after
+// several consecutive cycles cannot say "still happening" until those cycles have been
+// read. ResolutionBlind is true while that history is missing, and implies Blind. It is
+// asked only by incident resolution; a collector without it is resolution-blind exactly
+// when it is Blind.
+type ResolutionBlinder interface {
+	ResolutionBlind() bool
+}
+
 // Engine orchestrates signal collection from all registered collectors.
 type Engine struct {
 	collectors []SignalCollector
@@ -99,6 +109,43 @@ func (e *Engine) SignalBlind(t SignalType) bool {
 
 // FamilyBlind is SignalBlind for a family.
 func (e *Engine) FamilyBlind(family Family) bool {
+	return e.familyBlind(family, false)
+}
+
+// ResolutionBlind is the question incident resolution asks: can the engine vouch for the
+// absence of a signal of this type, enough to close an incident on it? It is SignalBlind
+// plus the warm-up of a collector that needs history before its silence means anything
+// (ResolutionBlinder). The verifier does not ask it: three Unknown verifications in a row
+// would roll the fix back.
+func (e *Engine) ResolutionBlind(t SignalType) bool {
+	family, ok := FamilyOf(t)
+	if !ok {
+		return false
+	}
+	return e.familyBlind(family, true)
+}
+
+// ResolutionBlindFamilies is every family ResolutionBlind holds, taken in one pass.
+// The reconciler reads it right after the collection its resolution is based on, so a
+// verifier cycle that runs the collectors again before the resolve step cannot flip
+// the answer.
+func (e *Engine) ResolutionBlindFamilies() map[Family]bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	held := map[Family]bool{}
+	for _, c := range e.collectors {
+		fc, ok := c.(FamilyCollector)
+		if !ok || !e.collectorBlindLocked(fc, true) {
+			continue
+		}
+		for _, family := range fc.Families() {
+			held[family] = true
+		}
+	}
+	return held
+}
+
+func (e *Engine) familyBlind(family Family, resolution bool) bool {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	for _, c := range e.collectors {
@@ -106,9 +153,21 @@ func (e *Engine) FamilyBlind(family Family) bool {
 		if !ok || !slices.Contains(fc.Families(), family) {
 			continue
 		}
-		if e.failedFamilyCollectors[fc.Name()] || fc.Blind() {
+		if e.collectorBlindLocked(fc, resolution) {
 			return true
 		}
+	}
+	return false
+}
+
+// collectorBlindLocked is true when fc failed in the latest round or reports itself
+// blind (and, for resolution, not yet warm). The caller holds e.mu.
+func (e *Engine) collectorBlindLocked(fc FamilyCollector, resolution bool) bool {
+	if e.failedFamilyCollectors[fc.Name()] || fc.Blind() {
+		return true
+	}
+	if rb, ok := fc.(ResolutionBlinder); ok && resolution {
+		return rb.ResolutionBlind()
 	}
 	return false
 }

@@ -76,6 +76,8 @@ func TestC4F1_AnOpenCPUIncidentDoesNotResolveAfterARestartWithNoSource(t *testin
 }
 
 func TestC4F1_AnActiveSourceResolvesAsBefore(t *testing.T) {
+	// "As before" except for the warm-up (C4b N-1): the source must have read as many
+	// consecutive good cycles as the signal needs before its silence counts.
 	ctx := context.Background()
 	im := cpuIncidentFor()
 	r, c := resolverFor(t, im, deploymentFor("platform", "checkout", 1), basePod("platform", "checkout-57c95bf9b8-47vp9", "checkout"))
@@ -84,15 +86,17 @@ func TestC4F1_AnActiveSourceResolvesAsBefore(t *testing.T) {
 		detection.WithMinCycleSpacing(0), detection.WithMetricsSource(quietMetrics{present: true}))
 	engine := detection.NewEngine(logr.Discard(), collector)
 	r.Detection = engine
-	_, err := engine.CollectAll(ctx)
-	require.NoError(t, err)
+	for range detection.CPUUsageConsecutiveCycles {
+		_, err := engine.CollectAll(ctx)
+		require.NoError(t, err)
+	}
 
 	require.NoError(t, r.resolveCleared(ctx, map[string]bool{}))
 	assert.Equal(t, PhaseResolved, phaseOf(t, c, im), "a source that can look and sees nothing is evidence")
 }
 
 func TestC4F1_ARestartedOperatorWithMetricsServerThenResolves(t *testing.T) {
-	// Blind only until the first cycle that could look.
+	// Blind until the source has produced enough good cycles to have raised the signal.
 	ctx := context.Background()
 	im := cpuIncidentFor()
 	r, c := resolverFor(t, im, deploymentFor("platform", "checkout", 1), basePod("platform", "checkout-57c95bf9b8-47vp9", "checkout"))
@@ -103,9 +107,14 @@ func TestC4F1_ARestartedOperatorWithMetricsServerThenResolves(t *testing.T) {
 	require.NoError(t, r.resolveCleared(ctx, map[string]bool{}))
 	assert.Equal(t, PhaseDetected, phaseOf(t, c, im), "no collection round has run yet in this process")
 
-	_, err := r.Detection.CollectAll(ctx)
-	require.NoError(t, err)
-	require.NoError(t, r.resolveCleared(ctx, map[string]bool{}))
+	for cycle := 1; cycle <= detection.CPUUsageConsecutiveCycles; cycle++ {
+		_, err := r.Detection.CollectAll(ctx)
+		require.NoError(t, err)
+		require.NoError(t, r.resolveCleared(ctx, map[string]bool{}))
+		if cycle < detection.CPUUsageConsecutiveCycles {
+			assert.Equal(t, PhaseDetected, phaseOf(t, c, im), "cycle %d of the warm-up", cycle)
+		}
+	}
 	assert.Equal(t, PhaseResolved, phaseOf(t, c, im))
 }
 

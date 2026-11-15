@@ -44,6 +44,18 @@ import (
 // restarting for RecoveryStabilityWindow. Anything else, including any error
 // reading the cluster, leaves the incident open.
 func (r *HealthCheckReconciler) resolveCleared(ctx context.Context, activeSignalKeys map[string]bool) error {
+	return r.resolveClearedHolding(ctx, activeSignalKeys, nil)
+}
+
+// resolveClearedHolding is resolveCleared with the families that were blind when the
+// signals were collected (Engine.ResolutionBlindFamilies, read right after CollectAll).
+// An incident of a held family stays open even if the source has recovered since: a
+// verifier cycle between the collect and this step must not turn a blind collection into
+// evidence. The live answer is asked too, so a source that went blind after the collect
+// holds as well.
+func (r *HealthCheckReconciler) resolveClearedHolding(
+	ctx context.Context, activeSignalKeys map[string]bool, heldFamilies map[detection.Family]bool,
+) error {
 	// Use label selector to only fetch non-resolved incidents.
 	var list dorguv1.IncidentMemoryList
 	if err := r.Client.List(ctx, &list,
@@ -75,8 +87,10 @@ func (r *HealthCheckReconciler) resolveCleared(ctx context.Context, activeSignal
 		// incident is about a pod that is Ready and never restarts, so verifyRecovery
 		// below would pass it whether or not it is still throttled. Blindness is scoped
 		// to the signal's family (detection.FamilyCollector): every other incident is
-		// judged as usual.
-		if r.signalBlind(detection.SignalType(im.Spec.Detection.Signal)) {
+		// judged as usual. It includes the warm-up after a blind spell: until the source
+		// has read as many consecutive cycles as the signal needs, a pod that is still
+		// throttled has not had time to look throttled.
+		if r.resolutionBlind(detection.SignalType(im.Spec.Detection.Signal), heldFamilies) {
 			r.Logger.V(1).Info("incident stays open: the source that would report this signal cannot look",
 				"name", im.Name, "signal", im.Spec.Detection.Signal)
 			continue
@@ -115,13 +129,17 @@ func (r *HealthCheckReconciler) resolveCleared(ctx context.Context, activeSignal
 	return nil
 }
 
-// signalBlind reports whether the detection engine cannot vouch for the absence of a
-// signal of this type: the collector that alone observes its family is failing, has no
-// source, or has not yet looked in this process (a restart). It is read from the engine
-// in this process, not from a persisted status, which after a restart still holds the
-// value from before it.
-func (r *HealthCheckReconciler) signalBlind(signal detection.SignalType) bool {
-	return r.Detection != nil && r.Detection.SignalBlind(signal)
+// resolutionBlind reports whether the detection engine cannot vouch for the absence of a
+// signal of this type well enough to close an incident: the collector that alone observes
+// its family is failing, has no source, has not yet looked in this process (a restart),
+// or has not yet read enough consecutive cycles since it could not (Engine.ResolutionBlind).
+// It is read from the engine in this process, not from a persisted status, which after a
+// restart still holds the value from before it. held is the snapshot taken at collect time.
+func (r *HealthCheckReconciler) resolutionBlind(signal detection.SignalType, held map[detection.Family]bool) bool {
+	if family, ok := detection.FamilyOf(signal); ok && held[family] {
+		return true
+	}
+	return r.Detection != nil && r.Detection.ResolutionBlind(signal)
 }
 
 // resolutionEvidence is the full test an incident must pass to close: either its

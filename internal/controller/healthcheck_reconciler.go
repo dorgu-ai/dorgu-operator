@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -187,6 +188,11 @@ type HealthCheckReconciler struct {
 
 	// incompleteLog rate-limits the "signal collection incomplete" line.
 	incompleteLog detection.LogThrottle
+
+	// mismatchEvents rate-limits the container-mismatch Event to one per incident per
+	// containerMismatchEventInterval (built on first use, so a zero reconciler works).
+	mismatchEventsOnce sync.Once
+	mismatchEvents     *detection.LogThrottle
 }
 
 // Start begins the health check reconciliation loop. Blocks until ctx is cancelled.
@@ -245,6 +251,10 @@ func (r *HealthCheckReconciler) runCycle(ctx context.Context) {
 	// the collector that failed may be the one that would have reported the
 	// incident, so nothing is resolved this cycle (B2b).
 	signals, err := r.Detection.CollectAll(ctx)
+	// Which families could not vouch for silence, asked once, right after the collection
+	// this cycle's resolution is based on: a verifier cycle that runs the collectors
+	// again before step 4 must not change the answer.
+	blindAtCollect := r.Detection.ResolutionBlindFamilies()
 	incomplete := false
 	if err != nil {
 		if !detection.IsPartial(err) {
@@ -280,7 +290,7 @@ func (r *HealthCheckReconciler) runCycle(ctx context.Context) {
 	// 4. Check for resolved incidents, unless detection was blind to part of the
 	// cluster: absence of a signal is only evidence when every collector ran.
 	if !incomplete {
-		if err := r.resolveCleared(ctx, activeSignalKeys); err != nil {
+		if err := r.resolveClearedHolding(ctx, activeSignalKeys, blindAtCollect); err != nil {
 			r.Logger.Error(err, "failed to resolve cleared incidents")
 		}
 	}

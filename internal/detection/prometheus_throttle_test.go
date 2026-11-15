@@ -273,7 +273,6 @@ func TestPrometheusThrottle_DropsHostileSeries(t *testing.T) {
 		s    string
 	}{
 		{"value is not a number", series("shop", "api-1", "app", "lots")},
-		{"NaN", series("shop", "api-1", "app", "NaN")},
 		{"+Inf", series("shop", "api-1", "app", "+Inf")},
 		{"-Inf", series("shop", "api-1", "app", "-Inf")},
 		{"negative", series("shop", "api-1", "app", "-0.5")},
