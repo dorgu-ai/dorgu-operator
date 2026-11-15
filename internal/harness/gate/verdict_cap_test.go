@@ -107,7 +107,7 @@ func TestStatusVerdicts_TheTicketCarriesTheSameBoundedList(t *testing.T) {
 }
 
 func TestCapVerdicts_KeepsEveryNonPassFirstInOrder(t *testing.T) {
-	var in []dorguv1.GateVerdict
+	in := make([]dorguv1.GateVerdict, 0, MaxStatusVerdicts*2)
 	for i := range MaxStatusVerdicts * 2 {
 		verdict := dorguv1.GateVerdictPass
 		if i%10 == 0 {

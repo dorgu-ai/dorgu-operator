@@ -64,6 +64,8 @@ func stopIdentityEnv() {
 	}
 }
 
+const phasePending = "Pending"
+
 // Rules a scenario grants.
 var (
 	// statusWriter is what the old fixtures gave an approver: the status patch and nothing
@@ -79,7 +81,8 @@ var (
 	// verbs. The scenarios that attack approval grant it, so the attack is stopped by the
 	// identity rules and not by a missing permission.
 	approverRules = append(append([]rbacv1.PolicyRule{}, statusWriter...), rbacv1.PolicyRule{
-		APIGroups: []string{"dorgu.io"}, Resources: []string{"remediationactions"}, Verbs: []string{"approve", "reject"},
+		APIGroups: []string{"dorgu.io"}, Resources: []string{"remediationactions"},
+		Verbs: []string{"approve", "reject"},
 	})
 	creator = []rbacv1.PolicyRule{
 		{
@@ -90,7 +93,9 @@ var (
 )
 
 // idUser provisions an authenticated user with the given groups and rules in ns.
-func idUser(t *testing.T, e *admissionenv.Env, ns, name string, groups []string, rules []rbacv1.PolicyRule) client.Client {
+func idUser(
+	t *testing.T, e *admissionenv.Env, ns, name string, groups []string, rules []rbacv1.PolicyRule,
+) client.Client {
 	t.Helper()
 	c, err := e.UserClient(name, groups)
 	if err != nil {
@@ -140,8 +145,9 @@ func TestID01ServiceAccountApproves(t *testing.T) {
 	err := admissionenv.Approve(context.Background(), bot, ra, botName)
 
 	phase, by := recordedDecision(t, e, ra)
-	blocked := admissionenv.IsDorguDenial(err, "ServiceAccountCannotApprove") && phase == "Pending" && by == ""
-	Expect(t, "ID-01", blocked, fmt.Sprintf("service account approval returned err=%v, phase %q, approvedBy %q", err, phase, by))
+	blocked := admissionenv.IsDorguDenial(err, "ServiceAccountCannotApprove") && phase == phasePending && by == ""
+	Expect(t, "ID-01", blocked,
+		fmt.Sprintf("service account approval returned err=%v, phase %q, approvedBy %q", err, phase, by))
 }
 
 // ID-02: the identity that proposed the remediation approves it. The agent is the recorded
@@ -153,7 +159,8 @@ func TestID02ProposerApprovesOwnProposal(t *testing.T) {
 	ns, _ := e.NewNamespace(context.Background(), "id-02")
 
 	rules := append(append([]rbacv1.PolicyRule{}, approverRules...), rbacv1.PolicyRule{
-		APIGroups: []string{"dorgu.io"}, Resources: []string{"remediationproposals"}, Verbs: []string{"create", "get", "list"},
+		APIGroups: []string{"dorgu.io"}, Resources: []string{"remediationproposals"},
+		Verbs: []string{"create", "get", "list"},
 	})
 	agent := idUser(t, e, ns, "agent-x", nil, rules)
 	if err := agent.Create(context.Background(), admissionenv.NewProposal(ns, "self-approved", "agent-x")); err != nil {
@@ -164,8 +171,9 @@ func TestID02ProposerApprovesOwnProposal(t *testing.T) {
 	err := admissionenv.Approve(context.Background(), agent, ra, "agent-x")
 
 	phase, by := recordedDecision(t, e, ra)
-	blocked := admissionenv.IsDorguDenial(err, "ApproverIsProposer") && phase == "Pending" && by == ""
-	Expect(t, "ID-02", blocked, fmt.Sprintf("self-approval by the proposer returned err=%v, phase %q, approvedBy %q", err, phase, by))
+	blocked := admissionenv.IsDorguDenial(err, "ApproverIsProposer") && phase == phasePending && by == ""
+	Expect(t, "ID-02", blocked,
+		fmt.Sprintf("self-approval by the proposer returned err=%v, phase %q, approvedBy %q", err, phase, by))
 
 	// The control: someone else approves the same action, so the denial is about the
 	// proposer and not about the action or the verb.
@@ -201,5 +209,6 @@ func TestID04AgentCreatesRemediationAction(t *testing.T) {
 	agent := idUser(t, e, ns, "agent-y", nil, creator)
 	err := agent.Create(context.Background(), admissionenv.NewAction(ns, "agent-written", "agent-y"))
 
-	Expect(t, "ID-04", admissionenv.IsDorguDenial(err, "OperatorOnly"), fmt.Sprintf("agent create returned err=%v", err))
+	Expect(t, "ID-04", admissionenv.IsDorguDenial(err, "OperatorOnly"),
+		fmt.Sprintf("agent create returned err=%v", err))
 }

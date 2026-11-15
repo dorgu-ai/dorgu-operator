@@ -65,34 +65,33 @@ var counter atomic.Int64
 // uniq makes a name no other case uses, so certificates and RBAC never collide.
 func uniq(prefix string) string { return fmt.Sprintf("%s-%d", prefix, counter.Add(1)) }
 
+// rule is a policy rule on Dorgu's group.
+func rule(resources []string, verbs ...string) rbacv1.PolicyRule {
+	return rbacv1.PolicyRule{APIGroups: []string{"dorgu.io"}, Resources: resources, Verbs: verbs}
+}
+
 // Rule sets a case grants.
 var (
 	approverRules = []rbacv1.PolicyRule{
-		{APIGroups: []string{"dorgu.io"}, Resources: []string{"remediationactions"}, Verbs: []string{"get", "list", "approve", "reject"}},
-		{APIGroups: []string{"dorgu.io"}, Resources: []string{"remediationactions/status"}, Verbs: []string{"get", "patch", "update"}},
+		rule([]string{"remediationactions"}, "get", "list", "approve", "reject"),
+		rule([]string{"remediationactions/status"}, "get", "patch", "update"),
 	}
 	statusOnlyRules = []rbacv1.PolicyRule{
-		{APIGroups: []string{"dorgu.io"}, Resources: []string{"remediationactions"}, Verbs: []string{"get", "list"}},
-		{APIGroups: []string{"dorgu.io"}, Resources: []string{"remediationactions/status"}, Verbs: []string{"get", "patch", "update"}},
+		rule([]string{"remediationactions"}, "get", "list"),
+		rule([]string{"remediationactions/status"}, "get", "patch", "update"),
 	}
 	approveOnlyRules = []rbacv1.PolicyRule{
-		{APIGroups: []string{"dorgu.io"}, Resources: []string{"remediationactions"}, Verbs: []string{"get", "list", "approve"}},
-		{APIGroups: []string{"dorgu.io"}, Resources: []string{"remediationactions/status"}, Verbs: []string{"get", "patch", "update"}},
+		rule([]string{"remediationactions"}, "get", "list", "approve"),
+		rule([]string{"remediationactions/status"}, "get", "patch", "update"),
 	}
 	proposerRules = []rbacv1.PolicyRule{
-		{APIGroups: []string{"dorgu.io"}, Resources: []string{"remediationproposals"}, Verbs: []string{"create", "get", "list", "watch"}},
+		rule([]string{"remediationproposals"}, "create", "get", "list", "watch"),
 	}
 	writerRules = []rbacv1.PolicyRule{
-		{
-			APIGroups: []string{"dorgu.io"},
-			Resources: []string{"remediationactions", "remediationproposals", "incidentmemories"},
-			Verbs:     []string{"get", "list", "create", "update", "patch"},
-		},
-		{
-			APIGroups: []string{"dorgu.io"},
-			Resources: []string{"remediationactions/status", "remediationproposals/status", "incidentmemories/status"},
-			Verbs:     []string{"get", "patch", "update"},
-		},
+		rule([]string{"remediationactions", "remediationproposals", "incidentmemories"},
+			"get", "list", "create", "update", "patch"),
+		rule([]string{"remediationactions/status", "remediationproposals/status", "incidentmemories/status"},
+			"get", "patch", "update"),
 	}
 )
 
@@ -119,7 +118,8 @@ func newActor(t *testing.T, ns, name string, groups []string, rules []rbacv1.Pol
 func newServiceAccount(t *testing.T, ns string, rules []rbacv1.PolicyRule) actor {
 	t.Helper()
 	name := "system:serviceaccount:" + ns + ":" + uniq("bot")
-	return newActor(t, ns, name, []string{"system:serviceaccounts", "system:serviceaccounts:" + ns, "system:authenticated"}, rules)
+	groups := []string{"system:serviceaccounts", "system:serviceaccounts:" + ns, "system:authenticated"}
+	return newActor(t, ns, name, groups, rules)
 }
 
 func namespace(t *testing.T, prefix string) string {

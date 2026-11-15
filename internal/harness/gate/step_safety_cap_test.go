@@ -154,7 +154,7 @@ func TestCapStepSafety_KeepsGuardrailRecordsFirstThenFillsWithStrips(t *testing.
 		return dorguv1.StepSafety{Rule: dorguv1.SafetyRuleBlastRadius, Verdict: dorguv1.SafetyVerdictRejected,
 			Field: fmt.Sprintf("guard-%02d", i), Message: "refused"}
 	}
-	var in []dorguv1.StepSafety
+	in := make([]dorguv1.StepSafety, 0, 42)
 	for i := range 40 {
 		in = append(in, strip(i))
 	}
@@ -166,7 +166,7 @@ func TestCapStepSafety_KeepsGuardrailRecordsFirstThenFillsWithStrips(t *testing.
 	out := steps[0].Safety
 	require.Len(t, out, MaxStepSafetyEntries)
 	// The two guardrail records survive; the strips fill the other 29 places, oldest first.
-	var fields []string
+	fields := make([]string, 0, len(out))
 	for _, s := range out {
 		fields = append(fields, s.Field)
 	}
@@ -181,7 +181,7 @@ func TestCapStepSafety_KeepsGuardrailRecordsFirstThenFillsWithStrips(t *testing.
 
 // More guardrail records than the cap holds are cut as well: the bound is absolute.
 func TestCapStepSafety_NeverExceedsTheBoundEvenWithOnlyGuardrailRecords(t *testing.T) {
-	var in []dorguv1.StepSafety
+	in := make([]dorguv1.StepSafety, 0, MaxStepSafetyEntries*2)
 	for i := range MaxStepSafetyEntries * 2 {
 		in = append(in, dorguv1.StepSafety{Rule: dorguv1.SafetyRuleBlastRadius, Verdict: dorguv1.SafetyVerdictRejected,
 			Field: fmt.Sprintf("guard-%02d", i), Message: "refused"})

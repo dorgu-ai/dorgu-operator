@@ -40,7 +40,9 @@ const (
 
 // manualStep is the smallest valid step: advice, applying nothing.
 func manualStep() dorguv1.RemediationStep {
-	return dorguv1.RemediationStep{Order: 1, ID: "step-1", Type: dorguv1.StepTypeManual, Description: "look at the heap"}
+	return dorguv1.RemediationStep{
+		Order: 1, ID: "step-1", Type: dorguv1.StepTypeManual, Description: "look at the heap",
+	}
 }
 
 // NewAction is the smallest valid RemediationAction in ns. With a proposer it carries

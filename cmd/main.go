@@ -183,7 +183,8 @@ func main() {
 		intakeState = newIntakeSetup(mgr.GetAPIReader(), operatorNS, setupLog)
 		// The username above is a claim from the deployment: have the API server confirm it.
 		if preflightClient, icErr := kubernetes.NewForConfig(preflightRESTConfig(restConfig)); icErr != nil {
-			setupLog.Error(icErr, "unable to build the client that verifies the operator's identity and permissions; the intake stays closed")
+			setupLog.Error(icErr, "unable to build the client that verifies the operator's identity and permissions; "+
+				"the intake stays closed")
 			intakeState.Preflight.Add(intake.StaticCheck("operator-identity-verified",
 				intake.ReasonOperatorIdentityUnverified, icErr))
 			intakeState.Preflight.Add(intake.StaticCheck("operator-rbac",

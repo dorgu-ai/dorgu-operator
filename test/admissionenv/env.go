@@ -25,7 +25,6 @@ limitations under the License.
 package admissionenv
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -214,27 +213,29 @@ func (e *Env) installPolicies(path string) error {
 }
 
 // ParsePolicies reads the rendered file into its policies and bindings.
-func ParsePolicies(raw []byte) ([]admissionregistrationv1.ValidatingAdmissionPolicy, []admissionregistrationv1.ValidatingAdmissionPolicyBinding, error) {
+func ParsePolicies(raw []byte) (
+	[]admissionregistrationv1.ValidatingAdmissionPolicy, []admissionregistrationv1.ValidatingAdmissionPolicyBinding, error,
+) {
 	var policies []admissionregistrationv1.ValidatingAdmissionPolicy
 	var bindings []admissionregistrationv1.ValidatingAdmissionPolicyBinding
-	for _, doc := range bytes.Split(raw, []byte("\n---")) {
-		if len(strings.TrimSpace(string(stripComments(doc)))) == 0 {
+	for doc := range strings.SplitSeq(string(raw), "\n---") {
+		if len(strings.TrimSpace(stripComments(doc))) == 0 {
 			continue
 		}
 		var meta metav1.TypeMeta
-		if err := yaml.Unmarshal(doc, &meta); err != nil {
+		if err := yaml.Unmarshal([]byte(doc), &meta); err != nil {
 			return nil, nil, fmt.Errorf("reading a policy document: %w", err)
 		}
 		switch meta.Kind {
 		case "ValidatingAdmissionPolicy":
 			var p admissionregistrationv1.ValidatingAdmissionPolicy
-			if err := yaml.UnmarshalStrict(doc, &p); err != nil {
+			if err := yaml.UnmarshalStrict([]byte(doc), &p); err != nil {
 				return nil, nil, fmt.Errorf("reading a ValidatingAdmissionPolicy: %w", err)
 			}
 			policies = append(policies, p)
 		case "ValidatingAdmissionPolicyBinding":
 			var b admissionregistrationv1.ValidatingAdmissionPolicyBinding
-			if err := yaml.UnmarshalStrict(doc, &b); err != nil {
+			if err := yaml.UnmarshalStrict([]byte(doc), &b); err != nil {
 				return nil, nil, fmt.Errorf("reading a ValidatingAdmissionPolicyBinding: %w", err)
 			}
 			bindings = append(bindings, b)
@@ -245,14 +246,14 @@ func ParsePolicies(raw []byte) ([]admissionregistrationv1.ValidatingAdmissionPol
 	return policies, bindings, nil
 }
 
-func stripComments(doc []byte) []byte {
-	var out [][]byte
-	for _, line := range bytes.Split(doc, []byte("\n")) {
-		if !bytes.HasPrefix(bytes.TrimSpace(line), []byte("#")) {
+func stripComments(doc string) string {
+	var out []string
+	for line := range strings.SplitSeq(doc, "\n") {
+		if !strings.HasPrefix(strings.TrimSpace(line), "#") {
 			out = append(out, line)
 		}
 	}
-	return bytes.Join(out, []byte("\n"))
+	return strings.Join(out, "\n")
 }
 
 // waitEnforcing polls with a dry-run create that every policy denies until the API

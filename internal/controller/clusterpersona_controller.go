@@ -292,12 +292,16 @@ func (r *ClusterPersonaReconciler) reportIntakeReadiness(persona *dorguv1.Cluste
 		return
 	}
 	parts := make([]string, 0, len(failures))
+	noTickets := ""
 	for _, f := range failures {
 		parts = append(parts, f.Message)
+		if intake.BlocksTickets(f.Reason) {
+			noTickets = " An approved remediation waits: no apply ticket is issued until the admission policies and the operator's permissions are in place."
+		}
 	}
 	upsertCondition(&persona.Status.Conditions, ConditionIntakeReady, metav1.ConditionFalse, failures[0].Reason,
 		"The proposal intake is CLOSED: no proposal is converted and Dorgu's planner does not plan or propose until this is fixed; "+
-			"detection, diagnosis and existing actions continue. "+strings.Join(parts, " "))
+			"detection, diagnosis and existing actions continue."+noTickets+" "+strings.Join(parts, " "))
 }
 
 // invalidNamespaceNames returns the entries that are not DNS-1123 labels, which is

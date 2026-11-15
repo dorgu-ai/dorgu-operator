@@ -48,17 +48,17 @@ import (
 func TestProcess_AUsernameThatNeedsCleaningIsRejectedNotRewritten(t *testing.T) {
 	cases := map[string]string{
 		"terminal escape":      "alice\x1b[2J",
-		"bidi override":        "alice‮",
-		"zero width space":     "alice​",
+		"bidi override":        "alice\u202e",
+		"zero width space":     "alice\u200b",
 		"tag character":        "alice\U000E0041",
-		"variation selector":   "alice️",
-		"line separator":       "alice bob",
-		"soft hyphen":          "ali­ce",
+		"variation selector":   "alice\uFE0F",
+		"line separator":       "alice\u2028bob",
+		"soft hyphen":          "ali\u00adce",
 		"newline":              "alice\nbob",
 		"over the CRD bound":   strings.Repeat("é", maxUsernameLength+1),
-		"only invisible":       "​​",
+		"only invisible":       "\u200b\u200b",
 		"empty":                "",
-		"word joiner":          "alice⁠",
+		"word joiner":          "alice\u2060",
 		"c1 control character": "alice\u0085",
 	}
 	for name, username := range cases {
@@ -72,7 +72,7 @@ func TestProcess_AUsernameThatNeedsCleaningIsRejectedNotRewritten(t *testing.T) 
 			assert.Equal(t, &v1alpha1.ProposalRejection{Stage: v1alpha1.StageIntake, Reason: v1alpha1.ReasonProposerInvalid}, out.Rejection)
 			assert.Empty(t, actionNames(t, w.c), "no action is made for an identity nobody can verify")
 			assert.NotContains(t, out.Message, "\x1b", "the message never carries the raw name")
-			assert.NotContains(t, out.Message, "‮")
+			assert.NotContains(t, out.Message, "\u202e")
 			assert.LessOrEqual(t, len([]rune(out.Message)), maxConditionMessage)
 			cond := w.get(t, "p-name").Status.Conditions
 			require.NotEmpty(t, cond)

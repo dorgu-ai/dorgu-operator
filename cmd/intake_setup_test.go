@@ -69,7 +69,9 @@ func TestNewIntakeSetup_IsClosedForEachReasonAndOpenWhenAllHold(t *testing.T) {
 
 	noCRDs := newIntakeSetup(crdOnlyClient(t), testOperatorNS, logr.Discard())
 	got := failureReasons(noCRDs.Preflight.Run(context.Background()))
-	want := []string{intake.ReasonProposalCRDMissing, intake.ReasonActionProvenanceMissing, intake.ReasonAdmissionPoliciesMissing}
+	want := []string{
+		intake.ReasonProposalCRDMissing, intake.ReasonActionProvenanceMissing, intake.ReasonAdmissionPoliciesMissing,
+	}
 	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] {
 		t.Fatalf("with no CRDs and no policies: %v, want %v", got, want)
 	}
@@ -203,10 +205,24 @@ func TestNewIntakeSetup_IsClosedWhenThePoliciesAreMissingOrTheRBACIsPartial(t *t
 
 	partial := newIntakeSetup(crdOnlyClient(t, installedCRDs()...), testOperatorNS, logr.Discard())
 	partial.verifyRBAC(func(_ context.Context, a authzv1.ResourceAttributes) (bool, string, error) {
-		return !(a.Resource == "remediationproposals" && a.Verb == "list"), "", nil
+		return a.Resource != "remediationproposals" || a.Verb != "list", "", nil
 	})
 	got = failureReasons(partial.Preflight.Run(context.Background()))
 	if len(got) != 1 || got[0] != intake.ReasonOperatorRBACMissing {
 		t.Fatalf("with a partial role: %v", got)
 	}
+}
+
+func TestTicketGuardFor(t *testing.T) {
+	if ticketGuardFor(intakeSetup{}) != nil {
+		t.Fatal("no preflight: a nil guard, so the controller's nil check holds")
+	}
+	t.Setenv(intake.ServiceAccountEnv, "dorgu-operator")
+	setup := newIntakeSetup(crdOnlyClient(t), testOperatorNS, logr.Discard())
+	setup.Preflight.Run(context.Background())
+	guard := ticketGuardFor(setup)
+	if guard == nil || guard.TicketsBlocked() == nil {
+		t.Fatal("a preflight with failing policies blocks tickets")
+	}
+	setup.verifyRBAC(nil) // nothing to verify with: adds nothing, never panics
 }

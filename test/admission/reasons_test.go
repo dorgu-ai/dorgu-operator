@@ -17,6 +17,7 @@ limitations under the License.
 package admission
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -54,8 +55,8 @@ func TestProposerMismatch(t *testing.T) {
 	// An identity is never rewritten: a name with an invisible character is refused even
 	// when the proposal repeats it exactly, because the approver is compared as written.
 	for name, unclean := range map[string]string{
-		"zero width space": "ali​ce", "bidi override": "alice‮", "tag character": "alice\U000E0041",
-		"variation selector": "alice️", "word joiner": "alice⁠", "soft hyphen": "ali­ce",
+		"zero width space": "ali\u200bce", "bidi override": "alice\u202e", "tag character": "alice\U000E0041",
+		"variation selector": "alice\uFE0F", "word joiner": "alice\u2060", "soft hyphen": "ali\u00adce",
 	} {
 		t.Run("a username with a "+name, func(t *testing.T) {
 			user := newActor(t, ns, unclean+uniq(""), nil, proposerRules)
@@ -96,7 +97,10 @@ func TestOperatorOnly(t *testing.T) {
 	t.Run("a dorgu.io annotation or label on an action", func(t *testing.T) {
 		ra := pendingAction(t, ns, "")
 		user := newActor(t, ns, "", nil, writerRules)
-		for key, kind := range map[string]string{"dorgu.io/answers-signal": "annotation", "dorgu.io/escalated-at": "annotation", "dorgu.io/phase": "label"} {
+		kinds := map[string]string{
+			"dorgu.io/answers-signal": "annotation", "dorgu.io/escalated-at": "annotation", "dorgu.io/phase": "label",
+		}
+		for key, kind := range kinds {
 			fresh := &dorguv1.RemediationAction{}
 			require.NoError(t, user.c.Get(ctxFor(t), client.ObjectKeyFromObject(ra), fresh))
 			if kind == "annotation" {
@@ -136,11 +140,14 @@ func TestOperatorOnly(t *testing.T) {
 		ra := pendingAction(t, ns, "")
 		approver := newActor(t, ns, "", nil, approverRules)
 		forged := map[string]any{"applyTicket": map[string]any{
-			"specHash": "00", "approvedBy": approver.name, "expiresAt": "2099-01-01T00:00:00Z", "patch": map[string]any{},
+			"specHash": "00", "approvedBy": approver.name, "expiresAt": "2099-01-01T00:00:00Z",
+			"patch": map[string]any{},
 		}}
 		requireDenied(t, admissionenv.PatchStatus(ctxFor(t), approver.c, ra, forged), "OperatorOnly")
-		requireDenied(t, admissionenv.PatchStatus(ctxFor(t), approver.c, ra,
-			map[string]any{"gate": map[string]any{"phase": "Proposal", "result": "Pass", "evaluatedAt": "2099-01-01T00:00:00Z"}}), "OperatorOnly")
+		forgedGate := map[string]any{"gate": map[string]any{
+			"phase": "Proposal", "result": "Pass", "evaluatedAt": "2099-01-01T00:00:00Z",
+		}}
+		requireDenied(t, admissionenv.PatchStatus(ctxFor(t), approver.c, ra, forgedGate), "OperatorOnly")
 		requireDenied(t, admissionenv.PatchStatus(ctxFor(t), approver.c, ra,
 			map[string]any{"appliedAt": "2099-01-01T00:00:00Z"}), "OperatorOnly")
 		requireDenied(t, admissionenv.PatchStatus(ctxFor(t), approver.c, ra,
@@ -160,7 +167,7 @@ func TestOperatorOnly(t *testing.T) {
 	})
 
 	t.Run("an incident memory's status, annotations and labels", func(t *testing.T) {
-		im := &dorguv1.IncidentMemory{ObjectMeta: metav1.ObjectMeta{Name: uniq("im"), Namespace: ns}, Spec: incidentSpec(ns)}
+		im := newIncident(ns)
 		user := newActor(t, ns, "", nil, writerRules)
 
 		labelled := im.DeepCopy()
@@ -181,7 +188,7 @@ func TestOperatorOnly(t *testing.T) {
 		require.NoError(t, env.Operator.Status().Update(ctxFor(t), stored))
 
 		// A plain incident from a user is theirs to write: nothing here is operator state.
-		plain := &dorguv1.IncidentMemory{ObjectMeta: metav1.ObjectMeta{Name: uniq("im"), Namespace: ns}, Spec: incidentSpec(ns)}
+		plain := newIncident(ns)
 		require.NoError(t, user.c.Create(ctxFor(t), plain))
 	})
 
@@ -250,7 +257,8 @@ func TestServiceAccountCannotApprove(t *testing.T) {
 
 	t.Run("the operator itself never approves", func(t *testing.T) {
 		ra := pendingAction(t, ns, "someone-else")
-		requireDenied(t, admissionenv.Approve(ctxFor(t), env.Operator, ra, admissionenv.OperatorUsername), "ServiceAccountCannotApprove")
+		err := admissionenv.Approve(ctxFor(t), env.Operator, ra, admissionenv.OperatorUsername)
+		requireDenied(t, err, "ServiceAccountCannotApprove")
 	})
 }
 
@@ -278,7 +286,7 @@ func TestApprovedByMismatch(t *testing.T) {
 	})
 	t.Run("a user whose name has an invisible character cannot approve at all", func(t *testing.T) {
 		ra := pendingAction(t, ns, "")
-		ghost := newActor(t, ns, "gho​st-"+uniq(""), nil, approverRules)
+		ghost := newActor(t, ns, "gho\u200bst-"+uniq(""), nil, approverRules)
 		requireDenied(t, admissionenv.Approve(ctxFor(t), ghost.c, ra, ghost.name), "ApprovedByMismatch")
 	})
 }
@@ -341,11 +349,11 @@ func TestInvalidTransition(t *testing.T) {
 
 	t.Run("Pending to Completed", func(t *testing.T) {
 		ra := pendingAction(t, ns, "")
-		requireDenied(t, admissionenv.PatchStatus(ctxFor(t), alice.c, ra, map[string]any{"phase": "Completed"}), "InvalidTransition")
+		requireDenied(t, setPhase(alice, ra, "Completed"), "InvalidTransition")
 	})
 	t.Run("Pending to Ticketed", func(t *testing.T) {
 		ra := pendingAction(t, ns, "")
-		requireDenied(t, admissionenv.PatchStatus(ctxFor(t), alice.c, ra, map[string]any{"phase": "Ticketed"}), "InvalidTransition")
+		requireDenied(t, setPhase(alice, ra, "Ticketed"), "InvalidTransition")
 	})
 	t.Run("Approved to Rejected", func(t *testing.T) {
 		ra := pendingAction(t, ns, "")
@@ -356,7 +364,7 @@ func TestInvalidTransition(t *testing.T) {
 	t.Run("Approved back to Pending", func(t *testing.T) {
 		ra := pendingAction(t, ns, "")
 		require.NoError(t, admissionenv.Approve(ctxFor(t), alice.c, ra, alice.name))
-		requireDenied(t, admissionenv.PatchStatus(ctxFor(t), alice.c, ra, map[string]any{"phase": "Pending"}), "InvalidTransition")
+		requireDenied(t, setPhase(alice, ra, "Pending"), "InvalidTransition")
 	})
 	t.Run("a second approval over the first", func(t *testing.T) {
 		ra := pendingAction(t, ns, "")
@@ -368,7 +376,8 @@ func TestInvalidTransition(t *testing.T) {
 		ra := pendingAction(t, ns, "")
 		require.NoError(t, admissionenv.Approve(ctxFor(t), alice.c, ra, alice.name))
 		bob := newActor(t, ns, "", nil, approverRules)
-		requireDenied(t, admissionenv.PatchStatus(ctxFor(t), bob.c, ra, map[string]any{"approvedBy": bob.name}), "InvalidTransition")
+		err := admissionenv.PatchStatus(ctxFor(t), bob.c, ra, map[string]any{"approvedBy": bob.name})
+		requireDenied(t, err, "InvalidTransition")
 	})
 	t.Run("an action with no phase yet is not decided by a person", func(t *testing.T) {
 		ra := admissionenv.NewAction(ns, uniq("ra"), "")
@@ -389,8 +398,9 @@ func TestTheCLIsWritesAreAllowed(t *testing.T) {
 		fresh := &dorguv1.RemediationAction{}
 		require.NoError(t, env.Operator.Get(ctxFor(t), client.ObjectKeyFromObject(ra), fresh))
 		assert.Equal(t, alice.name, fresh.Status.ApprovedBy)
-		fresh.Status.Phase = "Ticketed"
-		require.NoError(t, env.Operator.Status().Update(ctxFor(t), fresh), "the operator's own transitions are not the human's")
+		fresh.Status.Phase = phaseTicketed
+		require.NoError(t, env.Operator.Status().Update(ctxFor(t), fresh),
+			"the operator's own transitions are not the human's")
 	})
 
 	t.Run("reject resending every condition as read, and adding only its own", func(t *testing.T) {
@@ -399,7 +409,7 @@ func TestTheCLIsWritesAreAllowed(t *testing.T) {
 		require.NoError(t, env.Operator.Get(ctxFor(t), client.ObjectKeyFromObject(ra), stored))
 		conditions := append(conditionMaps(stored.Status.Conditions), map[string]any{
 			"type": "RejectionReason", "status": "True", "reason": "NotNeeded", "message": "not needed",
-			"lastTransitionTime": metav1.Now().UTC().Format("2006-01-02T15:04:05Z"),
+			"lastTransitionTime": nowText(),
 		})
 		require.NoError(t, admissionenv.PatchStatus(ctxFor(t), alice.c, ra, map[string]any{
 			"phase": "Rejected", "approvedBy": alice.name, "conditions": conditions,
@@ -413,7 +423,7 @@ func TestTheCLIsWritesAreAllowed(t *testing.T) {
 		require.NoError(t, env.Operator.Get(ctxFor(t), client.ObjectKeyFromObject(ra), stored))
 		conditions := append(conditionMaps(stored.Status.Conditions), map[string]any{
 			"type": "WorkloadPatched", "status": "True", "reason": "WorkloadPatched", "message": "patched",
-			"lastTransitionTime": metav1.Now().UTC().Format("2006-01-02T15:04:05Z"),
+			"lastTransitionTime": nowText(),
 		})
 		require.NoError(t, admissionenv.PatchStatus(ctxFor(t), alice.c, ra, map[string]any{"conditions": conditions}))
 	})
@@ -424,10 +434,10 @@ func TestTheCLIsWritesAreAllowed(t *testing.T) {
 		require.NoError(t, env.Operator.Get(ctxFor(t), client.ObjectKeyFromObject(ra), stored))
 		conditions := append(conditionMaps(stored.Status.Conditions), map[string]any{
 			"type": "WorkloadPatched", "status": "True", "reason": "WorkloadPatched", "message": "patched",
-			"lastTransitionTime": metav1.Now().UTC().Format("2006-01-02T15:04:05Z"),
+			"lastTransitionTime": nowText(),
 		})
 		require.NoError(t, admissionenv.PatchStatus(ctxFor(t), alice.c, ra, map[string]any{
-			"phase": "Approved", "approvedBy": alice.name, "approvedAt": metav1.Now().UTC().Format("2006-01-02T15:04:05Z"),
+			"phase": "Approved", "approvedBy": alice.name, "approvedAt": nowText(),
 			"conditions": conditions,
 		}))
 	})
@@ -442,12 +452,15 @@ func TestTheCLIsWritesAreAllowed(t *testing.T) {
 		stored := &dorguv1.RemediationAction{}
 		require.NoError(t, env.Operator.Get(ctxFor(t), client.ObjectKeyFromObject(ra), stored))
 		now := metav1.Now()
-		stored.Status.Phase = "Ticketed"
+		stored.Status.Phase = phaseTicketed
 		stored.Status.CurrentStep = 1
 		stored.Status.StepStatuses = []dorguv1.StepStatus{{Order: 1, Phase: "Pending"}}
 		stored.Status.Gate = &dorguv1.GateStatus{
 			Phase: "ApprovalRecheck", Result: "Pass", EvaluatedAt: now,
-			Verdicts:      []dorguv1.GateVerdict{{Stage: "Guardrails", Guardrail: "blast-radius", Verdict: "pass", Reason: "within the cap", Numbers: map[string]string{"ratio": "2"}}},
+			Verdicts: []dorguv1.GateVerdict{{
+				Stage: "Guardrails", Guardrail: "blast-radius", Verdict: "pass", Reason: "within the cap",
+				Numbers: map[string]string{"ratio": "2"},
+			}},
 			PrePatchState: &apiextensionsv1.JSON{Raw: []byte(`{"spec":{"resources":{"limits":{"memory":"256Mi"}}}}`)},
 		}
 		stored.Status.ApplyTicket = &dorguv1.ApplyTicket{
@@ -459,13 +472,15 @@ func TestTheCLIsWritesAreAllowed(t *testing.T) {
 		require.NoError(t, env.Operator.Get(ctxFor(t), client.ObjectKeyFromObject(ra), stored))
 		conditions := append(conditionMaps(stored.Status.Conditions), map[string]any{
 			"type": "WorkloadPatched", "status": "True", "reason": "WorkloadPatched", "message": "patched",
-			"lastTransitionTime": metav1.Now().UTC().Format("2006-01-02T15:04:05Z"),
+			"lastTransitionTime": nowText(),
 		})
 		require.NoError(t, admissionenv.PatchStatus(ctxFor(t), alice.c, ra, map[string]any{"conditions": conditions}))
 
 		// And a change to the same records, however small, is not.
 		requireDenied(t, admissionenv.PatchStatus(ctxFor(t), alice.c, ra, map[string]any{"gate": map[string]any{
-			"verdicts": []map[string]any{{"stage": "Guardrails", "guardrail": "blast-radius", "verdict": "pass", "reason": "forged"}},
+			"verdicts": []map[string]any{{
+				"stage": "Guardrails", "guardrail": "blast-radius", "verdict": "pass", "reason": "forged",
+			}},
 		}}), "OperatorOnly")
 	})
 
@@ -493,16 +508,30 @@ func TestAMaximumSizePlanStillPassesThePolicies(t *testing.T) {
 	require.NoError(t, admissionenv.Approve(ctxFor(t), alice.c, ra, alice.name))
 	stored := &dorguv1.RemediationAction{}
 	require.NoError(t, env.Operator.Get(ctxFor(t), client.ObjectKeyFromObject(ra), stored))
-	stored.Status.Phase = "Ticketed"
+	stored.Status.Phase = phaseTicketed
 	require.NoError(t, env.Operator.Status().Update(ctxFor(t), stored))
 }
 
 // A request in a namespace outside Dorgu's concern is none of the policies' business.
 func TestOtherResourcesAreUntouched(t *testing.T) {
 	ns := namespace(t, "other")
-	cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "x", Namespace: ns, Annotations: map[string]string{"dorgu.io/answers-signal": "x"}}}
+	cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{
+		Name: "x", Namespace: ns, Annotations: map[string]string{"dorgu.io/answers-signal": "x"},
+	}}
 	require.NoError(t, env.Admin.Create(ctxFor(t), cm))
 }
+
+func setPhase(a actor, ra *dorguv1.RemediationAction, phase string) error {
+	return admissionenv.PatchStatus(context.Background(), a.c, ra, map[string]any{"phase": phase})
+}
+
+func nowText() string { return metav1.Now().UTC().Format("2006-01-02T15:04:05Z") }
+
+func newIncident(ns string) *dorguv1.IncidentMemory {
+	return &dorguv1.IncidentMemory{ObjectMeta: metav1.ObjectMeta{Name: uniq("im"), Namespace: ns}, Spec: incidentSpec(ns)}
+}
+
+const phaseTicketed = "Ticketed"
 
 // conditionMaps renders conditions as a status patch would carry them back, as read.
 func conditionMaps(in []metav1.Condition) []map[string]any {

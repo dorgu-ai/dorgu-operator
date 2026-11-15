@@ -56,7 +56,12 @@ func requireHelm(t *testing.T) {
 	}
 }
 
-func renderedPolicies(t *testing.T, sets ...string) ([]admissionregistrationv1.ValidatingAdmissionPolicy, []admissionregistrationv1.ValidatingAdmissionPolicyBinding) {
+type (
+	policyList  = []admissionregistrationv1.ValidatingAdmissionPolicy
+	bindingList = []admissionregistrationv1.ValidatingAdmissionPolicyBinding
+)
+
+func renderedPolicies(t *testing.T, sets ...string) (policyList, bindingList) {
 	t.Helper()
 	requireHelm(t)
 	args := []string{"template", ".", "--show-only", "templates/admission-policies.yaml"}
@@ -84,13 +89,14 @@ func TestAdmissionPoliciesInConfigAreTheChartsRendered(t *testing.T) {
 	have, err := os.ReadFile("../../config/admission/policies.yaml")
 	require.NoError(t, err)
 	require.Equal(t, string(want), string(have),
-		"config/admission/policies.yaml differs from the chart's policies: run `make admission-policies` and commit the result")
+		"config/admission/policies.yaml differs from the chart's policies: "+
+			"run `make admission-policies` and commit the result")
 }
 
 func TestAdmissionPolicies_ShapeAndFailClosed(t *testing.T) {
 	policies, bindings := renderedPolicies(t)
 
-	var names []string
+	names := make([]string, 0, len(policies))
 	for _, p := range policies {
 		names = append(names, p.Name)
 	}
@@ -103,7 +109,8 @@ func TestAdmissionPolicies_ShapeAndFailClosed(t *testing.T) {
 	for _, p := range policies {
 		t.Run(p.Name, func(t *testing.T) {
 			require.NotNil(t, p.Spec.FailurePolicy)
-			assert.Equal(t, admissionregistrationv1.Fail, *p.Spec.FailurePolicy, "a policy that cannot be evaluated denies")
+			assert.Equal(t, admissionregistrationv1.Fail, *p.Spec.FailurePolicy,
+				"a policy that cannot be evaluated denies")
 			require.NotNil(t, p.Spec.MatchConstraints)
 			for _, rule := range p.Spec.MatchConstraints.ResourceRules {
 				assert.Equal(t, []string{"dorgu.io"}, rule.APIGroups, "scoped to Dorgu's own CRDs and nothing else")
@@ -118,7 +125,8 @@ func TestAdmissionPolicies_ShapeAndFailClosed(t *testing.T) {
 			assert.Nil(t, b.Spec.MatchResources, "the binding narrows nothing the policy matches")
 
 			for _, v := range p.Spec.Validations {
-				assert.Regexp(t, `^dorgu: [A-Z][A-Za-z]+: .+`, v.Message, "every message starts with the contract's prefix")
+				assert.Regexp(t, `^dorgu: [A-Z][A-Za-z]+: .+`, v.Message,
+					"every message starts with the contract's prefix")
 				assert.Contains(t, contractReasons, reasonOf(v.Message), "and its token is in the contract")
 			}
 		})
@@ -155,7 +163,10 @@ func TestAdmissionPolicies_TheOperatorUsernameIsTemplatedIn(t *testing.T) {
 	}{
 		{nil, "system:serviceaccount:default:release-name-dorgu-operator"},
 		{[]string{"serviceAccount.name=planner"}, "system:serviceaccount:default:planner"},
-		{[]string{"fullnameOverride=dorgu", "serviceAccount.create=false", "serviceAccount.name="}, "system:serviceaccount:default:default"},
+		{
+			[]string{"fullnameOverride=dorgu", "serviceAccount.create=false", "serviceAccount.name="},
+			"system:serviceaccount:default:default",
+		},
 	} {
 		policies, _ := renderedPolicies(t, tc.sets...)
 		for _, p := range policies {
@@ -237,8 +248,8 @@ func TestAdmissionPolicies_EveryStatusFieldHasAnOwner(t *testing.T) {
 	}
 
 	humanFields := map[string]bool{"phase": true, "approvedBy": true, "approvedAt": true}
-	typ := reflect.TypeOf(dorguv1.RemediationActionStatus{})
-	var fields []string
+	typ := reflect.TypeFor[dorguv1.RemediationActionStatus]()
+	fields := make([]string, 0, typ.NumField())
 	for i := range typ.NumField() {
 		fields = append(fields, strings.Split(typ.Field(i).Tag.Get("json"), ",")[0])
 	}
@@ -250,7 +261,8 @@ func TestAdmissionPolicies_EveryStatusFieldHasAnOwner(t *testing.T) {
 		case f == "conditions":
 			assert.True(t, mentioned[f], "conditions are operator-owned except the two a person writes")
 		default:
-			assert.True(t, mentioned[f], "status.%s has no owner in the admission policy: add it to operatorOwnedStatusUnchanged", f)
+			assert.True(t, mentioned[f],
+				"status.%s has no owner in the admission policy: add it to operatorOwnedStatusUnchanged", f)
 		}
 	}
 }

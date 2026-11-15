@@ -87,6 +87,10 @@ var ticketBlockers = map[string]bool{
 	ReasonOperatorRBACUnverified:      true,
 }
 
+// BlocksTickets reports whether a failure with this reason stops apply tickets as well as
+// the intake.
+func BlocksTickets(reason string) bool { return ticketBlockers[reason] }
+
 // TicketsBlocked returns the first failing check that stops tickets being issued, or nil.
 // Before the first run it returns the pending failure: nothing is known, so nothing is
 // issued. A nil Preflight (the health pipeline is off) blocks nothing.

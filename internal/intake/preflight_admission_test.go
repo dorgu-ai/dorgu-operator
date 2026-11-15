@@ -31,6 +31,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	kubefake "k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -71,7 +73,7 @@ func binding(name, policyName string, mutate ...func(*admissionregistrationv1.Va
 
 func installedPolicies(t *testing.T) []client.Object {
 	t.Helper()
-	var objs []client.Object
+	objs := make([]client.Object, 0, 2*len(AdmissionPolicyNames))
 	for _, name := range AdmissionPolicyNames {
 		objs = append(objs, policy(name), binding(name, name))
 	}
@@ -205,7 +207,7 @@ func TestOperatorRBACCheck(t *testing.T) {
 
 	t.Run("a subresource is named as one", func(t *testing.T) {
 		deny := func(_ context.Context, a authzv1.ResourceAttributes) (bool, string, error) {
-			return !(a.Resource == "remediationactions" && a.Subresource == "status" && a.Verb == "update"), "", nil
+			return a.Resource != "remediationactions" || a.Subresource != "status" || a.Verb != "update", "", nil
 		}
 		err := OperatorRBACCheck(deny).Run(context.Background())
 		require.Error(t, err)
@@ -286,7 +288,7 @@ func TestPreflight_TicketsAreBlockedByTheAdmissionAndRBACChecksOnly(t *testing.T
 		}
 	}
 
-	open := NewPreflight(logr.Discard(), passing("a"))
+	open := NewPreflight(logr.Discard(), passing("b"))
 	open.Run(context.Background())
 	assert.Nil(t, open.TicketsBlocked())
 
@@ -297,4 +299,41 @@ func TestPreflight_TicketsAreBlockedByTheAdmissionAndRBACChecksOnly(t *testing.T
 	fresh := NewPreflight(logr.Discard(), passing("a"))
 	require.NotNil(t, fresh.TicketsBlocked())
 	assert.Equal(t, ReasonPreflightPending, fresh.TicketsBlocked().Reason)
+}
+
+func TestBlocksTickets(t *testing.T) {
+	assert.True(t, BlocksTickets(ReasonAdmissionPoliciesMissing))
+	assert.True(t, BlocksTickets(ReasonOperatorRBACMissing))
+	assert.False(t, BlocksTickets(ReasonProposalCRDMissing))
+	assert.False(t, BlocksTickets(""))
+}
+
+func TestAccessReviewerFromClientset(t *testing.T) {
+	cs := kubefake.NewClientset()
+	cs.PrependReactor("create", "selfsubjectaccessreviews", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		review := action.(k8stesting.CreateAction).GetObject().(*authzv1.SelfSubjectAccessReview)
+		allowed := review.Spec.ResourceAttributes.Verb == "get"
+		return true, &authzv1.SelfSubjectAccessReview{Status: authzv1.SubjectAccessReviewStatus{Allowed: allowed, Reason: "because"}}, nil
+	})
+	review := AccessReviewerFromClientset(cs)
+
+	allowed, reason, err := review(context.Background(), authzv1.ResourceAttributes{Verb: "get", Resource: "pods"})
+	require.NoError(t, err)
+	assert.True(t, allowed)
+	assert.Equal(t, "because", reason)
+
+	allowed, _, err = review(context.Background(), authzv1.ResourceAttributes{Verb: "delete", Resource: "pods"})
+	require.NoError(t, err)
+	assert.False(t, allowed)
+
+	cs.PrependReactor("create", "selfsubjectaccessreviews", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, errors.New("connection refused")
+	})
+	_, _, err = review(context.Background(), authzv1.ResourceAttributes{Verb: "get"})
+	require.Error(t, err)
+}
+
+func TestStaticCheck(t *testing.T) {
+	require.NoError(t, StaticCheck("a", "R", nil).Run(context.Background()))
+	require.EqualError(t, StaticCheck("a", "R", errors.New("no")).Run(context.Background()), "no")
 }

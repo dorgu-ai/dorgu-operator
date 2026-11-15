@@ -80,10 +80,10 @@ func requireRoles(t *testing.T) {
 }
 
 // bound is a user holding the named ClusterRoles in ns.
-func bound(t *testing.T, ns string, groups []string, clusterRoles ...string) actor {
+func bound(t *testing.T, ns string, clusterRoles ...string) actor {
 	t.Helper()
 	requireRoles(t)
-	a := newActor(t, ns, "", groups, nil)
+	a := newActor(t, ns, "", nil, nil)
 	for _, role := range clusterRoles {
 		require.NoError(t, env.Admin.Create(ctxFor(t), &rbacv1.RoleBinding{
 			ObjectMeta: metav1.ObjectMeta{GenerateName: "role-", Namespace: ns},
@@ -115,7 +115,8 @@ func TestRoles_AnAgentCanProposeAndReadAndNothingElse(t *testing.T) {
 	require.NoError(t, bot.c.Create(ctxFor(t), prop), "it proposes as itself")
 
 	got := &dorguv1alpha1.RemediationProposal{}
-	require.NoError(t, bot.c.Get(ctxFor(t), client.ObjectKeyFromObject(prop), got), "and reads it back (the rejection reason is in status)")
+	require.NoError(t, bot.c.Get(ctxFor(t), client.ObjectKeyFromObject(prop), got),
+		"and reads it back (the rejection reason is in status)")
 	var list dorguv1alpha1.RemediationProposalList
 	require.NoError(t, bot.c.List(ctxFor(t), &list, client.InNamespace(ns)))
 
@@ -134,7 +135,7 @@ func TestRoles_AnAgentCanProposeAndReadAndNothingElse(t *testing.T) {
 	forbidden("create an action", bot.c.Create(ctxFor(t), admissionenv.NewAction(ns, uniq("ra"), bot.name)))
 	forbidden("approve", admissionenv.Approve(ctxFor(t), bot.c, ra, bot.name))
 	forbidden("reject", admissionenv.Reject(ctxFor(t), bot.c, ra, bot.name))
-	forbidden("patch action status", admissionenv.PatchStatus(ctxFor(t), bot.c, ra, map[string]any{"phase": "Completed"}))
+	forbidden("patch action status", setPhase(bot, ra, "Completed"))
 
 	var actions dorguv1.RemediationActionList
 	require.NoError(t, bot.c.List(ctxFor(t), &actions, client.InNamespace(ns)), "it can read actions")
@@ -142,12 +143,14 @@ func TestRoles_AnAgentCanProposeAndReadAndNothingElse(t *testing.T) {
 	forbidden("write an incident", bot.c.Create(ctxFor(t), &dorguv1.IncidentMemory{
 		ObjectMeta: metav1.ObjectMeta{Name: uniq("im"), Namespace: ns}, Spec: incidentSpec(ns)}))
 	forbidden("read a secret", bot.c.Get(ctxFor(t), client.ObjectKey{Namespace: ns, Name: "any"}, &corev1.Secret{}))
-	forbidden("create events", bot.c.Create(ctxFor(t), &corev1.Event{ObjectMeta: metav1.ObjectMeta{GenerateName: "e-", Namespace: ns}}))
+	forbidden("create events", bot.c.Create(ctxFor(t), &corev1.Event{
+		ObjectMeta: metav1.ObjectMeta{GenerateName: "e-", Namespace: ns},
+	}))
 }
 
 func TestRoles_TheProposerRoleAloneCannotEvenRead(t *testing.T) {
 	ns := namespace(t, "proposer")
-	only := bound(t, ns, nil, "dorgu-agent-proposer")
+	only := bound(t, ns, "dorgu-agent-proposer")
 	require.NoError(t, only.c.Create(ctxFor(t), admissionenv.NewProposal(ns, uniq("p"), only.name)))
 	var actions dorguv1.RemediationActionList
 	err := only.c.List(ctxFor(t), &actions, client.InNamespace(ns))
@@ -157,8 +160,8 @@ func TestRoles_TheProposerRoleAloneCannotEvenRead(t *testing.T) {
 
 func TestRoles_AnApproverDecidesWhatItDidNotPropose(t *testing.T) {
 	ns := namespace(t, "approver")
-	alice := bound(t, ns, nil, "dorgu-approver")
-	bob := bound(t, ns, nil, "dorgu-approver")
+	alice := bound(t, ns, "dorgu-approver")
+	bob := bound(t, ns, "dorgu-approver")
 
 	ra := pendingAction(t, ns, "an-agent")
 	got := &dorguv1.RemediationAction{}
@@ -174,9 +177,11 @@ func TestRoles_AnApproverDecidesWhatItDidNotPropose(t *testing.T) {
 
 	// It records a decline as an Event, and creates nothing else.
 	require.NoError(t, alice.c.Create(ctxFor(t), &corev1.Event{
-		ObjectMeta:     metav1.ObjectMeta{GenerateName: "decline.", Namespace: ns},
-		InvolvedObject: corev1.ObjectReference{APIVersion: "dorgu.io/v1", Kind: "RemediationAction", Name: ra.Name, Namespace: ns},
-		Reason:         "DorguCLIDeclined", Message: "declined", Type: "Warning",
+		ObjectMeta: metav1.ObjectMeta{GenerateName: "decline.", Namespace: ns},
+		InvolvedObject: corev1.ObjectReference{
+			APIVersion: "dorgu.io/v1", Kind: "RemediationAction", Name: ra.Name, Namespace: ns,
+		},
+		Reason: "DorguCLIDeclined", Message: "declined", Type: "Warning",
 		Source: corev1.EventSource{Component: "dorgu-cli"},
 	}))
 	err := alice.c.Create(ctxFor(t), admissionenv.NewProposal(ns, uniq("p"), alice.name))
@@ -188,7 +193,7 @@ func TestRoles_AnApproverDecidesWhatItDidNotPropose(t *testing.T) {
 
 func TestRoles_TheViewerReadsEverythingAndWritesNothing(t *testing.T) {
 	ns := namespace(t, "viewer")
-	v := bound(t, ns, nil, "dorgu-viewer")
+	v := bound(t, ns, "dorgu-viewer")
 	ra := pendingAction(t, ns, "x")
 	var list dorguv1.RemediationActionList
 	require.NoError(t, v.c.List(ctxFor(t), &list, client.InNamespace(ns)))
