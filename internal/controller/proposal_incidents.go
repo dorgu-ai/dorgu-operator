@@ -127,8 +127,12 @@ func (o *ProposalIncidents) Open(ctx context.Context, prop *dorguv1alpha1.Remedi
 
 // proposalIncidentCategory classifies the incident from the shape of the plan, not
 // from anything the proposer wrote about it: a plan that changes a persona's
-// resources is a resource incident, anything else a health one.
+// resources is a resource incident, anything else a health one. A rollback carries
+// no steps (the operator derives them) and restores resources, so it is one.
 func proposalIncidentCategory(prop *dorguv1alpha1.RemediationProposal) string {
+	if prop.Spec.RollbackOf != nil {
+		return "resource"
+	}
 	for i := range prop.Spec.Steps {
 		if prop.Spec.Steps[i].Type == dorguv1.StepTypePersonaUpdate {
 			return "resource"

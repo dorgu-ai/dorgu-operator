@@ -78,10 +78,6 @@ const (
 	// proposal from outside.
 	ReasonIncidentResolved = "IncidentResolved"
 
-	// ReasonNotYetSupported: the proposal uses a field the operator does not honour
-	// yet (rollbackOf).
-	ReasonNotYetSupported = "NotYetSupported"
-
 	// ReasonNamespaceMismatch: the proposal's namespace is not its target's namespace.
 	ReasonNamespaceMismatch = "TargetNamespaceMismatch"
 
@@ -95,6 +91,50 @@ const (
 	// proposal would become as invalid. Retrying cannot help, so it is final; the
 	// condition message carries the server's reason, shortened.
 	ReasonActionInvalid = "ActionInvalid"
+)
+
+// Rejection reasons of a ticketed rollback (spec.rollbackOf), given at StageIntake.
+// The CLI reads them to say what is wrong in plain words.
+const (
+	// ReasonRollbackNotHuman: the proposer is a system: identity. A rollback is a
+	// request for a person to approve a change to a workload, so only a person may
+	// ask for one. The admission policy refuses the same requests at the API server.
+	ReasonRollbackNotHuman = "RollbackNotHuman"
+
+	// ReasonRollbackTargetNotFound: spec.rollbackOf names a RemediationAction that
+	// does not exist in the proposal's namespace.
+	ReasonRollbackTargetNotFound = "RollbackTargetNotFound"
+
+	// ReasonRollbackTargetMismatch: the action names another persona than the
+	// proposal's target. A rollback restores the persona its action changed.
+	ReasonRollbackTargetMismatch = "RollbackTargetMismatch"
+
+	// ReasonRollbackNotApplied: the action never applied a change, or is still being
+	// applied or verified. Only an action that ended Completed or RolledBack applied
+	// something there is to roll back.
+	ReasonRollbackNotApplied = "RollbackNotApplied"
+
+	// ReasonRollbackOfRollback: the action is itself a rollback. Rolling it back
+	// would re-apply the change it undid, which is a new proposal to make, not a
+	// rollback.
+	ReasonRollbackOfRollback = "RollbackOfRollback"
+
+	// ReasonRollbackNoRecordedState: the operator recorded no apply ticket or no
+	// pre-patch baseline for the action, or none for a field it changed. A rollback
+	// restores only what Dorgu recorded.
+	ReasonRollbackNoRecordedState = "RollbackNoRecordedState"
+
+	// ReasonRollbackWorkloadDrifted: the workload or the persona no longer holds what
+	// the change left there (a person edited it, or the Deployment was replaced), so
+	// restoring the recorded values would overwrite someone else's change.
+	ReasonRollbackWorkloadDrifted = "RollbackWorkloadDrifted"
+
+	// ReasonRollbackNothingToRestore: the workload already holds the values the
+	// operator recorded before the change.
+	ReasonRollbackNothingToRestore = "RollbackNothingToRestore"
+
+	// ReasonRollbackAlreadyOpen: a rollback of the same action is already in flight.
+	ReasonRollbackAlreadyOpen = "RollbackAlreadyOpen"
 )
 
 // ConditionConverted is the condition the reconciler keeps on a proposal. It is
@@ -156,6 +196,14 @@ type ActionRef struct {
 
 // RemediationProposalSpec is what a proposer asks for. It is immutable: a proposer
 // that wants something else writes a new proposal.
+//
+// A ticketed rollback (rollbackOf) is a proposal the operator writes the steps of: it
+// derives them from what it recorded before it applied the referenced action, so a
+// rollback proposal carries no steps, no incidentRef and no agent, and its source is
+// "rollback". The source is reserved: no other proposal may use it.
+// +kubebuilder:validation:XValidation:rule="!has(self.rollbackOf) || !has(self.steps) || size(self.steps) == 0",message="a rollback proposal carries no steps: the operator derives them from what it recorded before the change"
+// +kubebuilder:validation:XValidation:rule="!has(self.rollbackOf) || (!has(self.incidentRef) && !has(self.agent))",message="a rollback proposal names no incidentRef and no agent: it is a person's request about one action"
+// +kubebuilder:validation:XValidation:rule="has(self.rollbackOf) == (self.?source.orValue('agent') == 'rollback')",message="source is 'rollback' exactly when rollbackOf is set"
 type RemediationProposalSpec struct {
 	// Proposer is who wrote this proposal.
 	Proposer dorguv1.ProposerIdentity `json:"proposer"`
@@ -210,9 +258,11 @@ type RemediationProposalSpec struct {
 	// +optional
 	Evidence []EvidenceRef `json:"evidence,omitempty"`
 
-	// RollbackOf is RESERVED for a ticketed rollback of a RemediationAction. The
-	// operator does not honour it yet: a proposal that sets it is rejected with
-	// reason NotYetSupported.
+	// RollbackOf asks for a ticketed rollback of a RemediationAction that was applied.
+	// The operator ignores any steps, derives its own from the values it recorded
+	// before it applied that action, and runs the result through the gate, approval
+	// and an apply ticket like any other proposal. Only a person may ask (not a
+	// service account), and only for an action in the proposal's namespace.
 	// +optional
 	RollbackOf *ActionRef `json:"rollbackOf,omitempty"`
 }
@@ -226,8 +276,11 @@ type ProposalRejection struct {
 
 	// Reason is a machine-readable token. At Intake it is one of RateLimited,
 	// DuplicateIdempotencyKey, IncidentNotFound, IncidentTargetMismatch,
-	// IncidentResolved, NotYetSupported, ProposerInvalid or TargetNamespaceMismatch. At a gate stage
-	// it is the guardrail that refused.
+	// IncidentResolved, ProposerInvalid, TargetNamespaceMismatch or, for a rollback,
+	// RollbackNotHuman, RollbackTargetNotFound, RollbackTargetMismatch,
+	// RollbackNotApplied, RollbackOfRollback, RollbackNoRecordedState,
+	// RollbackWorkloadDrifted, RollbackNothingToRestore or RollbackAlreadyOpen.
+	// At a gate stage it is the guardrail that refused.
 	// +kubebuilder:validation:MaxLength=63
 	Reason string `json:"reason"`
 }

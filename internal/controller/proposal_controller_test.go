@@ -152,6 +152,15 @@ var _ = Describe("RemediationProposal intake", func() {
 		return p
 	}
 
+	// rollbackSpec makes a proposal a rollback request the way the CLI writes it.
+	rollbackSpec := func(action string) func(*dorguv1alpha1.RemediationProposal) {
+		return func(p *dorguv1alpha1.RemediationProposal) {
+			p.Spec.Source = dorguv1.ProposalSourceRollback
+			p.Spec.RollbackOf = &dorguv1alpha1.ActionRef{Name: action}
+			p.Spec.Steps, p.Spec.IncidentRef = nil, nil
+		}
+	}
+
 	reconcile := func(p *dorguv1alpha1.RemediationProposal) *dorguv1alpha1.RemediationProposal {
 		GinkgoHelper()
 		_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(p)})
@@ -345,13 +354,59 @@ var _ = Describe("RemediationProposal intake", func() {
 			expectRejected(reconcile(p), dorguv1alpha1.StageIntake, dorguv1alpha1.ReasonIncidentNotFound)
 		})
 
-		It("refuses the reserved rollbackOf field with NotYetSupported", func() {
-			f := setup("c1-rollback", "OOMKilled")
-			p := propose(f, "c1-rollback-p", func(p *dorguv1alpha1.RemediationProposal) {
-				p.Spec.RollbackOf = &dorguv1alpha1.ActionRef{Name: "ra-something"}
+		It("rejects a rollback of an action that does not exist with RollbackTargetNotFound", func() {
+			f := setup("c6-rollback", "OOMKilled")
+			p := propose(f, "c6-rollback-p", rollbackSpec("ra-something"))
+
+			expectRejected(reconcile(p), dorguv1alpha1.StageIntake, dorguv1alpha1.ReasonRollbackTargetNotFound)
+		})
+
+		It("has the API server refuse the proposals a rollback must not be", func() {
+			f := setup("c6-rollback-crd", "OOMKilled")
+			create := func(name string, mutate func(*dorguv1alpha1.RemediationProposal)) error {
+				p := &dorguv1alpha1.RemediationProposal{
+					ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+					Spec: dorguv1alpha1.RemediationProposalSpec{
+						Proposer: dorguv1.ProposerIdentity{Username: "alice"}, IdempotencyKey: name, Source: dorguv1.ProposalSourceRollback,
+						Target:     dorguv1alpha1.ProposalTarget{Kind: "ApplicationPersona", Namespace: namespace, Name: f.name},
+						RollbackOf: &dorguv1alpha1.ActionRef{Name: "ra-x"}, Rationale: "why",
+					},
+				}
+				mutate(p)
+				return k8sClient.Create(ctx, p)
+			}
+			DeferCleanup(func() {
+				var list dorguv1alpha1.RemediationProposalList
+				Expect(k8sClient.List(ctx, &list, client.InNamespace(namespace))).To(Succeed())
+				for i := range list.Items {
+					if strings.HasPrefix(list.Items[i].Name, "c6-crd-") {
+						Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, &list.Items[i]))).To(Succeed())
+					}
+				}
 			})
 
-			expectRejected(reconcile(p), dorguv1alpha1.StageIntake, dorguv1alpha1.ReasonNotYetSupported)
+			Expect(create("c6-crd-steps", func(p *dorguv1alpha1.RemediationProposal) {
+				p.Spec.Steps = []dorguv1.RemediationStep{memoryStep("8Gi")}
+			})).To(MatchError(ContainSubstring("a rollback proposal carries no steps")))
+			Expect(create("c6-crd-incident", func(p *dorguv1alpha1.RemediationProposal) {
+				p.Spec.IncidentRef = &dorguv1.IncidentReference{Name: f.incident, Namespace: namespace}
+			})).To(MatchError(ContainSubstring("names no incidentRef and no agent")))
+			Expect(create("c6-crd-agent", func(p *dorguv1alpha1.RemediationProposal) {
+				p.Spec.Agent = &dorguv1.AgentInfo{Name: "x"}
+			})).To(MatchError(ContainSubstring("names no incidentRef and no agent")))
+			Expect(create("c6-crd-source", func(p *dorguv1alpha1.RemediationProposal) {
+				p.Spec.Source = "agent"
+			})).To(MatchError(ContainSubstring("source is 'rollback' exactly when rollbackOf is set")))
+			Expect(create("c6-crd-source-unset", func(p *dorguv1alpha1.RemediationProposal) {
+				p.Spec.Source = ""
+			})).To(MatchError(ContainSubstring("source is 'rollback' exactly when rollbackOf is set")),
+				"the CRD default 'agent' applies, so the request is not a rollback")
+			Expect(create("c6-crd-claim", func(p *dorguv1alpha1.RemediationProposal) {
+				p.Spec.RollbackOf = nil
+				p.Spec.Steps = []dorguv1.RemediationStep{memoryStep("384Mi")}
+			})).To(MatchError(ContainSubstring("source is 'rollback' exactly when rollbackOf is set")),
+				"the reserved source cannot be claimed by an ordinary proposal")
+			Expect(create("c6-crd-ok", func(*dorguv1alpha1.RemediationProposal) {})).To(Succeed())
 		})
 
 		It("refuses an incident detected on another persona with IncidentTargetMismatch", func() {
