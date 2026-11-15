@@ -80,7 +80,15 @@ Proposals are ordered by creation time (whole seconds), then by name. Of two ide
 
 `dorgu remediation rollback <action>` writes a proposal with `rollbackOf: {name: <action>}` and `source: rollback`. The operator does not read steps from it. It derives the plan from two things it wrote itself when the action was approved: `status.gate.prePatchState` (the live values the gate measured) and `status.applyTicket.patch` (the fields and values it applied). The plan is one persona-update step setting each field Dorgu changed back to the recorded value. Nothing else is ever restored, and the action's own `spec` (which whoever wrote the plan chose) is never read.
 
-The derived plan then goes through the same path as every other: the gate runs on live state (a rollback can be clamped or refused like any change), a person approves the resulting action, approval becomes an apply ticket, and the CLI applies the ticket to the workload with the person's own credentials. The action has `provenance.proposer` = the operator, `source: rollback`, `requestedBy` = the person who asked and the annotation `dorgu.io/rollback-of`. Because the operator is the proposer, the person who asked may approve it.
+The derived plan then goes through the same path as every other: the gate runs on live state (a rollback can be refused like any change, and is never narrowed: see below), a person approves the resulting action, approval becomes an apply ticket, and the CLI applies the ticket to the workload with the person's own credentials. The action has `provenance.proposer` = the operator, `source: rollback`, `requestedBy` = the person who asked and the annotation `dorgu.io/rollback-of`. Because the operator is the proposer, the person who asked may approve it.
+
+**A rollback is whole or it is refused, never partial.** The gate's caps stay in force on a rollback (the decrease cap is also what catches a change made between the request and the approval). The operator converts a rollback only when the gate passes the derived plan and every step comes through it unchanged, with nothing clamped, stripped or dropped. If the gate would clamp or strip any part, the proposal is `Rejected` with `RollbackWouldBePartial` and no action is made: a half restore leaves the workload in a state nobody asked for and Dorgu never produced. A change Dorgu itself issued is at most 2x its baseline, so reversing it is at most a 50% decrease and is never clamped; the refusal is reachable only for a record that is outside that contract.
+
+Two things are different on the gate for a rollback, because it undoes an action instead of answering an incident, and both stop there. The action being rolled back is not counted as a failed remediation holding the persona (an action the operator rolled back minutes ago is exactly the one the advisory sends a person to undo), and `selfHealing.mode=observe` does not withhold it: a person's undo of Dorgu's own change is not a proposal Dorgu volunteers. It still needs approval and a ticket, and every other guardrail still rules on it: another remediation that went wrong in the last 30 minutes, one in flight on the persona, the hourly rate limit and the rejection cooldown all still refuse it, temporarily.
+
+A completed rollback does not start a cooldown for the persona. The next detection cycle can propose the same change again; a person still has to approve it, so the cost is noise, not a bad write. If you do not want it proposed, set the persona's `selfHealing.mode` to `observe` or edit the persona.
+
+A rollback action that itself ends `RolledBack` (the restored value did not hold) cannot be rolled back again. The condition on it says what is true: the persona went back to its earlier values, the workload keeps the rollback's values, and the person can change one side to meet the other (the persona's limits, or the workload through its owner).
 
 Who may ask: a person (a username not starting with `system:`) holding the `approve` verb on `remediationactions` in the namespace, writing the proposal as themselves. A service account, an agent (`dorgu-agent-proposer`) or the operator is denied by admission (`ServiceAccountCannotApprove`, `MissingApproveVerb`).
 
@@ -92,7 +100,8 @@ Who may ask: a person (a username not starting with `system:`) holding the `appr
 | `RollbackOfRollback` | The action is itself a rollback. |
 | `RollbackNoRecordedState` | No baseline was recorded for a field the ticket changed. |
 | `RollbackWorkloadDrifted` | The Deployment was replaced or gone, or a changed field holds neither the value the change set nor the baseline, on the workload or on the persona: someone changed it since, and a restore would overwrite that. |
-| `RollbackNothingToRestore` | The workload already holds the baseline. |
+| `RollbackNothingToRestore` | The workload already holds the baseline. When the persona still holds the value the change set, the message says so: edit the persona to match, or the next ticket's persona check trips. |
+| `RollbackWouldBePartial` | The gate would clamp, strip or drop part of the derived restore. Refused as a whole, and no action is made. |
 | `RollbackAlreadyOpen` | A rollback of the same action is still in flight. |
 | `RollbackNotHuman` | The proposer is a `system:` identity. |
 

@@ -87,7 +87,10 @@ rules:
     verbs: ["get", "list", "watch"]
   # `dorgu remediation rollback` asks for a rollback with a proposal that names the action.
   # The policies let only a person holding the approve verb do that, as themselves; the
-  # operator writes the change and the same person approves it.
+  # operator writes the change and the same person approves it. The verb is create on
+  # proposals in general, so an approver can also write ordinary proposals as itself
+  # (another approver must decide them) and park Pending actions on a persona, as the
+  # agent-proposer role can; bind this role only to people you trust to propose.
   - apiGroups: ["dorgu.io"]
     resources: ["remediationproposals"]
     verbs: ["create"]
