@@ -278,6 +278,35 @@ func proposeAsOperator(t *testing.T, ra *dorguv1.RemediationAction) {
 	}
 }
 
+// operatorUsername is the operator's own identity in the scenarios that compare an approver
+// with the proposer.
+const operatorUsername = "system:serviceaccount:dorgu-operator-system:dorgu-operator-controller-manager"
+
+// withProposer records who proposed the action, as the proposal reconciler does.
+func withProposer(username string) raOption {
+	return func(ra *dorguv1.RemediationAction) {
+		ra.Spec.Provenance = &dorguv1.RemediationProvenance{
+			Proposal: "proposal", Proposer: dorguv1.ProposerIdentity{Username: username}, Source: dorguv1.ProposalSourceAgent,
+		}
+	}
+}
+
+// approveAs writes the approval as if admission had let it through, naming approver.
+func approveAs(t *testing.T, ra *dorguv1.RemediationAction, approver string) {
+	t.Helper()
+	ctx := context.Background()
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(ra), ra); err != nil {
+		t.Fatalf("getting %s: %v", ra.Name, err)
+	}
+	now := metav1.Now()
+	ra.Status.Phase = phaseApproved
+	ra.Status.ApprovedBy = approver
+	ra.Status.ApprovedAt = &now
+	if err := k8sClient.Status().Update(ctx, ra); err != nil {
+		t.Fatalf("approving %s as %q: %v", ra.Name, approver, err)
+	}
+}
+
 // setPhase writes status.phase the way `dorgu remediation approve` does.
 func setPhase(t *testing.T, ra *dorguv1.RemediationAction, phase string) {
 	t.Helper()
@@ -310,8 +339,9 @@ func newRemediationController(signals ...detection.Signal) *controller.Remediati
 	log := logr.Discard()
 	engine := detection.NewEngine(log, staticCollector{signals: signals})
 	return &controller.RemediationController{
-		Client:   k8sClient,
-		Gate:     testGate(),
+		Client:           k8sClient,
+		OperatorUsername: operatorUsername,
+		Gate:             testGate(),
 		Executor: remediation.NewExecutor(k8sClient, testGate(), log),
 		Verifier: remediation.NewVerifier(engine, k8sClient, log),
 		Rollback: remediation.NewRollback(k8sClient, log),

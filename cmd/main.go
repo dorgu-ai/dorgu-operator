@@ -416,6 +416,10 @@ func main() {
 			// no ticket is issued; a nil preflight (no health check) blocks nothing.
 			TicketGuard: ticketGuardFor(intakeState),
 
+			// An approval is compared with the proposer, which for an action with no
+			// recorded one is the operator itself.
+			OperatorUsername: intakeState.Username,
+
 			PendingTTL: cfg.remediationPendingTTL,
 		}).SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "RemediationAction")

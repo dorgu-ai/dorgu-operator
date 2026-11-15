@@ -178,6 +178,12 @@ type RemediationController struct {
 	// (P2-D8). Nil never blocks (no preflight: the health pipeline is off).
 	TicketGuard TicketGuard
 
+	// OperatorUsername is the operator's own Kubernetes username (verified against the
+	// API server by the preflight). An action with no recorded proposer was proposed by
+	// the operator, so this is the proposer an approver is compared with then. Empty when
+	// the operator does not know it; no approval is then compared with it.
+	OperatorUsername string
+
 	// PendingTTL is how long a proposal may wait for approval, counted from its
 	// creation, before it becomes Expired. Zero disables the TTL (an explicit
 	// spec.approval.deadline still applies).
@@ -405,6 +411,13 @@ func (r *RemediationController) handleApproved(ctx context.Context, logger logr.
 		logger.Info("approved plan is advisory; recording the approval without applying anything",
 			"actionType", action.Spec.Action.Type, "steps", len(action.Spec.Steps))
 		return ctrl.Result{}, r.transitionToAcknowledged(ctx, action)
+	}
+
+	// Admission checked who approved; check again before the gate runs and a ticket can be
+	// issued (C2 F-2): the approver is a person, and not the one who proposed this. An
+	// advisory plan above issues no ticket, so it needs no approver.
+	if problem := approverProblem(action, r.OperatorUsername); problem != "" {
+		return ctrl.Result{}, r.refuseApprover(ctx, logger, action, problem)
 	}
 
 	// The ticket binds the hash of the spec as the API server serves it now (P2-D14),
