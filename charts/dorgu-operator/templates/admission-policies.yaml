@@ -293,7 +293,7 @@ spec:
     - expression: >-
         variables.isOperator || variables.newPhase == variables.oldPhase ||
         (variables.newApprovedBy == variables.user && !variables.user.matches({{ $unclean }}))
-      message: "dorgu: ApprovedByMismatch: status.approvedBy must be exactly the authenticated username, for a rejection as well as an approval."
+      message: "dorgu: ApprovedByMismatch: status.approvedBy must be exactly the authenticated username, for a rejection as well as an approval. A username with control, format or invisible characters (an email address with a hidden direction mark, for example) cannot decide at all: ask a cluster admin for a plain username."
     - expression: >-
         variables.isOperator || variables.newPhase == variables.oldPhase ||
         variables.newApprovedBy != variables.proposer

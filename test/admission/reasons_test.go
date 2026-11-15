@@ -361,7 +361,18 @@ func TestApprovedByMismatch(t *testing.T) {
 	t.Run("a user whose name has an invisible character cannot approve at all", func(t *testing.T) {
 		ra := pendingAction(t, ns, "")
 		ghost := newActor(t, ns, "gho\u200bst-"+uniq(""), nil, approverRules)
-		requireDenied(t, admissionenv.Approve(ctxFor(t), ghost.c, ra, ghost.name), "ApprovedByMismatch")
+		err := admissionenv.Approve(ctxFor(t), ghost.c, ra, ghost.name)
+		requireDenied(t, err, "ApprovedByMismatch")
+		// C2 review F-8: the message says what is wrong in plain words, not "something is
+		// writing for you": the person has a name the policy cannot compare as written.
+		assert.Contains(t, err.Error(), "invisible", "it names the cause")
+		assert.Contains(t, err.Error(), "username", "and the thing at fault")
+	})
+	t.Run("a proposer's unclean name says the same in ProposerMismatch", func(t *testing.T) {
+		ghost := newActor(t, ns, "gho\u200bst-"+uniq(""), nil, proposerRules)
+		err := ghost.c.Create(ctxFor(t), admissionenv.NewProposal(ns, uniq("p"), ghost.name))
+		requireDenied(t, err, "ProposerMismatch")
+		assert.Contains(t, err.Error(), "invisible")
 	})
 }
 
