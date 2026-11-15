@@ -535,12 +535,27 @@ func capVerdicts(verdicts []dorguv1.GateVerdict) []dorguv1.GateVerdict {
 			capped = append(capped, v)
 		}
 	}
+	left, leftNonPass := 0, 0
+	for i, v := range verdicts {
+		if !keep[i] {
+			left++
+			if v.Verdict != dorguv1.GateVerdictPass {
+				leftNonPass++
+			}
+		}
+	}
+	// What the approver is told about the refusals and clamps has to be true: they are kept
+	// before any pass, but there can be more of them than there is room for.
+	coverage := "every refusal and clamp is listed."
+	if leftNonPass > 0 {
+		coverage = fmt.Sprintf("%d refusals or clamps did not fit and are not listed, so read the plan's steps too.", leftNonPass)
+	}
 	return append(capped, dorguv1.GateVerdict{
 		Stage:     StageGuardrails,
 		Guardrail: GuardrailVerdictsTruncated,
 		Verdict:   dorguv1.GateVerdictPass,
-		Reason: fmt.Sprintf("%d more verdicts were left out of this record because the plan has many steps; "+
-			"only the first %d are listed (every refusal and clamp is among them).", len(verdicts)-kept, kept),
+		Reason: fmt.Sprintf("%d more verdicts were left out of this record because the plan has many steps; %s",
+			left, coverage),
 	})
 }
 

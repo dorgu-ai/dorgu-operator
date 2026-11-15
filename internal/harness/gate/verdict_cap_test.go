@@ -131,3 +131,40 @@ func TestCapVerdicts_KeepsEveryNonPassFirstInOrder(t *testing.T) {
 	}
 	assert.Equal(t, (MaxStatusVerdicts*2+9)/10, clamps, "every clamp survives")
 }
+
+// C2 review F-9: the summary line is the one an approver reads, so it must not say every
+// refusal and clamp is listed when some were left out.
+func TestCapVerdicts_TheSummaryIsTruthfulAboutWhatWasLeftOut(t *testing.T) {
+	build := func(nonPass, pass int) []dorguv1.GateVerdict {
+		var in []dorguv1.GateVerdict
+		for i := range nonPass {
+			in = append(in, dorguv1.GateVerdict{Stage: StageGuardrails, Guardrail: fmt.Sprintf("c%03d", i), Verdict: dorguv1.GateVerdictClamp})
+		}
+		for i := range pass {
+			in = append(in, dorguv1.GateVerdict{Stage: StageGuardrails, Guardrail: fmt.Sprintf("p%03d", i), Verdict: dorguv1.GateVerdictPass})
+		}
+		return in
+	}
+	summary := func(out []dorguv1.GateVerdict) string { return out[len(out)-1].Reason }
+
+	t.Run("only passes were left out: it may say every refusal and clamp is listed", func(t *testing.T) {
+		out := capVerdicts(build(3, 100))
+		require.Len(t, out, MaxStatusVerdicts)
+		assert.Contains(t, summary(out), "every refusal and clamp is listed")
+	})
+
+	t.Run("refusals or clamps were left out: it says how many and does not claim they are all here", func(t *testing.T) {
+		out := capVerdicts(build(64, 0)) // 64 clamps; room for 47
+		require.Len(t, out, MaxStatusVerdicts)
+		reason := summary(out)
+		assert.NotContains(t, reason, "every refusal and clamp is", "17 of them are not listed")
+		assert.Contains(t, reason, "17 refusals or clamps", "the count of the ones that did not fit")
+		assert.Contains(t, reason, "17 more verdicts", "and of everything left out")
+	})
+
+	t.Run("exactly the non-passes that fit: nothing important is missing", func(t *testing.T) {
+		out := capVerdicts(build(MaxStatusVerdicts-1, 10))
+		assert.Contains(t, summary(out), "every refusal and clamp is listed")
+		assert.Contains(t, summary(out), "10 more verdicts")
+	})
+}
