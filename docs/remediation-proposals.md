@@ -37,7 +37,7 @@ The whole spec is immutable (`self == oldSelf`). To change a request, write a ne
 
 ### The rationale is untrusted text
 
-`rationale` and the step `description` and `rationale` are text from the proposer. The operator removes control and invisible characters from them (terminal escapes, bidirectional and zero-width characters, Unicode tag characters, variation selectors and every other format character) and stores the rest. `proposer.username` is cleaned and cut to 253 characters the same way before it is copied into the action's provenance or a message. The rationale is copied into the converted action's `spec.explanation`, so it reaches the terminal of whoever approves the action: show it as machine-written text, and expect it to say anything.
+`rationale` and the step `description` and `rationale` are text from the proposer. The operator removes control and invisible characters from them (terminal escapes, bidirectional and zero-width characters, Unicode tag characters, variation selectors and every other format character) and stores the rest. `proposer.username` is never cleaned or cut: an identity is recorded exactly as it is or not at all, so a name with a control, format or invisible character, an empty one, or one over 253 characters is rejected with `Intake/ProposerInvalid`. The rationale is copied into the converted action's `spec.explanation`, so it reaches the terminal of whoever approves the action: show it as machine-written text, and expect it to say anything.
 
 No decision reads it. No guardrail, gate input or branch in the operator looks at it, so text that claims pre-approval or asks for a guardrail to be skipped changes nothing. It is also kept out of Dorgu's own planner: past actions' explanations are put in the model's prompt only when the action's provenance is the operator's own planner, never for an agent's action.
 
@@ -63,8 +63,9 @@ No decision reads it. No guardrail, gate input or branch in the operator looks a
 | `Intake` / `IncidentNotFound` | `incidentRef` names an incident that does not exist in the proposal's namespace. |
 | `Intake` / `IncidentTargetMismatch` | `incidentRef` names an incident detected on a different persona than `target`. An incident unlocks changes to its own persona and no other. |
 | `Intake` / `IncidentResolved` | `incidentRef` names an incident that is already `Resolved`. Dorgu's own planner never proposes against one. |
-| `Intake` / `ActionInvalid` | The API server refused the `RemediationAction` this proposal would become as invalid. Retrying cannot help, so it is final. The condition message carries the server's reason, cleaned and cut to 512 characters. |
+| `Intake` / `ActionInvalid` | The API server refused the `RemediationAction` this proposal would become as invalid. Retrying cannot help, so it is final. The condition message carries the server's reason, cleaned and cut to 512 characters. It is also the answer for an action this intake made earlier that lost its provenance, could not be deleted and has since been given a phase: the message names it, and it needs deleting by hand. |
 | `Intake` / `NotYetSupported` | `rollbackOf` is set. |
+| `Intake` / `ProposerInvalid` | `proposer.username` is empty, longer than 253 characters, or has a control, format or invisible character. The admission policy refuses the same names before they are stored. |
 | `Intake` / `TargetNamespaceMismatch` | The proposal's namespace is not `target.namespace`. A CRD validation rule cannot read `metadata.namespace`, so the operator enforces this. |
 
 Rejected proposals are kept for 7 days and then pruned. A converted proposal is owned by its action, so deleting the action prunes the proposal.
