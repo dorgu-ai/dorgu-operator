@@ -1,0 +1,270 @@
+---
+# Source: dorgu-operator/templates/admission-policies.yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: dorgu-proposal-identity
+  labels:
+    app.kubernetes.io/name: dorgu-operator
+    app.kubernetes.io/component: admission
+  annotations:
+    dorgu.io/admission-policy-version: "1"
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    matchPolicy: Equivalent
+    resourceRules:
+      - apiGroups: ["dorgu.io"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["remediationproposals", "remediationproposals/status"]
+        scope: Namespaced
+  variables:
+    - name: operator
+      expression: "'system:serviceaccount:dorgu-reference-ns:dorgu-reference-sa'"
+    - name: isOperator
+      expression: "request.userInfo.username == variables.operator"
+    # Absent (not empty) on a request for the resource itself.
+    - name: subResource
+      expression: "request.?subResource.orValue('')"
+  validations:
+    # A proposal says who proposed it, and the API server says who is asking: they must be
+    # the same name, written exactly, so a proposer cannot be recorded as someone else.
+    - expression: >-
+        request.operation != 'CREATE' ||
+        (object.spec.proposer.username == request.userInfo.username &&
+        !request.userInfo.username.matches(r'[\p{Cc}\p{Cf}\x{2028}\x{2029}\x{2060}-\x{206F}\x{FE00}-\x{FE0F}\x{E0000}-\x{E007F}\x{E0100}-\x{E01EF}]'))
+      message: "dorgu: ProposerMismatch: spec.proposer.username must be exactly the authenticated username. A name with control, format or invisible characters cannot be used."
+    # CRD validation cannot read metadata.namespace, so the namespace rule lives here.
+    - expression: >-
+        request.operation != 'CREATE' ||
+        object.metadata.namespace == object.spec.target.namespace
+      message: "dorgu: TargetNamespaceMismatch: a proposal must be created in the namespace of its target (metadata.namespace must equal spec.target.namespace)."
+    - expression: >-
+        request.operation != 'UPDATE' || object.spec == oldObject.spec
+      message: "dorgu: SpecImmutable: a proposal's spec cannot be changed after it is created. Write a new proposal instead."
+    # The operator answers every proposal in status; nobody else writes it.
+    - expression: >-
+        variables.subResource != 'status' || variables.isOperator
+      message: "dorgu: OperatorOnly: only the Dorgu operator writes a proposal's status."
+
+
+---
+# Source: dorgu-operator/templates/admission-policies.yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: dorgu-action-integrity
+  labels:
+    app.kubernetes.io/name: dorgu-operator
+    app.kubernetes.io/component: admission
+  annotations:
+    dorgu.io/admission-policy-version: "1"
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    matchPolicy: Equivalent
+    resourceRules:
+      - apiGroups: ["dorgu.io"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE"]
+        resources:
+          - remediationactions
+          - remediationactions/status
+          - incidentmemories
+          - incidentmemories/status
+        scope: Namespaced
+  variables:
+    - name: operator
+      expression: "'system:serviceaccount:dorgu-reference-ns:dorgu-reference-sa'"
+    - name: isOperator
+      expression: "request.userInfo.username == variables.operator"
+    # Absent (not empty) on a request for the resource itself.
+    - name: subResource
+      expression: "request.?subResource.orValue('')"
+    - name: isAction
+      expression: "request.kind.kind == 'RemediationAction'"
+    - name: isIncident
+      expression: "request.kind.kind == 'IncidentMemory'"
+    - name: newAnnotations
+      expression: "object.metadata.?annotations.orValue({})"
+    - name: oldAnnotations
+      expression: "request.operation == 'CREATE' ? {} : oldObject.metadata.?annotations.orValue({})"
+    - name: newLabels
+      expression: "object.metadata.?labels.orValue({})"
+    - name: oldLabels
+      expression: "request.operation == 'CREATE' ? {} : oldObject.metadata.?labels.orValue({})"
+    # Everything in a RemediationAction's status except the four fields a human writes
+    # (phase, approvedBy, approvedAt and their own two conditions). A test holds this list
+    # to the fields of the Go type, so a field added later cannot be left unprotected.
+    - name: operatorOwnedStatusUnchanged
+      expression: >-
+        request.operation == 'CREATE' ||
+        (object.?status.?appliedAt == oldObject.?status.?appliedAt &&
+        object.?status.?verificationResult == oldObject.?status.?verificationResult &&
+        object.?status.?currentStep == oldObject.?status.?currentStep &&
+        object.?status.?stepStatuses == oldObject.?status.?stepStatuses &&
+        object.?status.?gate == oldObject.?status.?gate &&
+        object.?status.?applyTicket == oldObject.?status.?applyTicket &&
+        object.?status.?conditions.orValue([]).filter(c, !(c.type in ['WorkloadPatched', 'RejectionReason']))
+        == oldObject.?status.?conditions.orValue([]).filter(c, !(c.type in ['WorkloadPatched', 'RejectionReason'])))
+  validations:
+    # Only the operator creates a RemediationAction: an agent proposes, and the proposal
+    # reconciler is the one place that turns a proposal into an action.
+    - expression: >-
+        request.operation != 'CREATE' || !variables.isAction || variables.isOperator
+      message: "dorgu: OperatorOnly: only the Dorgu operator creates RemediationActions. Propose a change with a RemediationProposal instead."
+    # An action's plan is what the human approved: nobody edits it, the operator included.
+    - expression: >-
+        request.operation != 'UPDATE' || !variables.isAction || object.spec == oldObject.spec
+      message: "dorgu: SpecImmutable: a RemediationAction's spec cannot be changed after it is created."
+    # dorgu.io/* annotations and labels carry operator state (the proposal UID, recurrence
+    # counts, when a signal was answered or escalated). Only the operator writes them.
+    - expression: >-
+        variables.isOperator ||
+        (variables.newAnnotations.all(k, !k.startsWith('dorgu.io/') ||
+        (k in variables.oldAnnotations && variables.oldAnnotations[k] == variables.newAnnotations[k])) &&
+        variables.oldAnnotations.all(k, !k.startsWith('dorgu.io/') || k in variables.newAnnotations))
+      message: "dorgu: OperatorOnly: annotations under dorgu.io/ are written only by the Dorgu operator."
+    - expression: >-
+        variables.isOperator ||
+        (variables.newLabels.all(k, !k.startsWith('dorgu.io/') ||
+        (k in variables.oldLabels && variables.oldLabels[k] == variables.newLabels[k])) &&
+        variables.oldLabels.all(k, !k.startsWith('dorgu.io/') || k in variables.newLabels))
+      message: "dorgu: OperatorOnly: labels under dorgu.io/ are written only by the Dorgu operator."
+    - expression: >-
+        !variables.isIncident || variables.subResource != 'status' || variables.isOperator
+      message: "dorgu: OperatorOnly: only the Dorgu operator writes an IncidentMemory's status."
+    - expression: >-
+        variables.isOperator || !variables.isAction || variables.subResource != 'status' ||
+        variables.operatorOwnedStatusUnchanged
+      message: "dorgu: OperatorOnly: the gate's record, the apply ticket, the step progress and every phase after the decision are written only by the Dorgu operator."
+
+
+---
+# Source: dorgu-operator/templates/admission-policies.yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: dorgu-approval-gate
+  labels:
+    app.kubernetes.io/name: dorgu-operator
+    app.kubernetes.io/component: admission
+  annotations:
+    dorgu.io/admission-policy-version: "1"
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    matchPolicy: Equivalent
+    resourceRules:
+      - apiGroups: ["dorgu.io"]
+        apiVersions: ["*"]
+        operations: ["UPDATE"]
+        resources: ["remediationactions/status"]
+        scope: Namespaced
+  variables:
+    - name: operator
+      expression: "'system:serviceaccount:dorgu-reference-ns:dorgu-reference-sa'"
+    - name: user
+      expression: "request.userInfo.username"
+    - name: isOperator
+      expression: "variables.user == variables.operator"
+    - name: oldPhase
+      expression: "oldObject.?status.?phase.orValue('')"
+    - name: newPhase
+      expression: "object.?status.?phase.orValue('')"
+    - name: oldApprovedBy
+      expression: "oldObject.?status.?approvedBy.orValue('')"
+    - name: newApprovedBy
+      expression: "object.?status.?approvedBy.orValue('')"
+    - name: oldApprovedAt
+      expression: "oldObject.?status.?approvedAt.orValue('')"
+    - name: newApprovedAt
+      expression: "object.?status.?approvedAt.orValue('')"
+    # Who proposed the action: the proposer the operator recorded. An action made before
+    # provenance existed has none and was proposed by the operator itself.
+    - name: proposer
+      expression: "object.spec.?provenance.?proposer.?username.orValue(variables.operator)"
+    # The two conditions the CLI writes: the heal record and the reason for a rejection.
+    - name: humanConditionsChanged
+      expression: >-
+        object.?status.?conditions.orValue([]).filter(c, c.type in ['WorkloadPatched', 'RejectionReason'])
+        != oldObject.?status.?conditions.orValue([]).filter(c, c.type in ['WorkloadPatched', 'RejectionReason'])
+    - name: humanChange
+      expression: >-
+        variables.newPhase != variables.oldPhase || variables.newApprovedBy != variables.oldApprovedBy ||
+        variables.newApprovedAt != variables.oldApprovedAt || variables.humanConditionsChanged
+  validations:
+    # A service account is never a human. The operator is one too: it never approves.
+    - expression: >-
+        variables.isOperator ? !(variables.newPhase == 'Approved' && variables.oldPhase != 'Approved') :
+        (!variables.humanChange || !variables.user.startsWith('system:'))
+      message: "dorgu: ServiceAccountCannotApprove: approving or rejecting is a human decision. A service account (an agent, a CI job, the operator) cannot make it."
+    # The one transition a human makes is Pending to Approved or Rejected; approvedBy and
+    # approvedAt are written with it and at no other time.
+    - expression: >-
+        variables.isOperator || !variables.humanChange ||
+        (variables.newPhase != variables.oldPhase ?
+        (variables.oldPhase == 'Pending' && variables.newPhase in ['Approved', 'Rejected']) :
+        (variables.newApprovedBy == variables.oldApprovedBy && variables.newApprovedAt == variables.oldApprovedAt))
+      message: "dorgu: InvalidTransition: a person can only move a remediation from Pending to Approved or Rejected, and approvedBy and approvedAt are written only with that decision."
+    # Plain status-patch RBAC is not enough: approving needs the approve verb (rejecting, the
+    # reject verb) on remediationactions in this namespace.
+    - expression: >-
+        variables.isOperator || !variables.humanChange ||
+        authorizer.group('dorgu.io').resource('remediationactions').namespace(object.metadata.namespace)
+        .check(variables.newPhase == 'Rejected' ? 'reject' : 'approve').allowed()
+      message: "dorgu: MissingApproveVerb: this needs the approve verb (reject, for a rejection) on remediationactions in this namespace. Ask a cluster admin to bind the dorgu-approver role."
+    # The decision records who made it, and only the authenticated user can be that person.
+    # This is denied, not rewritten: mutating admission is not generally available.
+    - expression: >-
+        variables.isOperator || variables.newPhase == variables.oldPhase ||
+        (variables.newApprovedBy == variables.user && !variables.user.matches(r'[\p{Cc}\p{Cf}\x{2028}\x{2029}\x{2060}-\x{206F}\x{FE00}-\x{FE0F}\x{E0000}-\x{E007F}\x{E0100}-\x{E01EF}]'))
+      message: "dorgu: ApprovedByMismatch: status.approvedBy must be exactly the authenticated username, for a rejection as well as an approval."
+    - expression: >-
+        variables.isOperator || variables.newPhase == variables.oldPhase ||
+        variables.newApprovedBy != variables.proposer
+      message: "dorgu: ApproverIsProposer: the person who proposed a remediation cannot be the one who decides it. Ask someone else."
+
+
+---
+# Source: dorgu-operator/templates/admission-policies.yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: dorgu-proposal-identity
+  labels:
+    app.kubernetes.io/name: dorgu-operator
+    app.kubernetes.io/component: admission
+spec:
+  policyName: dorgu-proposal-identity
+  validationActions: ["Deny", "Audit"]
+
+
+---
+# Source: dorgu-operator/templates/admission-policies.yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: dorgu-action-integrity
+  labels:
+    app.kubernetes.io/name: dorgu-operator
+    app.kubernetes.io/component: admission
+spec:
+  policyName: dorgu-action-integrity
+  validationActions: ["Deny", "Audit"]
+
+
+---
+# Source: dorgu-operator/templates/admission-policies.yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: dorgu-approval-gate
+  labels:
+    app.kubernetes.io/name: dorgu-operator
+    app.kubernetes.io/component: admission
+spec:
+  policyName: dorgu-approval-gate
+  validationActions: ["Deny", "Audit"]
+

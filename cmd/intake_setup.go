@@ -17,6 +17,8 @@ limitations under the License.
 package main
 
 import (
+	"context"
+	"fmt"
 	"sync"
 
 	"github.com/go-logr/logr"
@@ -38,6 +40,54 @@ type intakeSetup struct {
 
 	// Preflight says whether the intake is open.
 	Preflight *intake.Preflight
+
+	// identity answers "who is the operator" for the checks that compare the cluster with
+	// it: the API server's answer once verifyIdentity has wired one.
+	identity *verifiedIdentity
+}
+
+// verifiedIdentity is the operator's username for the admission policy content check. The
+// configured name is a claim; once a WhoAmI is wired (verifyIdentity) every answer is first
+// confirmed with the API server, and a name the API server does not agree with is an error,
+// never a pass. Until one is wired it is the configured claim, which is only the case when
+// the clientset that would verify it could not be built: the operator-identity and RBAC
+// checks fail then and the intake is closed.
+type verifiedIdentity struct {
+	claimed string
+	err     error
+
+	mu     sync.RWMutex
+	whoAmI intake.WhoAmI
+}
+
+func (v *verifiedIdentity) setWhoAmI(w intake.WhoAmI) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.whoAmI = w
+}
+
+// Username implements intake.UsernameSource.
+func (v *verifiedIdentity) Username(ctx context.Context) (string, error) {
+	if v.err != nil {
+		return "", v.err
+	}
+	if v.claimed == "" {
+		return "", intake.ErrOperatorIdentity
+	}
+	v.mu.RLock()
+	whoAmI := v.whoAmI
+	v.mu.RUnlock()
+	if whoAmI == nil {
+		return v.claimed, nil
+	}
+	actual, err := whoAmI(ctx)
+	switch {
+	case err != nil:
+		return "", err
+	case actual != v.claimed:
+		return "", fmt.Errorf("the API server authenticates the operator as %q, not %q", actual, v.claimed)
+	}
+	return actual, nil
 }
 
 // newIntakeSetup works out the operator's identity and builds the preflight with
@@ -50,13 +100,15 @@ func newIntakeSetup(reader client.Reader, operatorNS string, log logr.Logger) in
 	if err != nil {
 		log.Error(err, "the proposal intake is closed: Dorgu will not propose or plan until the operator knows who it is")
 	}
+	identity := &verifiedIdentity{claimed: username, err: err}
 	return intakeSetup{
 		Username: username,
+		identity: identity,
 		Preflight: intake.NewPreflight(log,
 			intake.OperatorIdentityCheck(err),
 			intake.ProposalCRDCheck(reader),
 			intake.ActionProvenanceCheck(reader),
-			intake.AdmissionPoliciesCheck(reader),
+			intake.AdmissionPoliciesCheck(reader, identity.Username),
 		),
 	}
 }
@@ -99,6 +151,7 @@ func (s intakeSetup) verifyIdentity(whoAmI intake.WhoAmI) {
 		return
 	}
 	s.Preflight.Add(intake.IdentityVerifiedCheck(s.Username, whoAmI))
+	s.identity.setWhoAmI(whoAmI)
 }
 
 // lateRegistration runs register once the intake's CRD preflight first passes, then

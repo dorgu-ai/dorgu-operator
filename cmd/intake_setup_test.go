@@ -19,6 +19,7 @@ package main
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -82,8 +83,10 @@ func TestNewIntakeSetup_IsClosedForEachReasonAndOpenWhenAllHold(t *testing.T) {
 		t.Fatalf("username must not be defaulted, got %q", noIdentity.Username)
 	}
 	got = failureReasons(noIdentity.Preflight.Run(context.Background()))
-	if len(got) != 1 || got[0] != intake.ReasonOperatorIdentityUnknown {
-		t.Fatalf("with no identity: %v", got)
+	// The policy content check cannot say whose policies to expect, so it is unverified as
+	// well: tickets stop (C2 F-3).
+	if want := []string{intake.ReasonOperatorIdentityUnknown, intake.ReasonAdmissionPoliciesUnverified}; !slices.Equal(got, want) {
+		t.Fatalf("with no identity: %v, want %v", got, want)
 	}
 }
 
@@ -140,16 +143,18 @@ func TestNewIntakeSetup_VerifyIdentityFailsClosedOnAMismatch(t *testing.T) {
 	wrong := newIntakeSetup(crdOnlyClient(t, installedCRDs()...), testOperatorNS, logr.Discard())
 	wrong.verifyIdentity(who("system:serviceaccount:dorgu-system:default"))
 	got := failureReasons(wrong.Preflight.Run(context.Background()))
-	if len(got) != 1 || got[0] != intake.ReasonOperatorIdentityMismatch {
-		t.Fatalf("a wrong identity: %v", got)
+	// The mismatch, and the policy check, which compares the cluster with the identity the
+	// API server confirms, not the one claimed, so it fails too and tickets stop.
+	if want := []string{intake.ReasonAdmissionPoliciesUnverified, intake.ReasonOperatorIdentityMismatch}; !slices.Equal(got, want) {
+		t.Fatalf("a wrong identity: %v, want %v", got, want)
 	}
 
 	t.Setenv(intake.ServiceAccountEnv, "")
 	none := newIntakeSetup(crdOnlyClient(t, installedCRDs()...), testOperatorNS, logr.Discard())
 	none.verifyIdentity(who("anyone"))
 	got = failureReasons(none.Preflight.Run(context.Background()))
-	if len(got) != 1 || got[0] != intake.ReasonOperatorIdentityUnknown {
-		t.Fatalf("with no configured identity there is nothing to verify, and it is already closed: %v", got)
+	if want := []string{intake.ReasonOperatorIdentityUnknown, intake.ReasonAdmissionPoliciesUnverified}; !slices.Equal(got, want) {
+		t.Fatalf("with no configured identity there is nothing to verify, and it is already closed: %v, want %v", got, want)
 	}
 }
 
@@ -225,4 +230,35 @@ func TestTicketGuardFor(t *testing.T) {
 		t.Fatal("a preflight with failing policies blocks tickets")
 	}
 	setup.verifyRBAC(nil) // nothing to verify with: adds nothing, never panics
+}
+
+// The policy content check asks the API server who the operator is, every run, and refuses
+// a name the API server does not give it.
+func TestVerifiedIdentity(t *testing.T) {
+	ctx := context.Background()
+	who := func(name string, err error) intake.WhoAmI {
+		return func(context.Context) (string, error) { return name, err }
+	}
+
+	cases := []struct {
+		name    string
+		v       *verifiedIdentity
+		want    string
+		wantErr bool
+	}{
+		{"claim, nothing wired to verify it", &verifiedIdentity{claimed: "u"}, "u", false},
+		{"the API server agrees", &verifiedIdentity{claimed: "u", whoAmI: who("u", nil)}, "u", false},
+		{"the API server says someone else", &verifiedIdentity{claimed: "u", whoAmI: who("v", nil)}, "", true},
+		{"the API server cannot be asked", &verifiedIdentity{claimed: "u", whoAmI: who("", errors.New("down"))}, "", true},
+		{"no claim", &verifiedIdentity{}, "", true},
+		{"a claim that failed", &verifiedIdentity{claimed: "u", err: errors.New("bad env")}, "", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := tc.v.Username(ctx)
+			if (err != nil) != tc.wantErr || got != tc.want {
+				t.Fatalf("Username() = %q, %v; want %q, error %v", got, err, tc.want, tc.wantErr)
+			}
+		})
+	}
 }

@@ -106,15 +106,34 @@ func (p *Preflight) TicketsBlocked() *Failure {
 	return nil
 }
 
+// UsernameSource says who the operator is, for a check that compares what the cluster holds
+// with it. It is the API server's answer (a SelfSubjectReview), not a claim.
+type UsernameSource func(ctx context.Context) (string, error)
+
 // AdmissionPoliciesCheck is the preflight check that the admission policies and their
-// bindings exist and would deny: failurePolicy Fail (or unset, which is Fail), every
-// binding on its own policy with the Deny action and no narrowing, and the policy
-// version this operator expects. reader should be uncached.
+// bindings exist and say what this release of the chart says (C2 review F-3): failurePolicy
+// Fail (or unset, which is Fail), every binding on its own policy with the Deny action and
+// no narrowing, the policy version this operator expects, and the content itself. Each
+// policy must trust the operator's verified username (operator) as "the operator", and its
+// matchConstraints, matchConditions, variables and validations, and the binding's actions,
+// policy, parameters and matches, must hash the same as the embedded copy of the chart's
+// rendered policies for that username (ReferencePolicies). A policy that was edited,
+// truncated or mis-templated is AdmissionPoliciesWeakened; the version annotation is only a
+// hint. reader should be uncached.
 //
-// It is run every minute, so policies deleted after startup close the intake and stop
-// tickets within a minute (P2-D8).
-func AdmissionPoliciesCheck(reader client.Reader) Check {
+// It is run every minute, and again just before every apply ticket, so policies changed
+// after startup close the intake and stop tickets (P2-D8).
+func AdmissionPoliciesCheck(reader client.Reader, operator UsernameSource) Check {
 	return Check{Name: "admission-policies", Reason: ReasonAdmissionPoliciesMissing, Run: func(ctx context.Context) error {
+		username, err := verifiedUsername(ctx, operator)
+		if err != nil {
+			return &reasonedError{ReasonAdmissionPoliciesUnverified, err}
+		}
+		referencePolicies, referenceBindings, err := ReferencePolicies(username)
+		if err != nil {
+			return &reasonedError{ReasonAdmissionPoliciesUnverified, err}
+		}
+
 		var missing, weak, outdated []string
 		for _, name := range AdmissionPolicyNames {
 			var policy admissionregistrationv1.ValidatingAdmissionPolicy
@@ -129,6 +148,9 @@ func AdmissionPoliciesCheck(reader client.Reader) Check {
 				}
 				if got := policy.Annotations[AdmissionPolicyVersionAnnotation]; got != AdmissionPolicyVersion {
 					outdated = append(outdated, fmt.Sprintf("policy %s is version %q, this operator expects %q", name, got, AdmissionPolicyVersion))
+				} else if ref := findPolicy(referencePolicies, name); ref != nil {
+					// The annotation is a hint; the content is the proof.
+					weak = append(weak, policyContentProblems(&policy, ref, username)...)
 				}
 			}
 
@@ -140,6 +162,9 @@ func AdmissionPoliciesCheck(reader client.Reader) Check {
 				return unverified(ReasonAdmissionPoliciesUnverified, "validatingadmissionpolicybindings", name, err)
 			default:
 				weak = append(weak, bindingProblems(name, &binding)...)
+				if ref := findBinding(referenceBindings, name); ref != nil {
+					weak = append(weak, bindingContentProblems(&binding, ref)...)
+				}
 			}
 		}
 
@@ -151,7 +176,7 @@ func AdmissionPoliciesCheck(reader client.Reader) Check {
 					"Until then no proposal is converted and no apply ticket is issued", strings.Join(missing, ", "))}
 		case len(weak) > 0:
 			return &reasonedError{ReasonAdmissionPoliciesWeakened, fmt.Errorf(
-				"the admission policies would not deny (%s): restore them from the chart", strings.Join(weak, "; "))}
+				"the admission policies would not deny (%s): restore them from the chart", strings.Join(dedupe(weak), "; "))}
 		case len(outdated) > 0:
 			return &reasonedError{ReasonAdmissionPoliciesOutdated, fmt.Errorf(
 				"the admission policies are from another release (%s): run helm upgrade, or re-apply config/admission/policies.yaml from this release",
@@ -159,6 +184,53 @@ func AdmissionPoliciesCheck(reader client.Reader) Check {
 		}
 		return nil
 	}}
+}
+
+// verifiedUsername asks source who the operator is. It never guesses: no source, an error or
+// an empty name is a reason the content cannot be checked.
+func verifiedUsername(ctx context.Context, source UsernameSource) (string, error) {
+	if source == nil {
+		return "", errors.New("the operator cannot say who it is, so the admission policies cannot be compared with what it expects")
+	}
+	username, err := source(ctx)
+	switch {
+	case err != nil:
+		return "", fmt.Errorf("the operator could not confirm who it is, so the admission policies cannot be compared with what it expects: %w", err)
+	case username == "":
+		return "", errors.New("the operator's identity is empty, so the admission policies cannot be compared with what it expects")
+	}
+	return username, nil
+}
+
+func findPolicy(list []admissionregistrationv1.ValidatingAdmissionPolicy, name string) *admissionregistrationv1.ValidatingAdmissionPolicy {
+	for i := range list {
+		if list[i].Name == name {
+			return &list[i]
+		}
+	}
+	return nil
+}
+
+func findBinding(list []admissionregistrationv1.ValidatingAdmissionPolicyBinding, name string) *admissionregistrationv1.ValidatingAdmissionPolicyBinding {
+	for i := range list {
+		if list[i].Name == name {
+			return &list[i]
+		}
+	}
+	return nil
+}
+
+// dedupe drops repeated problems, keeping the order.
+func dedupe(in []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, s := range in {
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // bindingProblems says what keeps a binding from denying.

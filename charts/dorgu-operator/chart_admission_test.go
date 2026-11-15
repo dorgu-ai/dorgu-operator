@@ -80,8 +80,10 @@ func renderedPolicies(t *testing.T, sets ...string) (policyList, bindingList) {
 // hack/render-admission-policies.sh, and this fails the moment the two differ.
 func TestAdmissionPoliciesInConfigAreTheChartsRendered(t *testing.T) {
 	requireHelm(t)
-	fresh := filepath.Join(t.TempDir(), "policies.yaml")
-	out, err := exec.Command("../../hack/render-admission-policies.sh", fresh).CombinedOutput()
+	dir := t.TempDir()
+	fresh := filepath.Join(dir, "policies.yaml")
+	// Both outputs go to the temp dir: the test never touches the committed files.
+	out, err := exec.Command("../../hack/render-admission-policies.sh", fresh, filepath.Join(dir, "reference.yaml")).CombinedOutput()
 	require.NoError(t, err, string(out))
 
 	want, err := os.ReadFile(fresh)
@@ -91,6 +93,28 @@ func TestAdmissionPoliciesInConfigAreTheChartsRendered(t *testing.T) {
 	require.Equal(t, string(want), string(have),
 		"config/admission/policies.yaml differs from the chart's policies: "+
 			"run `make admission-policies` and commit the result")
+}
+
+// The operator embeds a copy of the rendered policies (internal/intake/admission_reference.yaml)
+// and compares what the cluster holds with it (C2 review F-3). It is rendered by the same
+// script from the same template, and this fails the moment it is stale, so a rule changed in
+// the chart cannot leave the operator checking against the old one.
+func TestAdmissionReferenceInTheOperatorIsTheChartsRendered(t *testing.T) {
+	requireHelm(t)
+	dir := t.TempDir()
+	fresh := filepath.Join(dir, "reference.yaml")
+	out, err := exec.Command("../../hack/render-admission-policies.sh", filepath.Join(dir, "policies.yaml"), fresh).CombinedOutput()
+	require.NoError(t, err, string(out))
+
+	want, err := os.ReadFile(fresh)
+	require.NoError(t, err)
+	have, err := os.ReadFile("../../internal/intake/admission_reference.yaml")
+	require.NoError(t, err)
+	require.Equal(t, string(want), string(have),
+		"internal/intake/admission_reference.yaml differs from the chart's policies: "+
+			"run `make admission-policies` and commit the result")
+	assert.Contains(t, string(have), intake.ReferenceOperatorUsername,
+		"the reference is rendered with the stand-in identity the operator swaps its own for")
 }
 
 func TestAdmissionPolicies_ShapeAndFailClosed(t *testing.T) {

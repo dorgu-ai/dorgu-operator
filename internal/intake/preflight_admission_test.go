@@ -45,7 +45,23 @@ func admissionScheme(t *testing.T) *runtime.Scheme {
 	return s
 }
 
+// policy is the chart's policy called name for the test operator, as the cluster holds it
+// (the embedded reference, which is the chart's rendered template), then changed by mutate.
 func policy(name string, mutate ...func(*admissionregistrationv1.ValidatingAdmissionPolicy)) *admissionregistrationv1.ValidatingAdmissionPolicy {
+	policies, _, err := ReferencePolicies(TestOperatorUsername)
+	if err != nil {
+		panic(err)
+	}
+	for i := range policies {
+		if policies[i].Name == name {
+			p := policies[i].DeepCopy()
+			for _, m := range mutate {
+				m(p)
+			}
+			return p
+		}
+	}
+	// Not one of the chart's policies: a bare one, for the cases that are about its absence.
 	fail := admissionregistrationv1.Fail
 	p := &admissionregistrationv1.ValidatingAdmissionPolicy{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Annotations: map[string]string{AdmissionPolicyVersionAnnotation: AdmissionPolicyVersion}},
@@ -57,7 +73,12 @@ func policy(name string, mutate ...func(*admissionregistrationv1.ValidatingAdmis
 	return p
 }
 
+// binding is the chart's binding called name, pointed at policyName, then changed by mutate.
 func binding(name, policyName string, mutate ...func(*admissionregistrationv1.ValidatingAdmissionPolicyBinding)) *admissionregistrationv1.ValidatingAdmissionPolicyBinding {
+	_, bindings, err := ReferencePolicies(TestOperatorUsername)
+	if err != nil {
+		panic(err)
+	}
 	b := &admissionregistrationv1.ValidatingAdmissionPolicyBinding{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
 		Spec: admissionregistrationv1.ValidatingAdmissionPolicyBindingSpec{
@@ -65,10 +86,25 @@ func binding(name, policyName string, mutate ...func(*admissionregistrationv1.Va
 			ValidationActions: []admissionregistrationv1.ValidationAction{admissionregistrationv1.Deny, admissionregistrationv1.Audit},
 		},
 	}
+	for i := range bindings {
+		if bindings[i].Name == name {
+			b = bindings[i].DeepCopy()
+			b.Spec.PolicyName = policyName
+		}
+	}
 	for _, m := range mutate {
 		m(b)
 	}
 	return b
+}
+
+// usernameFor is the verified username the tests give the check.
+func usernameFor(username string) UsernameSource {
+	return func(context.Context) (string, error) { return username, nil }
+}
+
+func policiesCheck(reader client.Reader) Check {
+	return AdmissionPoliciesCheck(reader, usernameFor(TestOperatorUsername))
 }
 
 func installedPolicies(t *testing.T) []client.Object {
@@ -143,7 +179,7 @@ func TestAdmissionPoliciesCheck(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := AdmissionPoliciesCheck(policyReader(t, tc.objs...)).Run(context.Background())
+			err := policiesCheck(policyReader(t, tc.objs...)).Run(context.Background())
 			if tc.reason == "" {
 				require.NoError(t, err)
 				return
@@ -168,7 +204,7 @@ func TestAdmissionPoliciesCheck_AReadErrorIsAFailureNotAPass(t *testing.T) {
 			return apierrors.NewForbidden(schema.GroupResource{Group: "admissionregistration.k8s.io", Resource: "validatingadmissionpolicies"}, key.Name, errors.New("no"))
 		}})
 
-	err := AdmissionPoliciesCheck(forbidden).Run(context.Background())
+	err := policiesCheck(forbidden).Run(context.Background())
 
 	require.Error(t, err)
 	assert.Equal(t, ReasonAdmissionPoliciesUnverified, failureReason(err, "fallback"))

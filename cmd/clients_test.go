@@ -192,22 +192,17 @@ func installedCRDs() []client.Object {
 		crd(intake.ProposalCRDName, "v1alpha1", "steps"),
 		crd(intake.ActionCRDName, "v1", "provenance", "steps"),
 	}
-	// The admission policies and bindings the preflight reads, as the chart installs them.
-	fail := admissionregistrationv1.Fail
-	for _, name := range intake.AdmissionPolicyNames {
-		objs = append(objs,
-			&admissionregistrationv1.ValidatingAdmissionPolicy{
-				ObjectMeta: metav1.ObjectMeta{Name: name, Annotations: map[string]string{
-					intake.AdmissionPolicyVersionAnnotation: intake.AdmissionPolicyVersion}},
-				Spec: admissionregistrationv1.ValidatingAdmissionPolicySpec{FailurePolicy: &fail},
-			},
-			&admissionregistrationv1.ValidatingAdmissionPolicyBinding{
-				ObjectMeta: metav1.ObjectMeta{Name: name},
-				Spec: admissionregistrationv1.ValidatingAdmissionPolicyBindingSpec{
-					PolicyName:        name,
-					ValidationActions: []admissionregistrationv1.ValidationAction{admissionregistrationv1.Deny},
-				},
-			})
+	// The admission policies and bindings the preflight reads and compares, as the chart
+	// installs them for the operator these tests configure (intake.TestOperatorUsername).
+	policies, bindings, err := intake.ReferencePolicies(intake.TestOperatorUsername)
+	if err != nil {
+		panic(err)
+	}
+	for i := range policies {
+		objs = append(objs, &policies[i])
+	}
+	for i := range bindings {
+		objs = append(objs, &bindings[i])
 	}
 	return objs
 }
