@@ -19,6 +19,7 @@ package adversarial
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 
@@ -135,10 +136,12 @@ func rollbackActions(t *testing.T, ns string) []dorguv1.RemediationAction {
 	return out
 }
 
-// OP-20: a rollback of an action that never applied anything: one still Pending, one
-// Failed with no ticket, one Rejected. There is no recorded change, so there is nothing
-// to restore; a rollback proposal must not become a way to write a value Dorgu never
-// recorded.
+// OP-20: a rollback of an action that never applied anything, or has not finished
+// applying it: one still Pending, one Failed with no ticket, one Rejected, and two that
+// hold a real apply ticket and a real baseline but are still Applying or Verifying (the
+// ticket alone is not proof the change settled, and a restore beside a change in flight
+// would race it). There is nothing settled to restore; a rollback proposal must not
+// become a way to write a value Dorgu never recorded, or to cut across an apply.
 func TestOP20RollbackOfAnActionThatNeverApplied(t *testing.T) {
 	ns := newNamespace(t, "op-20")
 	createPersona(t, ns)
@@ -158,21 +161,40 @@ func TestOP20RollbackOfAnActionThatNeverApplied(t *testing.T) {
 
 	p := intakeProcessor()
 	reasons := map[string]string{}
-	for _, target := range []*dorguv1.RemediationAction{pending, failed, rejected} {
-		out := process(t, p, rollbackProposalFor(ns, "rb-"+target.Name, alicePerson, target.Name))
-		reasons[target.Name] = "converted"
+	rollbackReason := func(prefix string, target *dorguv1.RemediationAction, ns string) {
+		out := process(t, p, rollbackProposalFor(ns, "rb-"+strings.ToLower(prefix)+target.Name, alicePerson, target.Name))
+		reasons[prefix+target.Name] = "converted"
 		if out.Rejection != nil {
-			reasons[target.Name] = out.Rejection.Reason
+			reasons[prefix+target.Name] = out.Rejection.Reason
 		}
 	}
+	for _, target := range []*dorguv1.RemediationAction{pending, failed, rejected} {
+		rollbackReason("", target, ns)
+	}
 
-	blocked := len(rollbackActions(t, ns)) == 0 && personaMemory(t, ns) == baselineMemory
+	// Real tickets, real baselines, no settled outcome yet.
+	inFlight := map[string]int{}
+	for _, phase := range []string{"Applying", "Verifying"} {
+		fixtureNS := appliedFixture(t, "op-20-"+strings.ToLower(phase))
+		var ra dorguv1.RemediationAction
+		key := client.ObjectKey{Namespace: fixtureNS, Name: rollbackRA}
+		if err := k8sClient.Get(context.Background(), key, &ra); err != nil {
+			t.Fatalf("reading the fixture action: %v", err)
+		}
+		setPhase(t, &ra, phase)
+		rollbackReason(phase+"-", &ra, fixtureNS)
+		inFlight[phase] = len(rollbackActions(t, fixtureNS))
+	}
+
+	blocked := len(rollbackActions(t, ns)) == 0 && personaMemory(t, ns) == baselineMemory &&
+		inFlight["Applying"] == 0 && inFlight["Verifying"] == 0
 	for _, reason := range reasons {
 		blocked = blocked && reason == dorguv1alpha1.ReasonRollbackNotApplied
 	}
 	Expect(t, "OP-20", blocked, fmt.Sprintf(
-		"rollback proposals for never-applied actions ended %v; rollback actions made: %d; persona memory %s",
-		reasons, len(rollbackActions(t, ns)), personaMemory(t, ns)))
+		"rollback proposals for actions with no settled change ended %v; "+
+			"rollback actions made: %d (in flight: %v); persona memory %s",
+		reasons, len(rollbackActions(t, ns)), inFlight, personaMemory(t, ns)))
 }
 
 // OP-21: a rollback proposal that carries its own steps: a 16x memory patch, as if the
