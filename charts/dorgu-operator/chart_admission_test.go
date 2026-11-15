@@ -30,6 +30,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
+	"sigs.k8s.io/yaml"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/intake"
@@ -80,20 +81,127 @@ func renderedPolicies(t *testing.T, sets ...string) (policyList, bindingList) {
 // hack/render-admission-policies.sh, and this fails the moment the two differ.
 func TestAdmissionPoliciesInConfigAreTheChartsRendered(t *testing.T) {
 	requireHelm(t)
-	dir := t.TempDir()
-	fresh := filepath.Join(dir, "policies.yaml")
-	// Both outputs go to the temp dir: the test never touches the committed files.
-	script := "../../hack/render-admission-policies.sh"
-	out, err := exec.Command(script, fresh, filepath.Join(dir, "reference.yaml")).CombinedOutput()
-	require.NoError(t, err, string(out))
+	// Both outputs go to a temp dir: the test never touches the committed files.
+	fresh, _ := renderScript(t, t.TempDir())
 
-	want, err := os.ReadFile(fresh)
-	require.NoError(t, err)
-	have, err := os.ReadFile("../../config/admission/policies.yaml")
-	require.NoError(t, err)
-	require.Equal(t, string(want), string(have),
+	requireSameDocuments(t, fresh, "../../config/admission/policies.yaml",
 		"config/admission/policies.yaml differs from the chart's policies: "+
 			"run `make admission-policies` and commit the result")
+}
+
+// renderScript runs hack/render-admission-policies.sh into dir. The parity tests compare
+// parsed documents, which every Helm release renders the same way, so they accept the Helm on
+// PATH; only a person regenerating the committed files is held to the pinned version.
+func renderScript(t *testing.T, dir string) (policies, reference string) {
+	t.Helper()
+	policies, reference = filepath.Join(dir, "policies.yaml"), filepath.Join(dir, "reference.yaml")
+	cmd := exec.Command("../../hack/render-admission-policies.sh", policies, reference)
+	cmd.Env = append(os.Environ(), "DORGU_HELM_ANY_VERSION=1")
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+	return policies, reference
+}
+
+// yamlDocuments parses a multi-document YAML file into one value per document, in order.
+// Comment-only and empty documents are skipped. Helm releases differ in the blank lines they
+// leave around the `---` separators (v4.1.4 renders none, v4.3.1 two), which is not content.
+func yamlDocuments(t *testing.T, raw string) []map[string]any {
+	t.Helper()
+	var docs []map[string]any
+	for doc := range strings.SplitSeq(raw, "\n---") {
+		var parsed map[string]any
+		require.NoError(t, yaml.Unmarshal([]byte(doc), &parsed))
+		if len(parsed) == 0 {
+			continue
+		}
+		docs = append(docs, parsed)
+	}
+	return docs
+}
+
+// requireSameDocuments fails unless the two files hold the same YAML documents in the same order.
+func requireSameDocuments(t *testing.T, wantFile, haveFile, message string) {
+	t.Helper()
+	want, err := os.ReadFile(wantFile)
+	require.NoError(t, err)
+	have, err := os.ReadFile(haveFile)
+	require.NoError(t, err)
+	wantDocs := yamlDocuments(t, string(want))
+	require.NotEmpty(t, wantDocs, "the render produced no documents")
+	require.Equal(t, wantDocs, yamlDocuments(t, string(have)), message)
+}
+
+// C2 re-review N-2: the committed files were rendered by one Helm release and CI renders with
+// another. What is compared is the content, never the whitespace between documents.
+func TestYAMLDocumentsIgnoreTheBlankLinesBetweenDocumentsButNotContentOrOrder(t *testing.T) {
+	base := "# header\na: 1\nb:\n  - x\n---\nc: 2\n"
+	same := "# header\na: 1\nb:\n  - x\n\n\n---\n\nc: 2\n\n"
+	assert.Equal(t, yamlDocuments(t, base), yamlDocuments(t, same))
+	require.Len(t, yamlDocuments(t, base), 2)
+
+	assert.NotEqual(t, yamlDocuments(t, base), yamlDocuments(t, "# header\na: 1\nb:\n  - x\n---\nc: 3\n"), "content differs")
+	assert.NotEqual(t, yamlDocuments(t, base), yamlDocuments(t, "c: 2\n---\na: 1\nb:\n  - x\n"), "order differs")
+	assert.NotEqual(t, yamlDocuments(t, base), yamlDocuments(t, "a: 1\nb:\n  - x\n"), "a document is missing")
+}
+
+// hack/render-admission-policies.sh refuses any Helm release but the one CI pins, so the
+// committed files are always produced by the same renderer.
+func TestRenderScriptRefusesAHelmThatIsNotThePinnedOne(t *testing.T) {
+	pinned := pinnedHelmVersion(t)
+	fakeHelm := func(version string) string {
+		dir := t.TempDir()
+		body := "#!/bin/sh\nif [ \"$1\" = version ]; then echo " + version + "; exit 0; fi\n" +
+			"echo rendered >> \"$FAKE_HELM_LOG\"\n"
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "helm"), []byte(body), 0o755)) //nolint:gosec // a test double that must be executable
+		return dir
+	}
+	run := func(version string, extraEnv ...string) (string, error) {
+		dir := t.TempDir()
+		cmd := exec.Command("../../hack/render-admission-policies.sh", filepath.Join(dir, "p.yaml"), filepath.Join(dir, "r.yaml"))
+		cmd.Env = append([]string{"PATH=" + fakeHelm(version) + ":/usr/bin:/bin", "HOME=" + dir, "FAKE_HELM_LOG=" + filepath.Join(dir, "log")}, extraEnv...)
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
+
+	out, err := run("v4.3.1")
+	require.Error(t, err, out)
+	assert.Contains(t, out, pinned, "the message names the version to use")
+	assert.Contains(t, out, "v4.3.1", "and the one it found")
+	assert.Contains(t, out, ".github/workflows/test.yml", "and where the pin lives")
+
+	out, err = run(pinned)
+	require.NoError(t, err, out)
+
+	// The override the parity tests use accepts any version, and says so.
+	out, err = run("v4.3.1", "DORGU_HELM_ANY_VERSION=1")
+	require.NoError(t, err, out)
+	assert.Contains(t, out, "not the pinned", "an unpinned render is announced")
+}
+
+// The script's pin and CI's pin are one version: change one and this fails.
+func TestRenderScriptPinsTheHelmVersionCIUses(t *testing.T) {
+	assert.Equal(t, pinnedHelmVersion(t), scriptHelmPin(t))
+}
+
+var workflowHelmPin = regexp.MustCompile(`(?m)azure/setup-helm@v\d+\s*\n\s*with:\s*\n\s*version:\s*(v[0-9][^\s#]*)`)
+
+// pinnedHelmVersion is the Helm version .github/workflows/test.yml installs.
+func pinnedHelmVersion(t *testing.T) string {
+	t.Helper()
+	raw, err := os.ReadFile("../../.github/workflows/test.yml")
+	require.NoError(t, err)
+	m := workflowHelmPin.FindStringSubmatch(string(raw))
+	require.NotNil(t, m, "test.yml no longer has a pinned azure/setup-helm version")
+	return m[1]
+}
+
+func scriptHelmPin(t *testing.T) string {
+	t.Helper()
+	raw, err := os.ReadFile("../../hack/render-admission-policies.sh")
+	require.NoError(t, err)
+	m := regexp.MustCompile(`(?m)^pinned_helm="(v[^"]+)"`).FindStringSubmatch(string(raw))
+	require.NotNil(t, m, "the script has no pinned_helm line")
+	return m[1]
 }
 
 // The operator embeds a copy of the rendered policies (internal/intake/admission_reference.yaml)
@@ -102,19 +210,13 @@ func TestAdmissionPoliciesInConfigAreTheChartsRendered(t *testing.T) {
 // the chart cannot leave the operator checking against the old one.
 func TestAdmissionReferenceInTheOperatorIsTheChartsRendered(t *testing.T) {
 	requireHelm(t)
-	dir := t.TempDir()
-	fresh := filepath.Join(dir, "reference.yaml")
-	script := "../../hack/render-admission-policies.sh"
-	out, err := exec.Command(script, filepath.Join(dir, "policies.yaml"), fresh).CombinedOutput()
-	require.NoError(t, err, string(out))
+	_, fresh := renderScript(t, t.TempDir())
 
-	want, err := os.ReadFile(fresh)
-	require.NoError(t, err)
-	have, err := os.ReadFile("../../internal/intake/admission_reference.yaml")
-	require.NoError(t, err)
-	require.Equal(t, string(want), string(have),
+	requireSameDocuments(t, fresh, "../../internal/intake/admission_reference.yaml",
 		"internal/intake/admission_reference.yaml differs from the chart's policies: "+
 			"run `make admission-policies` and commit the result")
+	have, err := os.ReadFile("../../internal/intake/admission_reference.yaml")
+	require.NoError(t, err)
 	assert.Contains(t, string(have), intake.ReferenceOperatorUsername,
 		"the reference is rendered with the stand-in identity the operator swaps its own for")
 }

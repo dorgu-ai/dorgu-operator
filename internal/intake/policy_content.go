@@ -49,9 +49,18 @@ var admissionReference string
 func ReferencePolicies(username string) (
 	[]admissionregistrationv1.ValidatingAdmissionPolicy, []admissionregistrationv1.ValidatingAdmissionPolicyBinding, error,
 ) {
+	return referencePoliciesFrom(admissionReference, username)
+}
+
+// referencePoliciesFrom parses rendered policies (admissionReference, or a variant of it in a
+// test). The content digests below are of the parsed objects, so whitespace between or inside
+// documents, which Helm releases render differently, cannot change them (C2 re-review N-2).
+func referencePoliciesFrom(rendered, username string) (
+	[]admissionregistrationv1.ValidatingAdmissionPolicy, []admissionregistrationv1.ValidatingAdmissionPolicyBinding, error,
+) {
 	var policies []admissionregistrationv1.ValidatingAdmissionPolicy
 	var bindings []admissionregistrationv1.ValidatingAdmissionPolicyBinding
-	raw := strings.ReplaceAll(admissionReference, ReferenceOperatorUsername, username)
+	raw := strings.ReplaceAll(rendered, ReferenceOperatorUsername, username)
 	for doc := range strings.SplitSeq(raw, "\n---") {
 		var meta metav1.TypeMeta
 		if err := yaml.Unmarshal([]byte(doc), &meta); err != nil {

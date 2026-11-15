@@ -85,8 +85,6 @@ spec:
     - expression: >-
         variables.subResource != 'status' || variables.isOperator
       message: "dorgu: OperatorOnly: only the Dorgu operator writes a proposal's status."
-
-
 ---
 # Source: dorgu-operator/templates/admission-policies.yaml
 apiVersion: admissionregistration.k8s.io/v1
@@ -177,8 +175,6 @@ spec:
         variables.isOperator || !variables.isAction || variables.subResource != 'status' ||
         variables.operatorOwnedStatusUnchanged
       message: "dorgu: OperatorOnly: the gate's record, the apply ticket, the step progress and every phase after the decision are written only by the Dorgu operator."
-
-
 ---
 # Source: dorgu-operator/templates/admission-policies.yaml
 apiVersion: admissionregistration.k8s.io/v1
@@ -263,8 +259,6 @@ spec:
         variables.isOperator || variables.newPhase == variables.oldPhase ||
         variables.newApprovedBy != variables.proposer
       message: "dorgu: ApproverIsProposer: the person who proposed a remediation cannot be the one who decides it. Ask someone else."
-
-
 ---
 # Source: dorgu-operator/templates/admission-policies.yaml
 apiVersion: admissionregistration.k8s.io/v1
@@ -277,8 +271,6 @@ metadata:
 spec:
   policyName: dorgu-proposal-identity
   validationActions: ["Deny", "Audit"]
-
-
 ---
 # Source: dorgu-operator/templates/admission-policies.yaml
 apiVersion: admissionregistration.k8s.io/v1
@@ -291,8 +283,6 @@ metadata:
 spec:
   policyName: dorgu-action-integrity
   validationActions: ["Deny", "Audit"]
-
-
 ---
 # Source: dorgu-operator/templates/admission-policies.yaml
 apiVersion: admissionregistration.k8s.io/v1
@@ -305,4 +295,3 @@ metadata:
 spec:
   policyName: dorgu-approval-gate
   validationActions: ["Deny", "Audit"]
-

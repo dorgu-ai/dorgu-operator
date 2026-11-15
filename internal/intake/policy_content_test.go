@@ -19,6 +19,7 @@ package intake
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -212,4 +213,38 @@ func TestReferencePolicies_AreTheChartsThreePoliciesForTheOperator(t *testing.T)
 	}
 	assert.ElementsMatch(t, AdmissionPolicyNames, names)
 	assert.ElementsMatch(t, AdmissionPolicyNames, bound)
+}
+
+// C2 re-review N-2: Helm v4.1.4 renders no blank line between documents and v4.3.1 renders
+// two. The operator compares parsed content, so neither the reference it embeds nor what it
+// reads from the cluster is affected by them: same policies, same digests, healthy cluster.
+func TestReferencePolicies_BlankLinesBetweenDocumentsChangeNothing(t *testing.T) {
+	const user = "system:serviceaccount:x:y"
+	basePolicies, baseBindings, err := ReferencePolicies(user)
+	require.NoError(t, err)
+
+	spaced := strings.ReplaceAll(admissionReference, "\n---", "\n\n\n---")
+	require.NotEqual(t, admissionReference, spaced, "the variant must differ in bytes")
+	spacedPolicies, spacedBindings, err := referencePoliciesFrom(spaced, user)
+	require.NoError(t, err)
+
+	assert.Equal(t, basePolicies, spacedPolicies)
+	assert.Equal(t, baseBindings, spacedBindings)
+	for i := range basePolicies {
+		assert.Empty(t, policyContentProblems(&spacedPolicies[i], &basePolicies[i], user), basePolicies[i].Name)
+	}
+	for i := range baseBindings {
+		assert.Empty(t, bindingContentProblems(&spacedBindings[i], &baseBindings[i]), baseBindings[i].Name)
+	}
+
+	// and a change of content in the same variant is still seen
+	weakened := strings.Replace(spaced, "failurePolicy: Fail", "failurePolicy: Ignore", 1)
+	require.NotEqual(t, spaced, weakened)
+	weakPolicies, _, err := referencePoliciesFrom(weakened, user)
+	require.NoError(t, err)
+	var seen bool
+	for i := range weakPolicies {
+		seen = seen || digest(weakPolicies[i].Spec.FailurePolicy) != digest(basePolicies[i].Spec.FailurePolicy)
+	}
+	assert.True(t, seen, "a changed failurePolicy must change what is compared")
 }
