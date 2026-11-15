@@ -111,3 +111,83 @@ func TestStepSafety_UnderTheBoundIsUntouched(t *testing.T) {
 		assert.NotContains(t, s.Message, "left out")
 	}
 }
+
+// R-1 of the C1 re-check 3: the cap kept the first entries, which are always the
+// field-allowlist strips (the Validate stage runs first), so 40 junk keys pushed the
+// guardrail's own record (blast radius: requested, permitted) off the step. That
+// record is what an approver reads and what the refused-value check reads to stop a
+// refused value being offered again, so the cap keeps every record that is not an
+// allowlist strip first and fills what is left with the strips.
+func TestStepSafety_PaddingNeverHidesAGuardrailRecord(t *testing.T) {
+	for _, junk := range []int{0, 5, 40, MaxStepSafetyEntries * 4} {
+		t.Run(fmt.Sprintf("%d junk keys", junk), func(t *testing.T) {
+			g := newTestGate(t, fakeClient(t, persona("256Mi"), deployment("256Mi")))
+			patch := strings.Replace(junkPatch(junk), `"300Mi"`, `"8Gi"`, 1)
+			d := run(t, g, planCandidate(personaUpdateStep(jsonOf(patch))), PhaseProposal)
+
+			require.Len(t, d.Steps, 1)
+			safety := d.Steps[0].Safety
+			assert.LessOrEqual(t, len(safety), MaxStepSafetyEntries)
+
+			var blast []dorguv1.StepSafety
+			for _, s := range safety {
+				if s.Rule == dorguv1.SafetyRuleBlastRadius {
+					blast = append(blast, s)
+				}
+			}
+			require.Len(t, blast, 1, "the blast-radius record survives any amount of padding: %+v", safety)
+			assert.NotEmpty(t, blast[0].Requested)
+			assert.NotEmpty(t, blast[0].Baseline)
+			assert.NotEmpty(t, blast[0].MaxRatio)
+		})
+	}
+}
+
+// Every record that is not an allowlist strip is kept before the strips are, in the
+// order the gate wrote them, and the summary still comes last.
+func TestCapStepSafety_KeepsGuardrailRecordsFirstThenFillsWithStrips(t *testing.T) {
+	strip := func(i int) dorguv1.StepSafety {
+		return dorguv1.StepSafety{Rule: dorguv1.SafetyRulePlanValidation, Verdict: dorguv1.SafetyVerdictRejected,
+			Field: fmt.Sprintf("strip-%02d", i), Message: "left out"}
+	}
+	guardrail := func(i int) dorguv1.StepSafety {
+		return dorguv1.StepSafety{Rule: dorguv1.SafetyRuleBlastRadius, Verdict: dorguv1.SafetyVerdictRejected,
+			Field: fmt.Sprintf("guard-%02d", i), Message: "refused"}
+	}
+	var in []dorguv1.StepSafety
+	for i := range 40 {
+		in = append(in, strip(i))
+	}
+	in = append(in, guardrail(0), guardrail(1))
+	steps := []dorguv1.RemediationStep{{Safety: in}}
+
+	capStepSafety(steps)
+
+	out := steps[0].Safety
+	require.Len(t, out, MaxStepSafetyEntries)
+	// The two guardrail records survive; the strips fill the other 29 places, oldest first.
+	var fields []string
+	for _, s := range out {
+		fields = append(fields, s.Field)
+	}
+	assert.Equal(t, "strip-00", out[0].Field, "survivors stay in the order they were written")
+	assert.Equal(t, "strip-28", out[28].Field)
+	assert.Equal(t, "guard-00", out[29].Field)
+	assert.Equal(t, "guard-01", out[30].Field)
+	assert.NotContains(t, fields, "strip-29")
+	assert.Equal(t, "(more fields)", out[len(out)-1].Field)
+	assert.Contains(t, out[len(out)-1].Message, fmt.Sprint(len(in)-(MaxStepSafetyEntries-1)))
+}
+
+// More guardrail records than the cap holds are cut as well: the bound is absolute.
+func TestCapStepSafety_NeverExceedsTheBoundEvenWithOnlyGuardrailRecords(t *testing.T) {
+	var in []dorguv1.StepSafety
+	for i := range MaxStepSafetyEntries * 2 {
+		in = append(in, dorguv1.StepSafety{Rule: dorguv1.SafetyRuleBlastRadius, Verdict: dorguv1.SafetyVerdictRejected,
+			Field: fmt.Sprintf("guard-%02d", i), Message: "refused"})
+	}
+	steps := []dorguv1.RemediationStep{{Safety: in}}
+	capStepSafety(steps)
+	assert.Len(t, steps[0].Safety, MaxStepSafetyEntries)
+	assert.Equal(t, "(more fields)", steps[0].Safety[MaxStepSafetyEntries-1].Field)
+}

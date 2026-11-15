@@ -58,7 +58,7 @@ func TestOP02UnlabelledActionsEvadeRateLimit(t *testing.T) {
 		createHandMadeRA(t, newRA(ns, fmt.Sprintf("unlabelled-%d", i), withoutLabels()), "Pending")
 	}
 
-	g := gate.New(k8sClient, logr.Discard())
+	g := gate.New(k8sClient, logr.Discard(), gate.WithReader(k8sClient))
 	dec := gateRun(t, g, newRA(ns, "next-proposal"))
 
 	blocked := !dec.Allowed() && refusedBy(dec, gate.GuardrailRateLimit)
@@ -80,7 +80,7 @@ func TestOP03DenyListProtectsOwnNamespace(t *testing.T) {
 	// chart's downward API sets it.
 	t.Setenv(gate.OperatorNamespaceEnv, operatorNamespace)
 	checker := gate.New(k8sClient, logr.Discard(),
-		gate.WithProtectedNamespaces(gate.OperatorNamespace()))
+		gate.WithProtectedNamespaces(gate.OperatorNamespace()), gate.WithReader(k8sClient))
 
 	refused := map[string]bool{}
 	for _, target := range []string{"kube-system", operatorNamespace} {
@@ -107,7 +107,7 @@ func TestOP15DenyListKeepsProtectedNamespacesFromTheModel(t *testing.T) {
 	t.Setenv(gate.OperatorNamespaceEnv, operatorNamespace)
 	apiCalls := withCannedClaudeReply(t, "A narrative about a namespace that must never be sent.")
 	checker := gate.New(k8sClient, logr.Discard(),
-		gate.WithProtectedNamespaces(gate.OperatorNamespace()))
+		gate.WithProtectedNamespaces(gate.OperatorNamespace()), gate.WithReader(k8sClient))
 
 	llmClient, err := llm.NewClient("claude", "test-key")
 	if err != nil {
@@ -166,7 +166,7 @@ func TestOP16MixedNamespaceEvictionNeverReachesThePlanner(t *testing.T) {
 	t.Setenv(gate.OperatorNamespaceEnv, operatorNamespace)
 	apiCalls := withCannedClaudeReply(t, "A plan for a namespace that must never be sent.")
 	checker := gate.New(k8sClient, logr.Discard(),
-		gate.WithProtectedNamespaces(gate.OperatorNamespace()))
+		gate.WithProtectedNamespaces(gate.OperatorNamespace()), gate.WithReader(k8sClient))
 
 	ns := newNamespace(t, "op-16")
 	createPersona(t, ns)
@@ -333,7 +333,7 @@ func TestOP11ModelProseSteersAction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("building LLM client: %v", err)
 	}
-	checker := gate.New(k8sClient, logr.Discard())
+	checker := gate.New(k8sClient, logr.Discard(), gate.WithReader(k8sClient))
 
 	attacks := map[string]func(*testing.T){
 		"prose": func(t *testing.T) {

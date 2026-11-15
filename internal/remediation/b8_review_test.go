@@ -24,7 +24,7 @@ func fallbackProposer(t *testing.T, plan *planner.RemediationPlan) *Proposer {
 	c := fake.NewClientBuilder().WithScheme(newTestScheme()).
 		WithRuntimeObjects(newTestPersona(defaultNamespace, "my-app")).
 		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
-	return NewProposer(c, gate.New(c, testLogger()), testLogger(), WithPlanner(&planCounter{plan: plan}))
+	return NewProposer(c, gate.New(c, testLogger(), gate.WithReader(c)), testLogger(), WithPlanner(&planCounter{plan: plan}))
 }
 
 func propose(t *testing.T, p *Proposer) *ProposalResult {

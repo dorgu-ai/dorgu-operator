@@ -96,7 +96,7 @@ func TestProposer_PlannerNeverSeesAProtectedNamespaceInAMixedDiagnosis(t *testin
 				WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
 			model := &countingPlanner{}
-			p := NewProposer(c, gate.New(c, testLogger(), gate.WithProtectedNamespaces("dorgu-system")),
+			p := NewProposer(c, gate.New(c, testLogger(), gate.WithProtectedNamespaces("dorgu-system"), gate.WithReader(c)),
 				testLogger(), WithPlanner(model))
 
 			_, err := p.Propose(context.Background(), evictionDiagnosis("apps", tt.other), incident)
@@ -116,7 +116,7 @@ func TestProposer_WithheldDiagnosisStillGetsTheRuleBasedProposal(t *testing.T) {
 		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
 	model := &countingPlanner{}
-	p := NewProposer(c, gate.New(c, testLogger(), gate.WithProtectedNamespaces("dorgu-system")),
+	p := NewProposer(c, gate.New(c, testLogger(), gate.WithProtectedNamespaces("dorgu-system"), gate.WithReader(c)),
 		testLogger(), WithPlanner(model))
 
 	diag := newOOMDiagnosis("apps", "my-app", detection.SeverityCritical)
@@ -155,7 +155,7 @@ func TestProposer_UnreadableDenyListIsLoudAndExplained(t *testing.T) {
 		}).Build()
 
 	var logs []string
-	p := NewProposer(c, gate.New(c, capturingLogger(&logs)), testLogger())
+	p := NewProposer(c, gate.New(c, capturingLogger(&logs), gate.WithReader(c)), testLogger())
 
 	result, err := p.Propose(context.Background(), newOOMDiagnosis("apps", "my-app", detection.SeverityCritical), incident)
 	require.NoError(t, err)

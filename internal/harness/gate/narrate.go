@@ -172,25 +172,53 @@ func endSentence(text string) string {
 // carry any number of fields, so the records need a bound of their own: the field is
 // capped by the API server (the CRDs allow more than this, with room for a change in
 // how many entries a rule writes), and a record the API server refuses fails the
-// whole RemediationAction create. capStepSafety keeps the first
-// MaxStepSafetyEntries-1 and replaces the rest with one entry saying how many.
+// whole RemediationAction create. capStepSafety keeps MaxStepSafetyEntries-1 and
+// replaces the rest with one entry saying how many.
 const MaxStepSafetyEntries = 32
 
 // capStepSafety bounds every step's Safety to MaxStepSafetyEntries. It runs once,
 // after every stage, so whatever rules wrote the entries, the total is bounded.
+//
+// Which entries are kept matters. A plan author controls how many field-allowlist
+// strips (rule plan-validation) a step carries, and the Validate stage writes them
+// before any guardrail has spoken, so keeping "the first N" would let padding push
+// the guardrail's own record (blast radius: requested, permitted) off the step, and
+// with it what an approver reads and what the refused-value check reads. So every
+// entry that is not a plan-validation strip is kept first, and what room is left is
+// filled with strips; the entries that survive stay in the order they were written.
 func capStepSafety(steps []dorguv1.RemediationStep) {
 	for i := range steps {
 		safety := steps[i].Safety
 		if len(safety) <= MaxStepSafetyEntries {
 			continue
 		}
-		kept := safety[:MaxStepSafetyEntries-1]
-		omitted := len(safety) - len(kept)
-		steps[i].Safety = append(append([]dorguv1.StepSafety(nil), kept...), dorguv1.StepSafety{
+		room := MaxStepSafetyEntries - 1
+		keep := make([]bool, len(safety))
+		kept := 0
+		for _, wantStrips := range []bool{false, true} {
+			for j, entry := range safety {
+				if kept == room {
+					break
+				}
+				isStrip := entry.Rule == dorguv1.SafetyRulePlanValidation
+				if !keep[j] && isStrip == wantStrips {
+					keep[j] = true
+					kept++
+				}
+			}
+		}
+
+		capped := make([]dorguv1.StepSafety, 0, MaxStepSafetyEntries)
+		for j, entry := range safety {
+			if keep[j] {
+				capped = append(capped, entry)
+			}
+		}
+		steps[i].Safety = append(capped, dorguv1.StepSafety{
 			Rule:    dorguv1.SafetyRulePlanValidation,
 			Verdict: dorguv1.SafetyVerdictRejected,
 			Field:   "(more fields)",
-			Message: fmt.Sprintf("%d more changes to this step were left out the same way; only the first %d are listed.", omitted, len(kept)),
+			Message: fmt.Sprintf("%d more changes to this step were left out the same way; only the first %d are listed.", len(safety)-kept, kept),
 		})
 	}
 }

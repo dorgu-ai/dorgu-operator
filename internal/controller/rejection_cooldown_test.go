@@ -80,7 +80,7 @@ func (p *spyProposer) Propose(
 func (p *spyProposer) suppressed() bool { return p.last != nil && p.last.Suppressed }
 
 func newSpyProposer(c client.Client) *spyProposer {
-	return &spyProposer{inner: remediation.NewProposer(c, gate.New(c, logr.Discard()), logr.Discard())}
+	return &spyProposer{inner: remediation.NewProposer(c, gate.New(c, logr.Discard(), gate.WithReader(c)), logr.Discard())}
 }
 
 // rejectedAction builds a RemediationAction the user declined, with the

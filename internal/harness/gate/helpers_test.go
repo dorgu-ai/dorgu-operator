@@ -84,7 +84,7 @@ func isKind[T client.ObjectList](list client.ObjectList) bool {
 
 func newTestGate(t *testing.T, c client.Client, opts ...Option) *Gate {
 	t.Helper()
-	opts = append([]Option{WithClock(func() time.Time { return fixedNow })}, opts...)
+	opts = append([]Option{WithClock(func() time.Time { return fixedNow }), WithReader(c)}, opts...)
 	return New(c, logr.Discard(), opts...)
 }
 

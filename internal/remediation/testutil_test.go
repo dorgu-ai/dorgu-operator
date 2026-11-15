@@ -82,7 +82,7 @@ func (c *countingLLM) Provider() string { return "counting" }
 func TestAIProvider_UsesTheGateDenyList(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(newTestScheme()).
 		WithRuntimeObjects(clusterPersonaExcluding("staging")).Build()
-	checker := gate.New(c, testLogger(), gate.WithProtectedNamespaces("dorgu-system", "payments"))
+	checker := gate.New(c, testLogger(), gate.WithProtectedNamespaces("dorgu-system", "payments"), gate.WithReader(c))
 
 	tests := []struct {
 		namespace string

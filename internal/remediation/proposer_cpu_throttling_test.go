@@ -87,7 +87,7 @@ func TestProposer_CPUThrottling_RaisesTheLiveCPULimit(t *testing.T) {
 				WithRuntimeObjects(persona, deploy).
 				WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
-			proposer := NewProposer(c, gate.New(c, testLogger()), testLogger())
+			proposer := NewProposer(c, gate.New(c, testLogger(), gate.WithReader(c)), testLogger())
 			result, err := proposer.Propose(context.Background(),
 				newCPUThrottlingDiagnosis(tt.severity), incident)
 
@@ -112,7 +112,7 @@ func TestProposer_CPUThrottling_NeverIntroducesACPULimit(t *testing.T) {
 		WithRuntimeObjects(persona, deploy).
 		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
-	proposer := NewProposer(c, gate.New(c, testLogger()), testLogger())
+	proposer := NewProposer(c, gate.New(c, testLogger(), gate.WithReader(c)), testLogger())
 	result, err := proposer.Propose(context.Background(),
 		newCPUThrottlingDiagnosis(detection.SeverityWarning), incident)
 	require.NoError(t, err)
@@ -130,7 +130,7 @@ func TestProposer_CPUThrottling_ObserveModeProposesNothing(t *testing.T) {
 		WithRuntimeObjects(persona, deploy, cp).
 		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
-	proposer := NewProposer(c, gate.New(c, testLogger()), testLogger())
+	proposer := NewProposer(c, gate.New(c, testLogger(), gate.WithReader(c)), testLogger())
 	result, err := proposer.Propose(context.Background(),
 		newCPUThrottlingDiagnosis(detection.SeverityWarning), incident)
 	require.NoError(t, err)
@@ -145,7 +145,7 @@ func TestProposer_CPUThrottling_ProtectedNamespaceProposesNothing(t *testing.T) 
 		WithRuntimeObjects(persona, deploy).
 		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
-	proposer := NewProposer(c, gate.New(c, testLogger(), gate.WithProtectedNamespaces(defaultNamespace)), testLogger())
+	proposer := NewProposer(c, gate.New(c, testLogger(), gate.WithProtectedNamespaces(defaultNamespace), gate.WithReader(c)), testLogger())
 	result, err := proposer.Propose(context.Background(),
 		newCPUThrottlingDiagnosis(detection.SeverityWarning), incident)
 	require.NoError(t, err)
@@ -160,7 +160,7 @@ func TestProposer_CPUThrottling_SecondIncidentSameFixIsDeduped(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(newWorkloadScheme()).
 		WithRuntimeObjects(persona, deploy).
 		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
-	proposer := NewProposer(c, gate.New(c, testLogger()), testLogger())
+	proposer := NewProposer(c, gate.New(c, testLogger(), gate.WithReader(c)), testLogger())
 	diag := newCPUThrottlingDiagnosis(detection.SeverityWarning)
 
 	r1, err := proposer.Propose(context.Background(), diag, first)

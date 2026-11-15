@@ -93,7 +93,7 @@ func memhogWorld(t *testing.T) (*Proposer, *dorguv1.IncidentMemory) {
 		WithRuntimeObjects(persona, deploy).
 		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
-	return NewProposer(c, gate.New(c, testLogger()), testLogger()), incident
+	return NewProposer(c, gate.New(c, testLogger(), gate.WithReader(c)), testLogger()), incident
 }
 
 // TestProposer_AIPath_CR01_UnappliablePlanIsMadeAppliable is the clean-room
@@ -250,7 +250,7 @@ func TestProposer_AIPath_CR01_NoPhantomPersonaUpdateStep(t *testing.T) {
 		WithRuntimeObjects(persona, deploy).
 		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
-	p := NewProposer(c, gate.New(c, testLogger()), testLogger(),
+	p := NewProposer(c, gate.New(c, testLogger(), gate.WithReader(c)), testLogger(),
 		WithPlanner(&stubPlanner{plan: cleanRoomOOMPlan()}))
 
 	diag := newOOMDiagnosis(defaultNamespace, groundedPersona, detection.SeverityCritical)
@@ -306,7 +306,7 @@ func TestProposer_AIPath_CR04_ClampIsStructuredNotProse(t *testing.T) {
 		}},
 	}
 
-	p := NewProposer(c, gate.New(c, testLogger()), testLogger(), WithPlanner(&stubPlanner{plan: plan}))
+	p := NewProposer(c, gate.New(c, testLogger(), gate.WithReader(c)), testLogger(), WithPlanner(&stubPlanner{plan: plan}))
 
 	diag := newOOMDiagnosis(defaultNamespace, groundedPersona, detection.SeverityCritical)
 	result, err := p.Propose(context.Background(), diag, incident)

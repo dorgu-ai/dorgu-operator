@@ -86,7 +86,7 @@ func reconcileWithManagedFields(t *testing.T, generation int64, entries ...metav
 	rc, c := healthyController(t, ra, dep)
 	served := withDeploymentManagedFields(c, entries)
 	rc.Client = served
-	rc.Gate = gate.New(served, logr.Discard())
+	rc.Gate = gate.New(served, logr.Discard(), gate.WithReader(served))
 	_, got := lcReconcile(t, rc, ra)
 	return got, c
 }
@@ -229,7 +229,7 @@ func TestN4_AFailedApprovalReCheckIsReturnedOnceNotLoggedAndReturned(t *testing.
 			return inner.List(ctx, list, opts...)
 		},
 	})
-	rc.Gate = gate.New(broken, logr.Discard())
+	rc.Gate = gate.New(broken, logr.Discard(), gate.WithReader(broken))
 
 	_, err := rc.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(ra)})
 

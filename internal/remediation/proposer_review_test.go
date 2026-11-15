@@ -101,7 +101,7 @@ func TestR11_FailedStatusPersistIsNotProposedAndLeavesNoPhaselessObject(t *testi
 		map[corev1.ResourceName]string{corev1.ResourceMemory: "32Mi", corev1.ResourceCPU: "50m"})
 	incident := newTestIncident(defaultNamespace, "oom", groundedPersona, "OOMKilled")
 	c := failingStatusClient(t, persona, deploy)
-	p := NewProposer(c, gate.New(c, testLogger()), testLogger())
+	p := NewProposer(c, gate.New(c, testLogger(), gate.WithReader(c)), testLogger())
 
 	result, err := p.Propose(context.Background(),
 		newOOMDiagnosis(defaultNamespace, groundedPersona, detection.SeverityCritical), incident)
@@ -135,7 +135,7 @@ func TestR11_TransientStatusFailureIsRetried(t *testing.T) {
 			return cl.SubResource(sub).Update(ctx, obj, opts...)
 		},
 	})
-	p := NewProposer(c, gate.New(c, testLogger()), testLogger())
+	p := NewProposer(c, gate.New(c, testLogger(), gate.WithReader(c)), testLogger())
 
 	result, err := p.Propose(context.Background(),
 		newOOMDiagnosis(defaultNamespace, groundedPersona, detection.SeverityCritical), incident)

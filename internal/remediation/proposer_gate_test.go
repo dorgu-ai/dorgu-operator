@@ -136,7 +136,7 @@ func TestProposer_GateRefusalIsReportedAsASkip(t *testing.T) {
 	}
 	c := fake.NewClientBuilder().WithScheme(newWorkloadScheme()).WithRuntimeObjects(persona, cp).
 		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
-	p := NewProposer(c, gate.New(c, testLogger()), testLogger())
+	p := NewProposer(c, gate.New(c, testLogger(), gate.WithReader(c)), testLogger())
 
 	result, err := p.Propose(context.Background(),
 		newOOMDiagnosis(defaultNamespace, groundedPersona, detection.SeverityCritical), incident)
@@ -166,7 +166,7 @@ func TestProposer_RejectionCooldownIsReportedAsSuppressed(t *testing.T) {
 	}
 	c := fake.NewClientBuilder().WithScheme(newWorkloadScheme()).WithRuntimeObjects(persona, declined).
 		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
-	p := NewProposer(c, gate.New(c, testLogger()), testLogger())
+	p := NewProposer(c, gate.New(c, testLogger(), gate.WithReader(c)), testLogger())
 
 	result, err := p.Propose(context.Background(),
 		newOOMDiagnosis(defaultNamespace, groundedPersona, detection.SeverityCritical), incident)
@@ -187,7 +187,7 @@ func TestProposer_GateErrorIsAnErrorNotAPass(t *testing.T) {
 
 func TestProposer_ExposesItsGateAndPlanner(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(newWorkloadScheme()).Build()
-	g := gate.New(c, testLogger())
+	g := gate.New(c, testLogger(), gate.WithReader(c))
 	p := NewProposer(c, g, testLogger(), WithPlanner(&stubPlanner{}))
 	assert.Same(t, g, p.Gate())
 	assert.NotNil(t, p.Planner())

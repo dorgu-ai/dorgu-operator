@@ -394,6 +394,12 @@ func (r *RemediationController) handleApproved(ctx context.Context, logger logr.
 	// hand (an edit this reconcile has not seen) is retried, so the hash is always of
 	// the spec the gate is about to clear.
 	specHash, err := r.Gate.ServedSpecHash(ctx, action)
+	if errors.Is(err, gate.ErrSpecUnhashable) {
+		// No canonical form of the served spec exists, so no ticket can bind it, and a
+		// retry reads the same spec. Same as at apply: SpecChanged, terminal, nothing
+		// applied, no outcome booked. Only a read that failed is retried.
+		return ctrl.Result{}, r.refuseUnhashableSpec(ctx, logger, action, err)
+	}
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("the spec of the approved action could not be read as served; nothing was applied, will retry: %w", err)
 	}
@@ -448,6 +454,25 @@ func (r *RemediationController) handleApproved(ctx context.Context, logger logr.
 	logger.Info("approval cleared the gate on live state; ticket issued", "expiresAt", ticket.ExpiresAt)
 
 	return r.handleTicketed(ctx, logger, action)
+}
+
+// refuseUnhashableSpec ends an approval whose served spec cannot be hashed (P2-D14):
+// Failed with the SpecChanged reason, as the same condition is at apply, and a
+// GateRefused condition that says why. Nothing was applied and nothing is booked.
+func (r *RemediationController) refuseUnhashableSpec(
+	ctx context.Context, logger logr.Logger, action *dorguv1.RemediationAction, hashErr error,
+) error {
+	message := fmt.Sprintf("refused at approval (%s): the spec as the API server serves it cannot be hashed (%s); nothing was applied",
+		dorguv1.ReasonSpecChanged, truncateMessage(hashErr.Error(), 512))
+	logger.Info("the served spec cannot be hashed; ending the approval instead of retrying", "error", hashErr.Error())
+
+	setCondition(&action.Status.Conditions, dorguv1.ConditionGateRefused, metav1.ConditionTrue,
+		dorguv1.ReasonSpecChanged, message)
+	if err := r.transitionToFailedWithReason(ctx, action, dorguv1.ReasonSpecChanged, message); err != nil {
+		return err
+	}
+	r.reportApprovalRefusal(action, gate.StageGuardrails, message)
+	return nil
 }
 
 // refuseUnwritableTicket ends an approval whose apply ticket the API server refused

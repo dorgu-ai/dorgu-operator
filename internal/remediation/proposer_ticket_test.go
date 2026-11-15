@@ -45,7 +45,7 @@ func TestProposer_RecordsTheClearedGenerationOnStatus(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(newTestScheme()).
 		WithRuntimeObjects(newTestPersona(defaultNamespace, "my-app")).
 		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
-	p := NewProposer(c, gate.New(c, testLogger()), testLogger())
+	p := NewProposer(c, gate.New(c, testLogger(), gate.WithReader(c)), testLogger())
 	incident := newTestIncident(defaultNamespace, "oom", "my-app", "OOMKilled")
 
 	result, err := p.Propose(context.Background(), newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityWarning), incident)
@@ -127,7 +127,7 @@ func TestProposer_RuleBasedActionIsDerivedFromItsStep(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(newTestScheme()).
 		WithRuntimeObjects(newTestPersona(defaultNamespace, "my-app")).
 		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
-	p := NewProposer(c, gate.New(c, testLogger()), testLogger())
+	p := NewProposer(c, gate.New(c, testLogger(), gate.WithReader(c)), testLogger())
 
 	result, err := p.Propose(context.Background(),
 		newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityWarning),
@@ -147,7 +147,7 @@ func TestF7_TheProposedSpecActionCarriesNoPatch(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(newTestScheme()).
 		WithRuntimeObjects(newTestPersona(defaultNamespace, "my-app")).
 		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
-	p := NewProposer(c, gate.New(c, testLogger()), testLogger())
+	p := NewProposer(c, gate.New(c, testLogger(), gate.WithReader(c)), testLogger())
 
 	result, err := p.Propose(context.Background(),
 		newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityWarning),
@@ -169,7 +169,7 @@ func TestF7_AnAIPlansSpecActionCarriesNoPatchEither(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(newTestScheme()).
 		WithRuntimeObjects(newTestPersona(defaultNamespace, "my-app")).
 		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
-	p := NewProposer(c, gate.New(c, testLogger()), testLogger(), WithPlanner(&stubPlanner{plan: threeStepPlan()}))
+	p := NewProposer(c, gate.New(c, testLogger(), gate.WithReader(c)), testLogger(), WithPlanner(&stubPlanner{plan: threeStepPlan()}))
 
 	result, err := p.Propose(context.Background(),
 		newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical),
@@ -210,7 +210,7 @@ func TestF9_TheClearedGenerationIsTheOneCreateReturned(t *testing.T) {
 			return nil
 		},
 	})
-	p := NewProposer(c, gate.New(c, testLogger()), testLogger())
+	p := NewProposer(c, gate.New(c, testLogger(), gate.WithReader(c)), testLogger())
 
 	result, err := p.Propose(context.Background(),
 		newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityWarning),
@@ -244,7 +244,7 @@ func TestV2_AModelPersonaUpdateForAnImagePullDiagnosisIsRefused(t *testing.T) {
 			Patch: json.RawMessage(`{"spec":{"resources":{"limits":{"memory":"384Mi"}}}}`),
 		}},
 	}
-	p := NewProposer(c, gate.New(c, testLogger()), testLogger(), WithPlanner(&stubPlanner{plan: memoryPlan}))
+	p := NewProposer(c, gate.New(c, testLogger(), gate.WithReader(c)), testLogger(), WithPlanner(&stubPlanner{plan: memoryPlan}))
 	diag := newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical)
 	diag.Contributing[0].Signal.Type = detection.SignalImagePullBackOff
 	diag.SuggestedAction = "deployment-fix" // what the rule engine says for image-pull

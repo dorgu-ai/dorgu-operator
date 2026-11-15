@@ -135,7 +135,7 @@ func driftWorld(t *testing.T) (*Proposer, *dorguv1.IncidentMemory) {
 		WithRuntimeObjects(persona, deploy).
 		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
-	return NewProposer(c, gate.New(c, testLogger()), testLogger()), incident
+	return NewProposer(c, gate.New(c, testLogger(), gate.WithReader(c)), testLogger()), incident
 }
 
 // cleanRoomDriftPlan is the plan the model produced in clean-room run #5: one

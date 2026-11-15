@@ -143,7 +143,7 @@ func TestProposer_SelfHealingModeGate(t *testing.T) {
 
 			var logs []string
 			logger := capturingLogger(&logs)
-			proposer := NewProposer(c, gate.New(c, logger), logger)
+			proposer := NewProposer(c, gate.New(c, logger, gate.WithReader(c)), logger)
 
 			diag := newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical)
 			result, err := proposer.Propose(context.Background(), diag, incident)
@@ -188,7 +188,7 @@ func TestProposer_ObserveModeSkipsBeforePlanner(t *testing.T) {
 		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
 	aiPlanner := &countingPlanner{}
-	proposer := NewProposer(c, gate.New(c, testLogger()), testLogger(), WithPlanner(aiPlanner))
+	proposer := NewProposer(c, gate.New(c, testLogger(), gate.WithReader(c)), testLogger(), WithPlanner(aiPlanner))
 
 	diag := newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical)
 	result, err := proposer.Propose(context.Background(), diag, incident)

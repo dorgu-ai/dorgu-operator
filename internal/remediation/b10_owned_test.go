@@ -51,7 +51,7 @@ func proposeRuleBased(t *testing.T, owner string) *dorguv1.RemediationAction {
 	c := fake.NewClientBuilder().WithScheme(newWorkloadScheme()).
 		WithRuntimeObjects(persona, deploy).
 		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
-	p := NewProposer(c, gate.New(c, testLogger()), testLogger())
+	p := NewProposer(c, gate.New(c, testLogger(), gate.WithReader(c)), testLogger())
 
 	result, err := p.Propose(context.Background(),
 		newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical), incident)
@@ -124,7 +124,7 @@ func TestB10Owned_TheGateRefusesAnAutoStepOnAnOwnedWorkloadAtProposal(t *testing
 	c := fake.NewClientBuilder().WithScheme(newWorkloadScheme()).WithRuntimeObjects(persona, deploy).Build()
 	action := proposeAgainstUnshaped(t)
 
-	decision, err := gate.New(c, testLogger()).Run(context.Background(),
+	decision, err := gate.New(c, testLogger(), gate.WithReader(c)).Run(context.Background(),
 		candidateFor(action, newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical),
 			newTestIncident(defaultNamespace, "oom", "my-app", "OOMKilled"), true), gate.PhaseProposal)
 

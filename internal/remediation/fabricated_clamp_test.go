@@ -51,7 +51,7 @@ func atCapWorld(t *testing.T) (*Proposer, *dorguv1.IncidentMemory) {
 		WithRuntimeObjects(persona, deploy).
 		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
-	return NewProposer(c, gate.New(c, testLogger()), testLogger()), incident
+	return NewProposer(c, gate.New(c, testLogger(), gate.WithReader(c)), testLogger()), incident
 }
 
 // atCapPlan asks for exactly the doubling the guardrail permits, and says out

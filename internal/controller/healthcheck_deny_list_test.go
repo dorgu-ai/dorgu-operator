@@ -67,7 +67,7 @@ var _ = Describe("HealthCheckReconciler deny-list and the diagnosis LLM call", f
 			}},
 		}
 		stub := &stubLLMClient{summary: "model narrative", action: "resource-adjustment"}
-		checker := gate.New(k8sClient, testLogger)
+		checker := gate.New(k8sClient, testLogger, gate.WithReader(k8sClient))
 
 		r := &HealthCheckReconciler{
 			Client:    k8sClient,

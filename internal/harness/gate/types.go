@@ -96,11 +96,14 @@ const (
 	GuardrailAutoExecutable = "auto-executable"
 	GuardrailFieldAllowlist = "field-allowlist"
 	GuardrailVerdictsReset  = "verdicts-recomputed"
-	GuardrailVerifyBounds   = "verify-bounds"
-	GuardrailLiveWorkload   = "live-workload"
-	GuardrailPersona        = "persona"
-	GuardrailOwnership      = "ownership"
-	GuardrailOwnerCommands  = "owner-commands"
+	// GuardrailVerdictsTruncated is the one verdict that says how many others were
+	// left out of status because there were more than MaxStatusVerdicts.
+	GuardrailVerdictsTruncated = "verdicts-truncated"
+	GuardrailVerifyBounds      = "verify-bounds"
+	GuardrailLiveWorkload      = "live-workload"
+	GuardrailPersona           = "persona"
+	GuardrailOwnership         = "ownership"
+	GuardrailOwnerCommands     = "owner-commands"
 	// GuardrailOwnerAutoStep: a plan for a workload a deployer owns still carries a step
 	// the operator would apply (B10 b). Refused at proposal: the proposer shapes an owned
 	// workload's plan as advice before the gate rules on it.
@@ -434,7 +437,7 @@ func (d *Decision) Status() *dorguv1.GateStatus {
 		EvaluatedAt:   d.EvaluatedAt,
 		Observed:      d.Observed.DeepCopy(),
 		Ownership:     d.Ownership.DeepCopy(),
-		Verdicts:      append([]dorguv1.GateVerdict(nil), d.Verdicts...),
+		Verdicts:      capVerdicts(d.Verdicts),
 		PrePatchState: d.PrePatchState.DeepCopy(),
 	}
 }
@@ -494,6 +497,51 @@ func (r verdictRef) From(source string) {
 	if r.d.refusing != nil && r.d.refusingIdx == r.i {
 		r.d.refusing.CeilingSource = source
 	}
+}
+
+// MaxStatusVerdicts is the most verdicts the gate writes to status.gate.verdicts and
+// to status.applyTicket.verdicts. Both CRD fields allow 64, and a plan of many steps
+// writes a record per step per guardrail, so the list needs a bound of its own: a
+// status the API server refuses ends the action (ActionInvalid). The decision in
+// memory keeps every verdict; only what is rendered is bounded.
+const MaxStatusVerdicts = 48
+
+// capVerdicts renders verdicts for status: at most MaxStatusVerdicts of them, the same
+// pattern as capStepSafety. Under the bound it is a copy. Over it, every refuse and
+// clamp is kept before any pass (the verdicts an approver acts on), the survivors
+// stay in the order they were written, and one trailing pass verdict says how many
+// were left out. The summary is a pass so it can never be read as a refusal.
+func capVerdicts(verdicts []dorguv1.GateVerdict) []dorguv1.GateVerdict {
+	if len(verdicts) <= MaxStatusVerdicts {
+		return append([]dorguv1.GateVerdict(nil), verdicts...)
+	}
+	room := MaxStatusVerdicts - 1
+	keep := make([]bool, len(verdicts))
+	kept := 0
+	for _, wantPass := range []bool{false, true} {
+		for i, v := range verdicts {
+			if kept == room {
+				break
+			}
+			if !keep[i] && (v.Verdict == dorguv1.GateVerdictPass) == wantPass {
+				keep[i] = true
+				kept++
+			}
+		}
+	}
+	capped := make([]dorguv1.GateVerdict, 0, MaxStatusVerdicts)
+	for i, v := range verdicts {
+		if keep[i] {
+			capped = append(capped, v)
+		}
+	}
+	return append(capped, dorguv1.GateVerdict{
+		Stage:     StageGuardrails,
+		Guardrail: GuardrailVerdictsTruncated,
+		Verdict:   dorguv1.GateVerdictPass,
+		Reason: fmt.Sprintf("%d more verdicts were left out of this record because the plan has many steps; "+
+			"only the first %d are listed (every refusal and clamp is among them).", len(verdicts)-kept, kept),
+	})
 }
 
 // maxReasonLength matches the CRD's bound on a verdict reason.

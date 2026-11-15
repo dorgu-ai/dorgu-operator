@@ -146,7 +146,7 @@ func TestReview_OneProbeFaultAcrossCyclesIsOneOpenIncident_Bug(t *testing.T) {
 		Status:     notReadyPodStatus(now, 5*time.Minute),
 	}
 	c := noiseClient(t, probePersona("shop"), pod)
-	g := gate.New(c, noiseLogger())
+	g := gate.New(c, noiseLogger(), gate.WithReader(c))
 	stub := &stubLLMClient{}
 	r := aiReconciler(t, c, g, stub)
 

@@ -144,7 +144,7 @@ func TestPodDetection_ExcludedNamespacesRaiseNoIncident(t *testing.T) {
 				excludingClusterPersona("cert-manager", " ArgoCD "),
 				oomPod(tt.namespace, "worker-abc"),
 			)
-			g := gate.New(c, noiseLogger(), gate.WithProtectedNamespaces("dorgu-system", "gateway"))
+			g := gate.New(c, noiseLogger(), gate.WithProtectedNamespaces("dorgu-system", "gateway"), gate.WithReader(c))
 
 			newNoiseReconciler(c, podCollectorFor(c, g)).reconcile(context.Background())
 
@@ -162,7 +162,7 @@ func TestPodDetection_ExcludedNamespacesRaiseNoIncident(t *testing.T) {
 // CrashLoopBackOff signal on the same pod, and used to raise an incident for each.
 func TestOneOOMRaisesOneIncident(t *testing.T) {
 	c := noiseClient(t, oomPod("shop", "worker-abc"))
-	g := gate.New(c, noiseLogger())
+	g := gate.New(c, noiseLogger(), gate.WithReader(c))
 
 	newNoiseReconciler(c, podCollectorFor(c, g)).reconcile(context.Background())
 
@@ -190,7 +190,7 @@ func TestRemediationActionLinksToTheOneIncident(t *testing.T) {
 		},
 	})
 	log := noiseLogger()
-	g := gate.New(c, log)
+	g := gate.New(c, log, gate.WithReader(c))
 	r := newNoiseReconciler(c, &stubCollector{
 		name: "stub",
 		signals: []detection.Signal{

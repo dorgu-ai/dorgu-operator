@@ -46,7 +46,7 @@ func TestF9_AnAIPlanOverTheStepCapIsARefusalNotADroppedCreate(t *testing.T) {
 		})
 	}
 	cp := &planCounter{plan: plan}
-	p := NewProposer(c, gate.New(c, testLogger()), testLogger(), WithPlanner(cp))
+	p := NewProposer(c, gate.New(c, testLogger(), gate.WithReader(c)), testLogger(), WithPlanner(cp))
 	diag := newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical)
 	diag.Contributing[0].Signal.Type = detection.SignalCrashLoopBackOff
 	diag.SuggestedAction = rulesInvestigate

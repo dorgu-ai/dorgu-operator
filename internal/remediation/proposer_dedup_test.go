@@ -74,7 +74,7 @@ func TestProposer_Dedup_SkipsWhenActiveExists(t *testing.T) {
 				WithRuntimeObjects(persona, ra).
 				WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
-			safety := gate.New(c, testLogger())
+			safety := gate.New(c, testLogger(), gate.WithReader(c))
 			// A working planner is wired to prove dedup runs BEFORE the AI path.
 			p := NewProposer(c, safety, testLogger(), WithPlanner(&stubPlanner{plan: threeStepPlan()}))
 
@@ -105,7 +105,7 @@ func TestProposer_Dedup_ProposesWhenPriorTerminal(t *testing.T) {
 		WithRuntimeObjects(persona, ra).
 		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
-	safety := gate.New(c, testLogger())
+	safety := gate.New(c, testLogger(), gate.WithReader(c))
 	p := NewProposer(c, safety, testLogger())
 
 	result, err := p.Propose(context.Background(), newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityWarning), incident)
@@ -125,7 +125,7 @@ func TestProposer_Dedup_IgnoresOtherIncident(t *testing.T) {
 		WithRuntimeObjects(persona, other).
 		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
-	safety := gate.New(c, testLogger())
+	safety := gate.New(c, testLogger(), gate.WithReader(c))
 	p := NewProposer(c, safety, testLogger())
 
 	result, err := p.Propose(context.Background(), newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityWarning), incident)
@@ -145,7 +145,7 @@ func TestProposer_AIXorRule_ValidPlan(t *testing.T) {
 		WithRuntimeObjects(persona).
 		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
-	safety := gate.New(c, testLogger())
+	safety := gate.New(c, testLogger(), gate.WithReader(c))
 	p := NewProposer(c, safety, testLogger(), WithPlanner(&stubPlanner{plan: threeStepPlan()}))
 
 	result, err := p.Propose(context.Background(), newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical), incident)
@@ -170,7 +170,7 @@ func TestProposer_AIXorRule_PlannerError(t *testing.T) {
 		WithRuntimeObjects(persona).
 		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
-	safety := gate.New(c, testLogger())
+	safety := gate.New(c, testLogger(), gate.WithReader(c))
 	p := NewProposer(c, safety, testLogger(), WithPlanner(&stubPlanner{err: errors.New("model down")}))
 
 	result, err := p.Propose(context.Background(), newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical), incident)
@@ -313,7 +313,7 @@ func TestProposer_TargetDedup(t *testing.T) {
 				WithRuntimeObjects(persona, tt.existing).
 				WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
-			safety := gate.New(c, testLogger())
+			safety := gate.New(c, testLogger(), gate.WithReader(c))
 			// A working planner proves target dedup runs BEFORE the AI path.
 			p := NewProposer(c, safety, testLogger(), WithPlanner(&stubPlanner{plan: threeStepPlan()}))
 

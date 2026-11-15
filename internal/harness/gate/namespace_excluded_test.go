@@ -81,7 +81,7 @@ func TestNamespaceExcluded_UnknownOperatorNamespaceDoesNotBlindDetection(t *test
 // An unreadable policy is an error, never a guess.
 func TestNamespaceExcluded_UnreadablePolicyIsAnError(t *testing.T) {
 	c := failingListClient(t, isKind[*dorguv1.ClusterPersonaList])
-	g := New(c, logr.Discard())
+	g := New(c, logr.Discard(), WithReader(c))
 
 	excluded, err := g.NamespaceExcluded(context.Background(), "shop")
 	require.Error(t, err)

@@ -161,7 +161,7 @@ func newCostFixture(t *testing.T, sc costScenario, aiOpts ...diagnosis.AIOption)
 	// A clock frozen inside one test run hid a fingerprint that included that
 	// stamp (review V1), so the clock moves 20s per read, as wall time would
 	// between health cycles.
-	g := gate.New(c, logger, gate.WithProtectedNamespaces("dorgu-system"), gate.WithClock(tickingClock(costClockStep)))
+	g := gate.New(c, logger, gate.WithProtectedNamespaces("dorgu-system"), gate.WithClock(tickingClock(costClockStep)), gate.WithReader(c))
 	model := newCountingModel()
 	pl := &countingPlanner{err: sc.plannerErr}
 
