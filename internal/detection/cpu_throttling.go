@@ -185,6 +185,16 @@ type CPUThrottlingCollector struct {
 	viewMu     sync.RWMutex
 	haveStatus bool
 	lastStatus SourceStatus
+	// warm is true when the latest cycle's silence can be trusted for resolution: the
+	// source has produced as many consecutive good cycles as its signal needs.
+	warm bool
+
+	// warmCycles counts consecutive good metrics.k8s.io cycles (guarded by mu).
+	warmCycles int
+	warmSource string
+	// noData is set by a cycle in which metrics.k8s.io answered but named none of the
+	// containers that have a CPU limit (guarded by mu).
+	noData bool
 }
 
 type containerKey struct{ namespace, pod, container string }
@@ -283,6 +293,40 @@ func (c *CPUThrottlingCollector) Blind() bool {
 	return !c.haveStatus || !c.lastStatus.Active
 }
 
+// ResolutionBlind implements ResolutionBlinder. It is Blind, and also true while a
+// metrics.k8s.io source has not yet produced CPUUsageConsecutiveCycles consecutive good
+// cycles: until then a container pinned at its limit reads as quiet, because the streak
+// that would say otherwise has not had time to build. A cycle that read metrics.k8s.io
+// and found none of the containers that have a CPU limit is no data and does not count
+// (a metrics-server that just restarted answers with an empty list). Prometheus needs no
+// warm-up: its ratio is a five-minute rate already.
+//
+// The verifier asks Blind, not this: it cannot afford three Unknown cycles in a row.
+func (c *CPUThrottlingCollector) ResolutionBlind() bool {
+	c.viewMu.RLock()
+	defer c.viewMu.RUnlock()
+	return !c.haveStatus || !c.lastStatus.Active || !c.warm
+}
+
+// advanceWarmUp folds one finished cycle into the warm-up count and reports whether the
+// source is warm. Called with c.mu held.
+func (c *CPUThrottlingCollector) advanceWarmUp(status SourceStatus, err error) bool {
+	switch {
+	case err != nil || !status.Active || c.noData:
+		c.warmCycles, c.warmSource = 0, ""
+		return false
+	case status.Source == CPUThrottlingSourcePrometheus:
+		c.warmCycles, c.warmSource = 0, status.Source
+		return true
+	}
+	if c.warmSource != status.Source {
+		c.warmCycles = 0 // a source switch: the usage streaks started over with it
+	}
+	c.warmSource = status.Source
+	c.warmCycles++
+	return c.warmCycles >= CPUUsageConsecutiveCycles
+}
+
 // Collect implements SignalCollector.
 func (c *CPUThrottlingCollector) Collect(ctx context.Context) ([]Signal, error) {
 	c.mu.Lock()
@@ -293,15 +337,17 @@ func (c *CPUThrottlingCollector) Collect(ctx context.Context) ([]Signal, error) 
 		return slices.Clone(c.lastSignals), c.lastErr
 	}
 
+	c.noData = false
 	signals, status, err := c.observe(ctx, now)
 	c.haveLast, c.lastRun, c.lastSignals, c.lastErr = true, now, slices.Clone(signals), err
+	warm := c.advanceWarmUp(status, err)
 	if err != nil {
 		// A cycle that could not look breaks every streak: three consecutive cycles
 		// means three that all read the metrics.
 		c.counts = map[countKey]int{}
 	}
 	c.viewMu.Lock()
-	c.haveStatus, c.lastStatus = true, status
+	c.haveStatus, c.lastStatus, c.warm = true, status, warm
 	c.viewMu.Unlock()
 
 	if c.sink != nil {
@@ -358,6 +404,18 @@ func namesAKnownContainer(samples []ThrottleSample, pods podIndex) bool {
 	for _, s := range samples {
 		if _, _, ok := pods.lookup(containerKey{s.Namespace, s.Pod, s.Container}); ok {
 			return true
+		}
+	}
+	return false
+}
+
+// metricsNameAKnownContainer reports whether any metrics item is about a container in the index.
+func metricsNameAKnownContainer(items []metricsv1beta1.PodMetrics, pods podIndex) bool {
+	for i := range items {
+		for _, cm := range items[i].Containers {
+			if _, _, ok := pods.lookup(containerKey{items[i].Namespace, items[i].Name, cm.Name}); ok {
+				return true
+			}
 		}
 	}
 	return false
@@ -471,6 +529,10 @@ func (c *CPUThrottlingCollector) fromMetricsServer(
 			return nil, readFailed(), err
 		}
 	}
+
+	// An answer that names none of the containers that could be throttled is "no data
+	// yet", not "all quiet": it does not count toward the resolution warm-up.
+	c.noData = len(pods) > 0 && !metricsNameAKnownContainer(items, pods)
 
 	signals, err := c.usageSignals(ctx, items, pods, now)
 	if err != nil {
