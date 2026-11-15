@@ -141,7 +141,7 @@ func embeddedFiles(t *testing.T, root string) []string {
 			if m == nil {
 				continue
 			}
-			for _, target := range strings.Fields(m[1]) {
+			for target := range strings.FieldsSeq(m[1]) {
 				target = strings.TrimPrefix(strings.Trim(target, "\"`"), "all:")
 				matches, err := filepath.Glob(filepath.Join(filepath.Dir(p), target))
 				if err != nil {

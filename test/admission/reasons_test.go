@@ -487,7 +487,8 @@ func TestInvalidTransition(t *testing.T) {
 	})
 	t.Run("a field the operator owns, written on an Approved action", func(t *testing.T) {
 		ra := approvedAction(t)
-		requireDenied(t, admissionenv.PatchStatus(ctxFor(t), alice.c, ra, map[string]any{"verificationResult": "Healthy"}), "OperatorOnly")
+		err := admissionenv.PatchStatus(ctxFor(t), alice.c, ra, map[string]any{"verificationResult": "Healthy"})
+		requireDenied(t, err, "OperatorOnly")
 	})
 	t.Run("a user without the approve verb gets the verb's refusal, as before", func(t *testing.T) {
 		ra := approvedAction(t)

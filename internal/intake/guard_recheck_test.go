@@ -115,11 +115,7 @@ func TestTicketsBlockedNow_ThirtyConcurrentCallersMakeOneRoundOfReads(t *testing
 	var wg sync.WaitGroup
 	answers := make([]*Failure, 30)
 	for i := range answers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			answers[i] = p.TicketsBlockedNow(context.Background())
-		}()
+		wg.Go(func() { answers[i] = p.TicketsBlockedNow(context.Background()) })
 	}
 	wg.Wait()
 

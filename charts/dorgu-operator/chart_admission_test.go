@@ -107,7 +107,7 @@ func renderScript(t *testing.T, dir string) (policies, reference string) {
 // leave around the `---` separators (v4.1.4 renders none, v4.3.1 two), which is not content.
 func yamlDocuments(t *testing.T, raw string) []map[string]any {
 	t.Helper()
-	var docs []map[string]any
+	docs := make([]map[string]any, 0, strings.Count(raw, "\n---")+1)
 	for doc := range strings.SplitSeq(raw, "\n---") {
 		var parsed map[string]any
 		require.NoError(t, yaml.Unmarshal([]byte(doc), &parsed))
@@ -139,7 +139,8 @@ func TestYAMLDocumentsIgnoreTheBlankLinesBetweenDocumentsButNotContentOrOrder(t 
 	assert.Equal(t, yamlDocuments(t, base), yamlDocuments(t, same))
 	require.Len(t, yamlDocuments(t, base), 2)
 
-	assert.NotEqual(t, yamlDocuments(t, base), yamlDocuments(t, "# header\na: 1\nb:\n  - x\n---\nc: 3\n"), "content differs")
+	changed := "# header\na: 1\nb:\n  - x\n---\nc: 3\n"
+	assert.NotEqual(t, yamlDocuments(t, base), yamlDocuments(t, changed), "content differs")
 	assert.NotEqual(t, yamlDocuments(t, base), yamlDocuments(t, "c: 2\n---\na: 1\nb:\n  - x\n"), "order differs")
 	assert.NotEqual(t, yamlDocuments(t, base), yamlDocuments(t, "a: 1\nb:\n  - x\n"), "a document is missing")
 }
@@ -152,13 +153,17 @@ func TestRenderScriptRefusesAHelmThatIsNotThePinnedOne(t *testing.T) {
 		dir := t.TempDir()
 		body := "#!/bin/sh\nif [ \"$1\" = version ]; then echo " + version + "; exit 0; fi\n" +
 			"echo rendered >> \"$FAKE_HELM_LOG\"\n"
-		require.NoError(t, os.WriteFile(filepath.Join(dir, "helm"), []byte(body), 0o755)) //nolint:gosec // a test double that must be executable
+		//nolint:gosec // a test double that must be executable
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "helm"), []byte(body), 0o755))
 		return dir
 	}
 	run := func(version string, extraEnv ...string) (string, error) {
 		dir := t.TempDir()
-		cmd := exec.Command("../../hack/render-admission-policies.sh", filepath.Join(dir, "p.yaml"), filepath.Join(dir, "r.yaml"))
-		cmd.Env = append([]string{"PATH=" + fakeHelm(version) + ":/usr/bin:/bin", "HOME=" + dir, "FAKE_HELM_LOG=" + filepath.Join(dir, "log")}, extraEnv...)
+		cmd := exec.Command("../../hack/render-admission-policies.sh",
+			filepath.Join(dir, "p.yaml"), filepath.Join(dir, "r.yaml"))
+		cmd.Env = append([]string{
+			"PATH=" + fakeHelm(version) + ":/usr/bin:/bin", "HOME=" + dir, "FAKE_HELM_LOG=" + filepath.Join(dir, "log"),
+		}, extraEnv...)
 		out, err := cmd.CombinedOutput()
 		return string(out), err
 	}

@@ -98,7 +98,9 @@ func TestApprovalWrittenAt_ANewApprovalIsANewStamp(t *testing.T) {
 func TestApprovalWrittenAt_APersonCannotRefreshTheStampOfAnApprovalInAWindow(t *testing.T) {
 	ns := namespace(t, "approval-time3")
 	ctx := ctxFor(t)
-	ok := intake.Check{Name: "x", Reason: intake.ReasonAdmissionPoliciesMissing, Run: func(context.Context) error { return nil }}
+	ok := intake.Check{
+		Name: "x", Reason: intake.ReasonAdmissionPoliciesMissing, Run: func(context.Context) error { return nil },
+	}
 	preflight := intake.NewPreflight(logr.Discard(), ok) // the startup window opens now
 
 	ra := pendingAction(t, ns, "agent-x")
@@ -117,7 +119,8 @@ func TestApprovalWrittenAt_APersonCannotRefreshTheStampOfAnApprovalInAWindow(t *
 		"type": "WorkloadPatched", "status": "True", "reason": "CLIAppliedResourceChange", "message": "x",
 		"lastTransitionTime": nowText(),
 	})
-	requireDenied(t, admissionenv.PatchStatus(ctx, alice.c, ra, map[string]any{"conditions": conditions}), "InvalidTransition")
+	err = admissionenv.PatchStatus(ctx, alice.c, ra, map[string]any{"conditions": conditions})
+	requireDenied(t, err, "InvalidTransition")
 
 	var after dorguv1.RemediationAction
 	require.NoError(t, env.Admin.Get(ctx, client.ObjectKeyFromObject(ra), &after))
