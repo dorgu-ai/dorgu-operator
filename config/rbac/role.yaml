@@ -25,6 +25,17 @@ rules:
   - list
   - watch
 - apiGroups:
+  - admissionregistration.k8s.io
+  resourceNames:
+  - dorgu-action-integrity
+  - dorgu-approval-gate
+  - dorgu-proposal-identity
+  resources:
+  - validatingadmissionpolicies
+  - validatingadmissionpolicybindings
+  verbs:
+  - get
+- apiGroups:
   - apiextensions.k8s.io
   resourceNames:
   - remediationactions.dorgu.io
@@ -54,6 +65,12 @@ rules:
   - authentication.k8s.io
   resources:
   - selfsubjectreviews
+  verbs:
+  - create
+- apiGroups:
+  - authorization.k8s.io
+  resources:
+  - selfsubjectaccessreviews
   verbs:
   - create
 - apiGroups:

@@ -1,0 +1,93 @@
+{{- /*
+The roles that go with the admission policies (P2, task 2.4). Four ClusterRoles with fixed
+names, bound by the cluster admin where they are wanted. None grants a Secret, a workload
+write, or a write to a RemediationAction's status beyond the approver's decision.
+*/ -}}
+{{- /* dig, so an upgrade with --reuse-values from a release that had no rbac values still renders the roles. */ -}}
+{{- if dig "roles" "create" true (default (dict) .Values.rbac) }}
+---
+# Read everything Dorgu records. For people.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: dorgu-viewer
+  labels:
+    {{- include "dorgu-operator.admissionLabels" . | nindent 4 }}
+rules:
+  - apiGroups: ["dorgu.io"]
+    resources:
+      - applicationpersonas
+      - clusterpersonas
+      - incidentmemories
+      - remediationactions
+      - remediationproposals
+      - dorguevents
+    verbs: ["get", "list", "watch"]
+---
+# Read the context an agent needs to propose well, and the answer to its proposals
+# (status.rejection says why a proposal was refused). No events, no writes. For agents.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: dorgu-agent-reader
+  labels:
+    {{- include "dorgu-operator.admissionLabels" . | nindent 4 }}
+rules:
+  - apiGroups: ["dorgu.io"]
+    resources:
+      - applicationpersonas
+      - clusterpersonas
+      - incidentmemories
+      - remediationactions
+      - remediationproposals
+    verbs: ["get", "list", "watch"]
+---
+# Write proposals and read them back. No update (a proposal's spec is immutable) and no
+# delete (a proposer cannot remove the record of what it proposed). It touches nothing
+# else: an agent bound to this role and dorgu-agent-reader can propose and can never
+# approve, because approving needs a human and the approve verb.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: dorgu-agent-proposer
+  labels:
+    {{- include "dorgu-operator.admissionLabels" . | nindent 4 }}
+rules:
+  - apiGroups: ["dorgu.io"]
+    resources: ["remediationproposals"]
+    verbs: ["create", "get", "list", "watch"]
+---
+# Decide a remediation, and record what `dorgu remediation heal` did. approve and reject
+# are custom verbs the admission policy checks; the status patch is not enough on its own.
+# The status writes are exactly the ones the CLI makes: the decision (phase, approvedBy,
+# approvedAt) and its two conditions (RejectionReason, WorkloadPatched). The policies
+# refuse a service account whatever it is granted, and the proposer of a remediation.
+#
+# heal also changes the workload it targets. That is the person's own cluster permission
+# and is deliberately not part of this role.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: dorgu-approver
+  labels:
+    {{- include "dorgu-operator.admissionLabels" . | nindent 4 }}
+rules:
+  - apiGroups: ["dorgu.io"]
+    resources: ["remediationactions"]
+    verbs: ["get", "list", "watch", "approve", "reject"]
+  - apiGroups: ["dorgu.io"]
+    resources: ["remediationactions/status"]
+    verbs: ["get", "patch"]
+  - apiGroups: ["dorgu.io"]
+    resources:
+      - applicationpersonas
+      - clusterpersonas
+      - incidentmemories
+      - remediationproposals
+    verbs: ["get", "list", "watch"]
+  # The CLI records a decline (an expired ticket, a refused ticket) as a Warning Event on
+  # the remediation.
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create"]
+{{- end }}

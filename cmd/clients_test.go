@@ -19,6 +19,7 @@ package main
 import (
 	"context"
 	"errors"
+	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	"os"
 	"regexp"
 	"strings"
@@ -95,6 +96,7 @@ func proposeThroughPipeline(t *testing.T, apiReader func(client.WithWatch) clien
 	scheme := runtime.NewScheme()
 	for _, add := range []func(*runtime.Scheme) error{
 		dorguv1.AddToScheme, dorguv1alpha1.AddToScheme, appsv1.AddToScheme, apiextensionsv1.AddToScheme,
+		admissionregistrationv1.AddToScheme,
 	} {
 		if err := add(scheme); err != nil {
 			t.Fatal(err)
@@ -165,7 +167,7 @@ func TestMain_CallsGetClientOnlyToBuildTheGuardedClients(t *testing.T) {
 	// And nothing hands the raw client to a component under another name.
 }
 
-// installedCRDs are the two CRDs the intake's preflight reads, as a current
+// installedCRDs are the two CRDs and the admission policies the intake's preflight reads, as a current
 // installation has them.
 func installedCRDs() []client.Object {
 	crd := func(name, version string, spec ...string) client.Object {
@@ -186,8 +188,26 @@ func installedCRDs() []client.Object {
 					{Type: apiextensionsv1.Established, Status: apiextensionsv1.ConditionTrue}}},
 		}
 	}
-	return []client.Object{
+	objs := []client.Object{
 		crd(intake.ProposalCRDName, "v1alpha1", "steps"),
 		crd(intake.ActionCRDName, "v1", "provenance", "steps"),
 	}
+	// The admission policies and bindings the preflight reads, as the chart installs them.
+	fail := admissionregistrationv1.Fail
+	for _, name := range intake.AdmissionPolicyNames {
+		objs = append(objs,
+			&admissionregistrationv1.ValidatingAdmissionPolicy{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Annotations: map[string]string{
+					intake.AdmissionPolicyVersionAnnotation: intake.AdmissionPolicyVersion}},
+				Spec: admissionregistrationv1.ValidatingAdmissionPolicySpec{FailurePolicy: &fail},
+			},
+			&admissionregistrationv1.ValidatingAdmissionPolicyBinding{
+				ObjectMeta: metav1.ObjectMeta{Name: name},
+				Spec: admissionregistrationv1.ValidatingAdmissionPolicyBindingSpec{
+					PolicyName:        name,
+					ValidationActions: []admissionregistrationv1.ValidationAction{admissionregistrationv1.Deny},
+				},
+			})
+	}
+	return objs
 }

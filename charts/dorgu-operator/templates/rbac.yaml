@@ -70,6 +70,18 @@ rules:
   - apiGroups: ["authentication.k8s.io"]
     resources: ["selfsubjectreviews"]
     verbs: ["create"]
+  # The preflight reads the operator's own admission policies and bindings, by name, and
+  # closes the intake and stops issuing tickets if one is missing or would not deny.
+  - apiGroups: ["admissionregistration.k8s.io"]
+    resources: ["validatingadmissionpolicies", "validatingadmissionpolicybindings"]
+    resourceNames: ["dorgu-proposal-identity", "dorgu-action-integrity", "dorgu-approval-gate"]
+    verbs: ["get"]
+  # ... and asks the API server whether it holds the permissions it needs
+  # (SelfSubjectAccessReview), so a partial hand-written role closes the intake with a
+  # message that names what is missing.
+  - apiGroups: ["authorization.k8s.io"]
+    resources: ["selfsubjectaccessreviews"]
+    verbs: ["create"]
   # DorguEvent CRD (event pipeline). `delete` is the retention and cap cleaner
   # pruning dorgu's own records, which without it grew without bound in etcd. It
   # is scoped to dorgu.io/dorguevents and to no workload kind, so the published

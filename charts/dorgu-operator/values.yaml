@@ -16,6 +16,18 @@ serviceAccount:
   annotations: {}
   name: ""
 
+# ClusterRoles for the people and agents that use Dorgu. They are cluster-scoped and
+# fixed-name (one Dorgu per cluster): dorgu-viewer, dorgu-agent-reader,
+# dorgu-agent-proposer and dorgu-approver. Bind them with a RoleBinding in the namespaces
+# you want (or a ClusterRoleBinding for all of them). Nothing is bound by default.
+#
+# The admission policies that enforce who may approve ship with the chart and cannot be
+# turned off: without them the operator reports ProposalIntakeReady=False, converts no
+# proposal and issues no apply ticket.
+rbac:
+  roles:
+    create: true
+
 # Validation settings
 validation:
   requeueInterval: 60s

@@ -34,6 +34,7 @@ import (
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
+	"github.com/dorgu-ai/dorgu-operator/internal/intake"
 	"github.com/dorgu-ai/dorgu-operator/internal/metrics"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation"
 )
@@ -171,11 +172,29 @@ type RemediationController struct {
 	// records none.
 	Recorder record.EventRecorder
 
+	// TicketGuard says whether apply tickets may be issued. While the admission policies
+	// that check who approved are missing or the operator lacks the permissions it needs,
+	// it names why, and an approved action waits for it to open instead of being ticketed
+	// (P2-D8). Nil never blocks (no preflight: the health pipeline is off).
+	TicketGuard TicketGuard
+
 	// PendingTTL is how long a proposal may wait for approval, counted from its
 	// creation, before it becomes Expired. Zero disables the TTL (an explicit
 	// spec.approval.deadline still applies).
 	PendingTTL time.Duration
 }
+
+// TicketGuard reports why apply tickets must not be issued right now, or nil.
+type TicketGuard interface {
+	TicketsBlocked() *intake.Failure
+}
+
+// ticketGuardRecheck is how long an approved action waits before the guard is asked again.
+const ticketGuardRecheck = 30 * time.Second
+
+// EventReasonTicketsPaused is the Warning Event on an approved action the operator will not
+// ticket yet.
+const EventReasonTicketsPaused = "DorguTicketsPaused"
 
 // Reconcile drives the RemediationAction through its lifecycle state machine.
 func (r *RemediationController) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -423,6 +442,19 @@ func (r *RemediationController) handleApproved(ctx context.Context, logger logr.
 		logger.Info("approved plan is advice for an owned workload; recording the approval without applying anything",
 			"managedBy", decision.Ownership.ManagedBy)
 		return ctrl.Result{}, r.transitionToAcknowledged(ctx, action)
+	}
+
+	if r.TicketGuard != nil {
+		if blocked := r.TicketGuard.TicketsBlocked(); blocked != nil {
+			// The approval is only as good as the admission policies that checked who gave
+			// it. Nothing is written: the action stays Approved and is looked at again.
+			message := fmt.Sprintf("no apply ticket is issued while the operator's admission checks fail (%s): %s",
+				blocked.Reason, blocked.Message)
+			logger.Info("approval cleared the gate but no ticket is issued: the admission checks fail",
+				"reason", blocked.Reason)
+			emit(r.Recorder, action, corev1.EventTypeWarning, EventReasonTicketsPaused, message)
+			return ctrl.Result{RequeueAfter: ticketGuardRecheck}, nil
+		}
 	}
 
 	ticket, err := decision.Ticket()

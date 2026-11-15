@@ -23,6 +23,8 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
+	authzv1 "k8s.io/api/authorization/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/rest"
@@ -36,6 +38,9 @@ func crdOnlyClient(t *testing.T, objs ...client.Object) client.Client {
 	t.Helper()
 	scheme := runtime.NewScheme()
 	if err := apiextensionsv1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := admissionregistrationv1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
 	return fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).Build()
@@ -64,8 +69,9 @@ func TestNewIntakeSetup_IsClosedForEachReasonAndOpenWhenAllHold(t *testing.T) {
 
 	noCRDs := newIntakeSetup(crdOnlyClient(t), testOperatorNS, logr.Discard())
 	got := failureReasons(noCRDs.Preflight.Run(context.Background()))
-	if len(got) != 2 || got[0] != intake.ReasonProposalCRDMissing || got[1] != intake.ReasonActionProvenanceMissing {
-		t.Fatalf("with no CRDs: %v", got)
+	want := []string{intake.ReasonProposalCRDMissing, intake.ReasonActionProvenanceMissing, intake.ReasonAdmissionPoliciesMissing}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] {
+		t.Fatalf("with no CRDs and no policies: %v, want %v", got, want)
 	}
 
 	t.Setenv(intake.ServiceAccountEnv, "")
@@ -168,5 +174,39 @@ func TestPreflightRESTConfig_BoundsRequestsOnACopy(t *testing.T) {
 	strict := &rest.Config{Timeout: time.Second}
 	if preflightRESTConfig(strict).Timeout != time.Second {
 		t.Fatal("a stricter timeout must be kept")
+	}
+}
+
+// P2-D8, at the wiring: the policies missing closes the intake on its own, and the RBAC
+// review (C1 re-check N-4) closes it for a permission the operator lacks.
+func TestNewIntakeSetup_IsClosedWhenThePoliciesAreMissingOrTheRBACIsPartial(t *testing.T) {
+	t.Setenv(intake.ServiceAccountEnv, "dorgu-operator")
+	allowAll := func(context.Context, authzv1.ResourceAttributes) (bool, string, error) { return true, "", nil }
+
+	noPolicies := newIntakeSetup(crdOnlyClient(t, installedCRDs()[:2]...), testOperatorNS, logr.Discard())
+	got := failureReasons(noPolicies.Preflight.Run(context.Background()))
+	if len(got) != 1 || got[0] != intake.ReasonAdmissionPoliciesMissing {
+		t.Fatalf("with no policies: %v", got)
+	}
+	if noPolicies.Preflight.TicketsBlocked() == nil {
+		t.Fatal("with no policies no ticket is issued either")
+	}
+
+	good := newIntakeSetup(crdOnlyClient(t, installedCRDs()...), testOperatorNS, logr.Discard())
+	good.verifyRBAC(allowAll)
+	if got := good.Preflight.Run(context.Background()); len(got) != 0 {
+		t.Fatalf("a complete installation with its RBAC must pass, got %v", failureReasons(got))
+	}
+	if good.Preflight.TicketsBlocked() != nil {
+		t.Fatal("tickets flow when everything holds")
+	}
+
+	partial := newIntakeSetup(crdOnlyClient(t, installedCRDs()...), testOperatorNS, logr.Discard())
+	partial.verifyRBAC(func(_ context.Context, a authzv1.ResourceAttributes) (bool, string, error) {
+		return !(a.Resource == "remediationproposals" && a.Verb == "list"), "", nil
+	})
+	got = failureReasons(partial.Preflight.Run(context.Background()))
+	if len(got) != 1 || got[0] != intake.ReasonOperatorRBACMissing {
+		t.Fatalf("with a partial role: %v", got)
 	}
 }

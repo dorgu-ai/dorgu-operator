@@ -1,0 +1,11 @@
+# The admission policies that check who proposes and who approves (P2). They are
+# cluster-scoped and the operator looks them up by fixed name, so this is a kustomization
+# of its own: config/default adds a name prefix to everything it builds, which would rename
+# them. `make deploy` applies it next to config/default.
+#
+# policies.yaml is the chart's template rendered by hack/render-admission-policies.sh
+# (make admission-policies); a test fails when the two differ. It names the operator as
+# system:serviceaccount:dorgu-operator-system:dorgu-operator-controller-manager, which is
+# what config/default makes of config/rbac/service_account.yaml.
+resources:
+  - policies.yaml

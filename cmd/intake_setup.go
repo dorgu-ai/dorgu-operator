@@ -23,6 +23,7 @@ import (
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/dorgu-ai/dorgu-operator/internal/controller"
 	"github.com/dorgu-ai/dorgu-operator/internal/intake"
 )
 
@@ -40,9 +41,10 @@ type intakeSetup struct {
 }
 
 // newIntakeSetup works out the operator's identity and builds the preflight with
-// the checks that exist today: identity, the RemediationProposal CRD, and
-// spec.provenance in the RemediationAction CRD. C2 adds its admission-policy check
-// with setup.Preflight.Add. reader must be uncached.
+// the checks that need only the reader: identity, the RemediationProposal CRD,
+// spec.provenance in the RemediationAction CRD, and the admission policies and bindings
+// (P2-D8). main adds the two that need a clientset, verifyIdentity and verifyRBAC.
+// reader must be uncached.
 func newIntakeSetup(reader client.Reader, operatorNS string, log logr.Logger) intakeSetup {
 	username, err := intake.OperatorUsername(operatorNS)
 	if err != nil {
@@ -54,6 +56,7 @@ func newIntakeSetup(reader client.Reader, operatorNS string, log logr.Logger) in
 			intake.OperatorIdentityCheck(err),
 			intake.ProposalCRDCheck(reader),
 			intake.ActionProvenanceCheck(reader),
+			intake.AdmissionPoliciesCheck(reader),
 		),
 	}
 }
@@ -67,6 +70,25 @@ func preflightRESTConfig(cfg *rest.Config) *rest.Config {
 		out.Timeout = preflightTimeout
 	}
 	return out
+}
+
+// ticketGuardFor is what the RemediationController asks before it issues a ticket: the
+// preflight, when there is one. The nil interface, not a nil *Preflight, when there is
+// none, so the controller's own nil check holds.
+func ticketGuardFor(s intakeSetup) controller.TicketGuard {
+	if s.Preflight == nil {
+		return nil
+	}
+	return s.Preflight
+}
+
+// verifyRBAC adds the check that the operator holds the permissions the intake needs,
+// asked of the API server itself (C1 re-check N-4).
+func (s intakeSetup) verifyRBAC(review intake.AccessReviewer) {
+	if review == nil {
+		return
+	}
+	s.Preflight.Add(intake.OperatorRBACCheck(review))
 }
 
 // verifyIdentity adds the check that the API server agrees about who the operator
