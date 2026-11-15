@@ -61,6 +61,11 @@ spec:
             description: |-
               RemediationProposalSpec is what a proposer asks for. It is immutable: a proposer
               that wants something else writes a new proposal.
+
+              A ticketed rollback (rollbackOf) is a proposal the operator writes the steps of: it
+              derives them from what it recorded before it applied the referenced action, so a
+              rollback proposal carries no steps, no incidentRef and no agent, and its source is
+              "rollback". The source is reserved: no other proposal may use it.
             properties:
               agent:
                 description: Agent is informational detail about the agent behind
@@ -156,9 +161,11 @@ spec:
                 type: string
               rollbackOf:
                 description: |-
-                  RollbackOf is RESERVED for a ticketed rollback of a RemediationAction. The
-                  operator does not honour it yet: a proposal that sets it is rejected with
-                  reason NotYetSupported.
+                  RollbackOf asks for a ticketed rollback of a RemediationAction that was applied.
+                  The operator ignores any steps, derives its own from the values it recorded
+                  before it applied that action, and runs the result through the gate, approval
+                  and an apply ticket like any other proposal. Only a person may ask (not a
+                  service account), and only for an action in the proposal's namespace.
                 properties:
                   name:
                     description: Name of the RemediationAction.
@@ -396,6 +403,15 @@ spec:
             x-kubernetes-validations:
             - message: 'spec is immutable: write a new proposal instead'
               rule: self == oldSelf
+            - message: 'a rollback proposal carries no steps: the operator derives
+                them from what it recorded before the change'
+              rule: '!has(self.rollbackOf) || !has(self.steps) || size(self.steps)
+                == 0'
+            - message: 'a rollback proposal names no incidentRef and no agent: it
+                is a person''s request about one action'
+              rule: '!has(self.rollbackOf) || (!has(self.incidentRef) && !has(self.agent))'
+            - message: source is 'rollback' exactly when rollbackOf is set
+              rule: has(self.rollbackOf) == (self.?source.orValue('agent') == 'rollback')
           status:
             description: RemediationProposalStatus is the operator's answer.
             properties:
@@ -493,8 +509,12 @@ spec:
                     description: |-
                       Reason is a machine-readable token. At Intake it is one of RateLimited,
                       DuplicateIdempotencyKey, IncidentNotFound, IncidentTargetMismatch,
-                      IncidentResolved, NotYetSupported, ProposerInvalid or TargetNamespaceMismatch. At a gate stage
-                      it is the guardrail that refused.
+                      IncidentResolved, ProposerInvalid, TargetNamespaceMismatch or, for a rollback,
+                      RollbackNotHuman, RollbackTargetNotFound, RollbackTargetMismatch,
+                      RollbackNotApplied, RollbackOfRollback, RollbackNoRecordedState,
+                      RollbackWorkloadDrifted, RollbackNothingToRestore, RollbackAlreadyOpen or
+                      RollbackWouldBePartial (the gate would not clear the whole restore as derived).
+                      At a gate stage it is the guardrail that refused.
                     maxLength: 63
                     type: string
                   stage:

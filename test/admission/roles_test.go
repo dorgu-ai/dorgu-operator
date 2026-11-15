@@ -184,9 +184,9 @@ func TestRoles_AnApproverDecidesWhatItDidNotPropose(t *testing.T) {
 		Reason: "DorguCLIDeclined", Message: "declined", Type: "Warning",
 		Source: corev1.EventSource{Component: "dorgu-cli"},
 	}))
-	err := alice.c.Create(ctxFor(t), admissionenv.NewProposal(ns, uniq("p"), alice.name))
-	require.Error(t, err)
-	assert.True(t, apierrors.IsForbidden(err), "an approver does not propose")
+	// It may write a proposal as itself: that is how `dorgu remediation rollback` asks for a
+	// rollback (C6). It never writes an action, and cannot decide what it proposed.
+	require.NoError(t, alice.c.Create(ctxFor(t), admissionenv.NewProposal(ns, uniq("p"), alice.name)))
 	forbiddenWrite := alice.c.Create(ctxFor(t), admissionenv.NewAction(ns, uniq("ra"), ""))
 	assert.True(t, apierrors.IsForbidden(forbiddenWrite))
 }

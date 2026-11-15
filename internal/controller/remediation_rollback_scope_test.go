@@ -273,7 +273,8 @@ var _ = Describe("RemediationController rollback scope (CR5-02)", func() {
 		Expect(cond.Message).To(ContainSubstring("resources.limits.memory"))
 		Expect(cond.Message).To(ContainSubstring("512Mi"))
 		Expect(cond.Message).To(ContainSubstring("256Mi"))
-		Expect(cond.Message).To(ContainSubstring("kubectl set resources deployment/rs-diverged-persona"))
+		Expect(cond.Message).To(ContainSubstring("dorgu remediation rollback rs-diverged-action -n default"))
+		Expect(cond.Message).NotTo(ContainSubstring("kubectl set resources"))
 	})
 
 	It("stays quiet when the workload never took the change", func() {

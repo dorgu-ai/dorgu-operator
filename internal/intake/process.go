@@ -137,26 +137,10 @@ func (p *Processor) Process(ctx context.Context, key client.ObjectKey, hint *Hin
 		return out, err
 	}
 
-	var incident *dorguv1.IncidentMemory
-	if hint != nil && hint.Facts.Incident != nil {
-		// The planner recorded this incident before it proposed, and passes it in.
-		// It is held to the same rule as a named one: a bug there must not turn into
-		// a change on the wrong persona.
-		incident = hint.Facts.Incident
-		if out, err := p.checkIncident(ctx, &prop, incident); out != nil || err != nil {
-			return out, err
-		}
-	} else {
-		var out *Outcome
-		var err error
-		if incident, out, err = p.resolveIncident(ctx, &prop); out != nil || err != nil {
-			return out, err
-		}
-	}
-
 	if !callerLocked {
 		// Anyone else takes the lock here, so two proposals for one persona never
-		// race through the gate.
+		// race through the gate. A rollback decides on what is open for its action
+		// under it, so it is taken before anything is read.
 		persona := personaRefOf(&prop)
 		unlock, err := p.locks.Acquire(ctx, &persona, "", p.lockTimeout)
 		if err != nil {
@@ -164,7 +148,49 @@ func (p *Processor) Process(ctx context.Context, key client.ObjectKey, hint *Hin
 		}
 		defer unlock()
 	}
-	return p.convert(ctx, &prop, incident, hint)
+
+	var derived *gate.RollbackDerivation
+	if prop.Spec.RollbackOf != nil {
+		// An action an earlier attempt of this very proposal already made settles it: by
+		// now it may have been approved, applied and completed, and a fresh derivation
+		// would call that "nothing to restore" and reject a proposal whose action exists.
+		// The planner's path finds its action before it judges anything, and so does this.
+		existing, err := p.existingAction(ctx, &prop)
+		var orphan *orphanedActionError
+		if errors.As(err, &orphan) {
+			return p.reject(ctx, &prop, nil, v1alpha1.StageIntake, v1alpha1.ReasonActionInvalid, nil, orphan.Error())
+		}
+		if err != nil {
+			return nil, err
+		}
+		if existing == nil {
+			out, d, err := p.planRollback(ctx, &prop)
+			if out != nil || err != nil {
+				return out, err
+			}
+			derived = d
+		}
+	}
+
+	var incident *dorguv1.IncidentMemory
+	switch {
+	case hint != nil && hint.Facts.Incident != nil:
+		// The planner recorded this incident before it proposed, and passes it in.
+		// It is held to the same rule as a named one: a bug there must not turn into
+		// a change on the wrong persona.
+		incident = hint.Facts.Incident
+		if out, err := p.checkIncident(ctx, &prop, incident); out != nil || err != nil {
+			return out, err
+		}
+	default:
+		var out *Outcome
+		var err error
+		if incident, out, err = p.resolveIncident(ctx, &prop); out != nil || err != nil {
+			return out, err
+		}
+	}
+
+	return p.convert(ctx, &prop, incident, hint, derived)
 }
 
 // decided reports whether the operator has already ruled on this generation.
@@ -210,9 +236,10 @@ func (p *Processor) intakeChecks(
 			fmt.Sprintf("spec.proposer.username %s: an identity is recorded exactly as it is or not at all, "+
 				"so write the proposal as a user whose name has none of those", problem))
 	}
-	if prop.Spec.RollbackOf != nil {
-		return p.reject(ctx, prop, nil, v1alpha1.StageIntake, v1alpha1.ReasonNotYetSupported, nil,
-			"rollbackOf is reserved and not supported yet: a ticketed rollback is not available in this version")
+	if prop.Spec.RollbackOf != nil && strings.HasPrefix(prop.Spec.Proposer.Username, systemUserPrefix) {
+		return p.reject(ctx, prop, nil, v1alpha1.StageIntake, v1alpha1.ReasonRollbackNotHuman, nil,
+			"a rollback is a request for a person to approve a change to a workload, so only a person may ask for one: "+
+				"a service account, an agent or the operator cannot")
 	}
 	if prop.Namespace != prop.Spec.Target.Namespace {
 		return p.reject(ctx, prop, nil, v1alpha1.StageIntake, v1alpha1.ReasonNamespaceMismatch, nil,
@@ -243,7 +270,9 @@ func (p *Processor) intakeChecks(
 func (p *Processor) resolveIncident(
 	ctx context.Context, prop *v1alpha1.RemediationProposal,
 ) (*dorguv1.IncidentMemory, *Outcome, error) {
-	if ref := prop.Spec.IncidentRef; ref != nil {
+	// A rollback answers an incident of its own, never one the requester named: the
+	// original action's incident keeps the resolution it was given.
+	if ref := prop.Spec.IncidentRef; ref != nil && prop.Spec.RollbackOf == nil {
 		var im dorguv1.IncidentMemory
 		// An incident in another namespace is treated as absent: a proposal in one
 		// namespace learns nothing about another's.
@@ -306,6 +335,7 @@ func (p *Processor) checkIncident(
 // convert runs the gate over the proposal and creates the action or rejects it.
 func (p *Processor) convert(
 	ctx context.Context, prop *v1alpha1.RemediationProposal, incident *dorguv1.IncidentMemory, hint *Hint,
+	derived *gate.RollbackDerivation,
 ) (*Outcome, error) {
 	existing, err := p.existingAction(ctx, prop)
 	var orphan *orphanedActionError
@@ -320,17 +350,35 @@ func (p *Processor) convert(
 	}
 
 	draft, facts := derivedAction(prop, incident), factsFromIncident(incident)
-	if hint != nil {
+	switch {
+	case derived != nil:
+		// The operator derived this plan from its own record of a resource change, so it
+		// is a resource adjustment whatever the rollback's incident says: the class the
+		// gate admits a persona-update for. The requester's words decided nothing.
+		draft, facts = rollbackDraft(prop, incident, derived), factsFromIncident(incident)
+		facts.SuggestedAction = gate.ClassResourceAdjustment
+	case hint != nil:
 		draft, facts = hint.Draft.DeepCopy(), hint.Facts
 	}
 
-	dec, err := p.gate.Run(ctx, candidateFor(draft, facts), gate.PhaseProposal)
+	cand := candidateFor(draft, facts)
+	if derived != nil {
+		// The action being undone is the reason for this plan, not a reason to refuse
+		// it (a failed cooldown), and a person's undo is not withheld by observe mode.
+		cand.RollbackOf = prop.Spec.RollbackOf.Name
+	}
+	dec, err := p.gate.Run(ctx, cand, gate.PhaseProposal)
 	if err != nil {
 		return nil, fmt.Errorf("gate: %w", err)
 	}
 	if !dec.Allowed() {
 		stage, guardrail := dec.RefusedBy()
 		return p.reject(ctx, prop, incident, stage, guardrail, dec, dec.SkipReason())
+	}
+	if derived != nil {
+		if why := partialRollbackReason(dec, derived); why != "" {
+			return p.reject(ctx, prop, incident, v1alpha1.StageIntake, v1alpha1.ReasonRollbackWouldBePartial, dec, why)
+		}
 	}
 
 	// status.gate is the record to trust, so it records this run: the one that
@@ -340,7 +388,11 @@ func (p *Processor) convert(
 		InstallDecision(draft, dec)
 		draft.Spec.Action = dorguv1.RemediationActionDetail{Type: dorguv1.ActionTypeNotification}
 	}
-	draft.Spec.Provenance = provenanceFor(prop, hint != nil)
+	if derived != nil {
+		draft.Spec.Provenance = rollbackProvenance(prop, p.username)
+	} else {
+		draft.Spec.Provenance = provenanceFor(prop, hint != nil)
+	}
 	if draft.Annotations == nil {
 		draft.Annotations = map[string]string{}
 	}

@@ -48,6 +48,15 @@ func (s modePolicyStage) Run(ctx context.Context, cand *Candidate, d *Decision) 
 	numbers := map[string]string{"mode": mode}
 	switch mode {
 	case dorguv1.SelfHealingModeObserve:
+		if cand.RollbackOf != "" {
+			// Observe withholds what Dorgu volunteers. A rollback is a person asking to
+			// undo Dorgu's own change, which is what someone who has just switched Dorgu
+			// to observe is most likely to want. It still needs approval and a ticket,
+			// and every other guardrail still rules on it.
+			d.pass(StageModePolicy, GuardrailSelfHealingMode,
+				"mode is observe; a rollback is a person's request to undo a change Dorgu made, so it is not withheld", numbers)
+			return nil
+		}
 		s.g.logger.Info(SkipReasonObserveMode,
 			"persona", cand.Target.Name, "incident", cand.IncidentRef.Name,
 			"hint", "set spec.policies.selfHealing.mode=propose on the ClusterPersona to receive remediation proposals")

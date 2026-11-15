@@ -399,3 +399,29 @@ func TestAdmissionPolicies_EveryStatusFieldHasAnOwner(t *testing.T) {
 		}
 	}
 }
+
+// C6 (P2-D10): asking for a rollback is the approver's authority. The proposal policy
+// refuses a system: identity and a person without the approve verb, on create only, and
+// the denial reasons are the approval gate's (no tenth token).
+func TestAdmissionPolicies_RollbackProposalsNeedAPersonWithTheApproveVerb(t *testing.T) {
+	policies, _ := renderedPolicies(t)
+	var found []admissionregistrationv1.Validation
+	for _, p := range policies {
+		if p.Name != "dorgu-proposal-identity" {
+			continue
+		}
+		for _, v := range p.Spec.Validations {
+			if strings.Contains(v.Expression, "rollbackOf") {
+				found = append(found, v)
+			}
+		}
+	}
+	require.Len(t, found, 2, "one rule for who may ask, one for the verb")
+	for _, v := range found {
+		assert.Contains(t, v.Expression, "request.operation != 'CREATE'",
+			"a rollback is asked for at create, and the spec is immutable after")
+		assert.Contains(t, []string{"ServiceAccountCannotApprove", "MissingApproveVerb"}, reasonOf(v.Message))
+	}
+	assert.Contains(t, found[0].Expression, "startsWith('system:')")
+	assert.Contains(t, found[1].Expression, "check('approve')")
+}

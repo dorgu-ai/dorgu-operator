@@ -27,8 +27,11 @@ const (
 	// default for a proposal that names no source.
 	ProposalSourceAgent = "agent"
 
-	// ProposalSourceRollback is reserved for a ticketed rollback (rollbackOf). The
-	// reconciler does not honour it yet.
+	// ProposalSourceRollback marks a ticketed rollback (rollbackOf). The operator
+	// derived the steps from what it recorded before it applied the action, and the
+	// requestedBy field of the provenance names the person who asked. The value is
+	// reserved: a proposal may use it only together with rollbackOf, and the operator
+	// writes it into provenance only for one.
 	ProposalSourceRollback = "rollback"
 )
 
@@ -104,3 +107,10 @@ func (s *RemediationActionSpec) ProposerOrDefault(operatorUsername string) strin
 	}
 	return s.Provenance.Proposer.Username
 }
+
+// AnnotationRollbackOf is stamped by the operator on the RemediationAction it makes
+// for a ticketed rollback: the name of the action being rolled back, in the same
+// namespace. It is how the operator finds a rollback that is already open, and how a
+// client lists the rollbacks of an action. Only the operator writes it (admission
+// refuses every other writer of dorgu.io/ annotations on an action).
+const AnnotationRollbackOf = "dorgu.io/rollback-of"

@@ -474,13 +474,13 @@ func TestClaim_ReleaseLetsGo(t *testing.T) {
 }
 
 func TestIntakeChecks(t *testing.T) {
-	t.Run("rollbackOf is not yet supported", func(t *testing.T) {
+	t.Run("a rollback of an action that does not exist is refused, not left unsupported", func(t *testing.T) {
 		w := newWorld(t, Config{}, baseObjects()...)
 		p := proposal("p", "alice", "k")
 		p.Spec.RollbackOf = &v1alpha1.ActionRef{Name: "ra-1"}
 		w.create(t, p)
 		out := w.process(t, "p", nil)
-		assert.Equal(t, v1alpha1.ReasonNotYetSupported, out.Rejection.Reason)
+		assert.Equal(t, v1alpha1.ReasonRollbackTargetNotFound, out.Rejection.Reason)
 		assert.Equal(t, v1alpha1.StageIntake, out.Rejection.Stage)
 	})
 	t.Run("the namespace must be the target's", func(t *testing.T) {

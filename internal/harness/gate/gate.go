@@ -249,6 +249,7 @@ func (g *Gate) evaluate(ctx context.Context, cand Candidate, phase Phase, metric
 		}
 	}
 	capStepSafety(d.Steps)
+	enforceWholeRollback(&cand, phase, d)
 	return d, nil
 }
 
