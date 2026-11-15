@@ -47,7 +47,7 @@ func notReadyBetween(from, to time.Time) func(time.Time) bool {
 // statusWrite is a managedFields entry for a manager that wrote the approval through the
 // status subresource at the given time. fields are the status fields it owns.
 func statusWrite(manager string, at *time.Time, fields ...string) metav1.ManagedFieldsEntry {
-	var owned []string
+	owned := make([]string, 0, len(fields))
 	for _, f := range fields {
 		owned = append(owned, `"f:`+f+`":{}`)
 	}

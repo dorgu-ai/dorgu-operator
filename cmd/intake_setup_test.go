@@ -85,7 +85,8 @@ func TestNewIntakeSetup_IsClosedForEachReasonAndOpenWhenAllHold(t *testing.T) {
 	got = failureReasons(noIdentity.Preflight.Run(context.Background()))
 	// The policy content check cannot say whose policies to expect, so it is unverified as
 	// well: tickets stop (C2 F-3).
-	if want := []string{intake.ReasonOperatorIdentityUnknown, intake.ReasonAdmissionPoliciesUnverified}; !slices.Equal(got, want) {
+	want = []string{intake.ReasonOperatorIdentityUnknown, intake.ReasonAdmissionPoliciesUnverified}
+	if !slices.Equal(got, want) {
 		t.Fatalf("with no identity: %v, want %v", got, want)
 	}
 }
@@ -145,7 +146,8 @@ func TestNewIntakeSetup_VerifyIdentityFailsClosedOnAMismatch(t *testing.T) {
 	got := failureReasons(wrong.Preflight.Run(context.Background()))
 	// The mismatch, and the policy check, which compares the cluster with the identity the
 	// API server confirms, not the one claimed, so it fails too and tickets stop.
-	if want := []string{intake.ReasonAdmissionPoliciesUnverified, intake.ReasonOperatorIdentityMismatch}; !slices.Equal(got, want) {
+	want := []string{intake.ReasonAdmissionPoliciesUnverified, intake.ReasonOperatorIdentityMismatch}
+	if !slices.Equal(got, want) {
 		t.Fatalf("a wrong identity: %v, want %v", got, want)
 	}
 
@@ -153,8 +155,9 @@ func TestNewIntakeSetup_VerifyIdentityFailsClosedOnAMismatch(t *testing.T) {
 	none := newIntakeSetup(crdOnlyClient(t, installedCRDs()...), testOperatorNS, logr.Discard())
 	none.verifyIdentity(who("anyone"))
 	got = failureReasons(none.Preflight.Run(context.Background()))
-	if want := []string{intake.ReasonOperatorIdentityUnknown, intake.ReasonAdmissionPoliciesUnverified}; !slices.Equal(got, want) {
-		t.Fatalf("with no configured identity there is nothing to verify, and it is already closed: %v, want %v", got, want)
+	want = []string{intake.ReasonOperatorIdentityUnknown, intake.ReasonAdmissionPoliciesUnverified}
+	if !slices.Equal(got, want) {
+		t.Fatalf("with no configured identity there is nothing to verify, and it is closed: %v, want %v", got, want)
 	}
 }
 

@@ -33,6 +33,8 @@ import (
 // the intake on a fresh install, so this runs the preflight's own list against the chart's
 // rendered ClusterRole and against the generated config/rbac/role.yaml, with no cluster.
 
+const kindClusterRole = "ClusterRole"
+
 // ruleAllows reports whether one RBAC rule allows verb on group/resource[/subresource],
 // for the object called name ("" for a request that names none: list, watch, create).
 func ruleAllows(rule rbacv1.PolicyRule, group, resource, subresource, name, verb string) bool {
@@ -73,7 +75,7 @@ func clusterRoleRules(t *testing.T, manifests, nameSuffix string) []rbacv1.Polic
 	t.Helper()
 	for doc := range strings.SplitSeq(manifests, "\n---") {
 		var role rbacv1.ClusterRole
-		if err := yaml.Unmarshal([]byte(doc), &role); err != nil || role.Kind != "ClusterRole" {
+		if err := yaml.Unmarshal([]byte(doc), &role); err != nil || role.Kind != kindClusterRole {
 			continue
 		}
 		if strings.HasSuffix(role.Name, nameSuffix) {
@@ -133,30 +135,35 @@ func TestRuleMatcher(t *testing.T) {
 			}
 			return strings.Split(s, ",")
 		}
-		return rbacv1.PolicyRule{APIGroups: split(groups), Resources: split(resources), ResourceNames: split(names), Verbs: split(verbs)}
+		return rbacv1.PolicyRule{
+			APIGroups: split(groups), Resources: split(resources), ResourceNames: split(names), Verbs: split(verbs),
+		}
 	}
+	const dg, ra = "dorgu.io", "remediationactions"
+	type ask struct{ group, resource, subresource, name, verb string }
 	cases := []struct {
-		name                                    string
-		rule                                    rbacv1.PolicyRule
-		group, resource, subresource, obj, verb string
-		want                                    bool
+		name string
+		rule rbacv1.PolicyRule
+		ask  ask
+		want bool
 	}{
-		{"plain match", rule("dorgu.io", "remediationactions", "", "get,delete"), "dorgu.io", "remediationactions", "", "", "delete", true},
-		{"verb missing", rule("dorgu.io", "remediationactions", "", "get"), "dorgu.io", "remediationactions", "", "", "delete", false},
-		{"wrong group", rule("apps", "remediationactions", "", "get"), "dorgu.io", "remediationactions", "", "", "get", false},
-		{"the resource rule does not cover a subresource", rule("dorgu.io", "remediationactions", "", "update"), "dorgu.io", "remediationactions", "status", "", "update", false},
-		{"a subresource rule does not cover the resource", rule("dorgu.io", "remediationactions/status", "", "update"), "dorgu.io", "remediationactions", "", "", "update", false},
-		{"subresource match", rule("dorgu.io", "remediationactions/status", "", "update"), "dorgu.io", "remediationactions", "status", "", "update", true},
-		{"wildcards", rule("*", "*", "", "*"), "dorgu.io", "remediationactions", "status", "", "delete", true},
-		{"resource/* covers subresources", rule("dorgu.io", "remediationactions/*", "", "get"), "dorgu.io", "remediationactions", "status", "", "get", true},
-		{"named rule allows a named request", rule("g", "r", "a,b", "get"), "g", "r", "", "a", "get", true},
-		{"named rule refuses another name", rule("g", "r", "a,b", "get"), "g", "r", "", "c", "get", false},
-		{"named rule refuses a request that names none", rule("g", "r", "a,b", "list"), "g", "r", "", "", "list", false},
-		{"unnamed rule allows a named request", rule("g", "r", "", "get"), "g", "r", "", "a", "get", true},
+		{"plain match", rule(dg, ra, "", "get,delete"), ask{dg, ra, "", "", "delete"}, true},
+		{"verb missing", rule(dg, ra, "", "get"), ask{dg, ra, "", "", "delete"}, false},
+		{"wrong group", rule("apps", ra, "", "get"), ask{dg, ra, "", "", "get"}, false},
+		{"a resource rule skips subresources", rule(dg, ra, "", "update"), ask{dg, ra, "status", "", "update"}, false},
+		{"a subresource rule skips the resource", rule(dg, ra+"/status", "", "update"), ask{dg, ra, "", "", "update"}, false},
+		{"subresource match", rule(dg, ra+"/status", "", "update"), ask{dg, ra, "status", "", "update"}, true},
+		{"wildcards", rule("*", "*", "", "*"), ask{dg, ra, "status", "", "delete"}, true},
+		{"resource/* covers subresources", rule(dg, ra+"/*", "", "get"), ask{dg, ra, "status", "", "get"}, true},
+		{"named rule allows a named request", rule("g", "r", "a,b", "get"), ask{"g", "r", "", "a", "get"}, true},
+		{"named rule refuses another name", rule("g", "r", "a,b", "get"), ask{"g", "r", "", "c", "get"}, false},
+		{"named rule refuses a request that names none", rule("g", "r", "a,b", "list"), ask{"g", "r", "", "", "list"}, false},
+		{"unnamed rule allows a named request", rule("g", "r", "", "get"), ask{"g", "r", "", "a", "get"}, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := ruleAllows(tc.rule, tc.group, tc.resource, tc.subresource, tc.obj, tc.verb); got != tc.want {
+			a := tc.ask
+			if got := ruleAllows(tc.rule, a.group, a.resource, a.subresource, a.name, a.verb); got != tc.want {
 				t.Errorf("ruleAllows = %v, want %v", got, tc.want)
 			}
 		})

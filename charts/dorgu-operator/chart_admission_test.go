@@ -83,7 +83,8 @@ func TestAdmissionPoliciesInConfigAreTheChartsRendered(t *testing.T) {
 	dir := t.TempDir()
 	fresh := filepath.Join(dir, "policies.yaml")
 	// Both outputs go to the temp dir: the test never touches the committed files.
-	out, err := exec.Command("../../hack/render-admission-policies.sh", fresh, filepath.Join(dir, "reference.yaml")).CombinedOutput()
+	script := "../../hack/render-admission-policies.sh"
+	out, err := exec.Command(script, fresh, filepath.Join(dir, "reference.yaml")).CombinedOutput()
 	require.NoError(t, err, string(out))
 
 	want, err := os.ReadFile(fresh)
@@ -103,7 +104,8 @@ func TestAdmissionReferenceInTheOperatorIsTheChartsRendered(t *testing.T) {
 	requireHelm(t)
 	dir := t.TempDir()
 	fresh := filepath.Join(dir, "reference.yaml")
-	out, err := exec.Command("../../hack/render-admission-policies.sh", filepath.Join(dir, "policies.yaml"), fresh).CombinedOutput()
+	script := "../../hack/render-admission-policies.sh"
+	out, err := exec.Command(script, filepath.Join(dir, "policies.yaml"), fresh).CombinedOutput()
 	require.NoError(t, err, string(out))
 
 	want, err := os.ReadFile(fresh)

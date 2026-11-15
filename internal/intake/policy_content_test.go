@@ -40,8 +40,9 @@ type (
 
 func withPolicyEdit(t *testing.T, name string, edit policyEdit) []client.Object {
 	t.Helper()
-	var objs []client.Object
-	for _, o := range installedPolicies(t) {
+	installed := installedPolicies(t)
+	objs := make([]client.Object, 0, len(installed))
+	for _, o := range installed {
 		if p, ok := o.(*admissionregistrationv1.ValidatingAdmissionPolicy); ok && p.Name == name {
 			edit(p)
 		}
@@ -50,11 +51,13 @@ func withPolicyEdit(t *testing.T, name string, edit policyEdit) []client.Object 
 	return objs
 }
 
-func withBindingEdit(t *testing.T, name string, edit bindingEdit) []client.Object {
+// withBindingEdit changes the approval gate's binding (the one the review tampered with).
+func withBindingEdit(t *testing.T, edit bindingEdit) []client.Object {
 	t.Helper()
-	var objs []client.Object
-	for _, o := range installedPolicies(t) {
-		if b, ok := o.(*admissionregistrationv1.ValidatingAdmissionPolicyBinding); ok && b.Name == name {
+	installed := installedPolicies(t)
+	objs := make([]client.Object, 0, len(installed))
+	for _, o := range installed {
+		if b, ok := o.(*admissionregistrationv1.ValidatingAdmissionPolicyBinding); ok && b.Name == "dorgu-approval-gate" {
 			edit(b)
 		}
 		objs = append(objs, o)
@@ -108,13 +111,13 @@ func TestAdmissionPoliciesCheck_ATamperedPolicyIsWeakened(t *testing.T) {
 		{"a proposal-identity validation truncated", withPolicyEdit(t, "dorgu-proposal-identity", func(p *admissionregistrationv1.ValidatingAdmissionPolicy) {
 			p.Spec.Validations = p.Spec.Validations[:1]
 		})},
-		{"the binding only warns and audits", withBindingEdit(t, gate, func(b *admissionregistrationv1.ValidatingAdmissionPolicyBinding) {
+		{"the binding only warns and audits", withBindingEdit(t, func(b *admissionregistrationv1.ValidatingAdmissionPolicyBinding) {
 			b.Spec.ValidationActions = []admissionregistrationv1.ValidationAction{admissionregistrationv1.Warn, admissionregistrationv1.Audit}
 		})},
-		{"the binding gains a parameter reference", withBindingEdit(t, gate, func(b *admissionregistrationv1.ValidatingAdmissionPolicyBinding) {
+		{"the binding gains a parameter reference", withBindingEdit(t, func(b *admissionregistrationv1.ValidatingAdmissionPolicyBinding) {
 			b.Spec.ParamRef = &admissionregistrationv1.ParamRef{Name: "x"}
 		})},
-		{"the binding excludes a resource", withBindingEdit(t, gate, func(b *admissionregistrationv1.ValidatingAdmissionPolicyBinding) {
+		{"the binding excludes a resource", withBindingEdit(t, func(b *admissionregistrationv1.ValidatingAdmissionPolicyBinding) {
 			b.Spec.MatchResources = &admissionregistrationv1.MatchResources{
 				ExcludeResourceRules: []admissionregistrationv1.NamedRuleWithOperations{{}},
 			}
@@ -132,7 +135,7 @@ func TestAdmissionPoliciesCheck_ATamperedPolicyIsWeakened(t *testing.T) {
 // Harmless differences are not tampering: the order of the binding's actions, an extra label,
 // and the empty selectors the API server fills in.
 func TestAdmissionPoliciesCheck_HarmlessDifferencesPass(t *testing.T) {
-	objs := withBindingEdit(t, "dorgu-approval-gate", func(b *admissionregistrationv1.ValidatingAdmissionPolicyBinding) {
+	objs := withBindingEdit(t, func(b *admissionregistrationv1.ValidatingAdmissionPolicyBinding) {
 		b.Spec.ValidationActions = []admissionregistrationv1.ValidationAction{admissionregistrationv1.Audit, admissionregistrationv1.Deny}
 		b.Labels = map[string]string{"extra": "label"}
 	})
@@ -190,7 +193,8 @@ func TestAdmissionPoliciesCheck_AnOlderReleaseIsOutdatedNotWeakened(t *testing.T
 func TestReferencePolicies_AreTheChartsThreePoliciesForTheOperator(t *testing.T) {
 	policies, bindings, err := ReferencePolicies("system:serviceaccount:x:y")
 	require.NoError(t, err)
-	var names, bound []string
+	names := make([]string, 0, len(policies))
+	bound := make([]string, 0, len(bindings))
 	for _, p := range policies {
 		names = append(names, p.Name)
 		assert.Equal(t, AdmissionPolicyVersion, p.Annotations[AdmissionPolicyVersionAnnotation])

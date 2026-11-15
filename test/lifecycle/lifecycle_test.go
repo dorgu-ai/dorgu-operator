@@ -39,14 +39,17 @@ func convert(t *testing.T, op *operator, prop *dorguv1alpha1.RemediationProposal
 	op.reconcileProposal(t, prop)
 	var got dorguv1alpha1.RemediationProposal
 	require.NoError(t, env.Admin.Get(ctxFor(t), client.ObjectKeyFromObject(prop), &got))
-	require.Equal(t, dorguv1alpha1.PhaseConverted, got.Status.Phase, "the proposal was converted, not rejected: %s", got.Status.Conditions)
+	require.Equal(t, dorguv1alpha1.PhaseConverted, got.Status.Phase,
+		"the proposal was converted, not rejected: %s", got.Status.Conditions)
 	require.NotNil(t, got.Status.RemediationActionRef)
 
 	var ra dorguv1.RemediationAction
-	require.NoError(t, env.Admin.Get(ctxFor(t), client.ObjectKey{Namespace: prop.Namespace, Name: got.Status.RemediationActionRef.Name}, &ra))
+	key := client.ObjectKey{Namespace: prop.Namespace, Name: got.Status.RemediationActionRef.Name}
+	require.NoError(t, env.Admin.Get(ctxFor(t), key, &ra))
 	require.Equal(t, "Pending", ra.Status.Phase)
 	require.NotNil(t, ra.Spec.Provenance)
-	require.Equal(t, prop.Spec.Proposer.Username, ra.Spec.Provenance.Proposer.Username, "the action records who proposed it")
+	require.Equal(t, prop.Spec.Proposer.Username, ra.Spec.Provenance.Proposer.Username,
+		"the action records who proposed it")
 	return &ra
 }
 
@@ -104,7 +107,8 @@ func TestLifecycle_ProposalToApplyOnAPolicyEnforcedServer(t *testing.T) {
 	// The operator issues the ticket and applies it: both writes pass its own policies.
 	op.reconcileAction(t, ra)
 	got := actionPhase(t, ra)
-	assert.Contains(t, []string{"Applying", "Verifying"}, got.Status.Phase, "ticketed and applied; conditions: %+v", got.Status.Conditions)
+	assert.Contains(t, []string{"Applying", "Verifying"}, got.Status.Phase,
+		"ticketed and applied; conditions: %+v", got.Status.Conditions)
 	require.NotNil(t, got.Status.ApplyTicket, "a ticket was issued")
 	assert.Equal(t, alice.name, got.Status.ApplyTicket.ApprovedBy, "the ticket carries the person who approved")
 	assert.Equal(t, "384Mi", personaMemory(t, ns), "the approved change was applied")

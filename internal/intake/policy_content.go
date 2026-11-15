@@ -30,6 +30,9 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
+// operatorVariable is the policies' variable that names the operator.
+const operatorVariable = "operator"
+
 // ReferenceOperatorUsername is the stand-in identity admission_reference.yaml is rendered
 // with (hack/render-admission-policies.sh). ReferencePolicies swaps it for the operator's own.
 const ReferenceOperatorUsername = "system:serviceaccount:dorgu-reference-ns:dorgu-reference-sa"
@@ -84,7 +87,7 @@ func policyContentProblems(live, reference *admissionregistrationv1.ValidatingAd
 	var problems []string
 	trusted := ""
 	for _, v := range live.Spec.Variables {
-		if v.Name == "operator" {
+		if v.Name == operatorVariable {
 			trusted = strings.Trim(v.Expression, "'\"")
 		}
 	}
@@ -109,7 +112,8 @@ func policyContentProblems(live, reference *admissionregistrationv1.ValidatingAd
 		}
 	}
 	// A different operator identity also shows up in the variables; it is said once, above.
-	if len(differs) > 0 && !(trusted != username && len(differs) == 1 && differs[0] == "variables") {
+	onlyTheIdentity := trusted != username && len(differs) == 1 && differs[0] == "variables"
+	if len(differs) > 0 && !onlyTheIdentity {
 		problems = append(problems, fmt.Sprintf("policy %s differs from this release's in %s", live.Name, strings.Join(differs, ", ")))
 	}
 	return problems

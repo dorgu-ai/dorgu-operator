@@ -117,7 +117,8 @@ func newOperator(t *testing.T) *operator {
 
 	// A clock a little ahead, as the controller suite's gate has: the Deployment was written
 	// a moment ago, and the gate would call that a write after the ticket.
-	g := gate.New(c, log, gate.WithReader(c), gate.WithClock(func() time.Time { return time.Now().Add(2 * gate.ClockSkewMargin) }))
+	ahead := func() time.Time { return time.Now().Add(2 * gate.ClockSkewMargin) }
+	g := gate.New(c, log, gate.WithReader(c), gate.WithClock(ahead))
 
 	guard := intake.NewPreflight(log,
 		intake.OperatorIdentityCheck(nil),
@@ -126,7 +127,8 @@ func newOperator(t *testing.T) *operator {
 		intake.OperatorRBACCheck(intake.AccessReviewerFromClientset(cs)),
 	)
 	guard.Run(context.Background())
-	require.Nil(t, guard.Blocked(), "the policies as shipped and the operator's permissions pass the operator's own preflight")
+	require.Nil(t, guard.Blocked(),
+		"the policies as shipped and the operator's permissions pass the operator's own preflight")
 
 	processor := intake.New(intake.Config{
 		Client: c, Reader: c, Gate: g,

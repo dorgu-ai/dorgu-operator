@@ -18,7 +18,6 @@ package admission
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -93,10 +92,12 @@ func TestSpecImmutable_TheProposalPolicyRuleStandsOnItsOwn(t *testing.T) {
 	var fresh dorguv1alpha1.RemediationProposal
 	require.NoError(t, env.Operator.Get(ctx, client.ObjectKeyFromObject(prop), &fresh))
 	fresh.Status.Phase = "Received"
-	require.NoError(t, env.Operator.Status().Update(ctx, &fresh), fmt.Sprintf("a status write is not a spec edit: %v", last))
+	require.NoError(t, env.Operator.Status().Update(ctx, &fresh), "a status write is not a spec edit")
 }
 
-func editRationale(ctx context.Context, c client.Client, prop *dorguv1alpha1.RemediationProposal, rationale string) error {
+func editRationale(
+	ctx context.Context, c client.Client, prop *dorguv1alpha1.RemediationProposal, rationale string,
+) error {
 	var fresh dorguv1alpha1.RemediationProposal
 	if err := c.Get(ctx, client.ObjectKeyFromObject(prop), &fresh); err != nil {
 		return err

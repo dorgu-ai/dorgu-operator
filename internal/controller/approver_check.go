@@ -50,10 +50,8 @@ func approverProblem(action *dorguv1.RemediationAction, operator string) string 
 		// own NoApprover reason (the documented behaviour), so it is left to it.
 		return ""
 	}
-	for _, name := range []string{raw, trimmed} {
-		if strings.HasPrefix(name, systemUserPrefix) {
-			return "status.approvedBy is a service account or system user, and an approval is a person's decision"
-		}
+	if strings.HasPrefix(raw, systemUserPrefix) || strings.HasPrefix(trimmed, systemUserPrefix) {
+		return "status.approvedBy is a service account or system user, and an approval is a person's decision"
 	}
 	proposer := operator
 	if p := action.Spec.Provenance; p != nil {
@@ -62,10 +60,8 @@ func approverProblem(action *dorguv1.RemediationAction, operator string) string 
 	if proposer == "" {
 		return ""
 	}
-	for _, name := range []string{raw, trimmed} {
-		if name == proposer {
-			return "the person who proposed this remediation cannot be the one who approves it"
-		}
+	if raw == proposer || trimmed == proposer {
+		return "the person who proposed this remediation cannot be the one who approves it"
 	}
 	return ""
 }

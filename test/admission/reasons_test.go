@@ -199,10 +199,16 @@ func TestOperatorOnly(t *testing.T) {
 	// proposals it converts.
 	t.Run("ownerReferences, finalizers and dorgu.io metadata on a proposal", func(t *testing.T) {
 		alice := newActor(t, ns, "", nil, append(append([]rbacv1.PolicyRule{}, proposerRules...), writerRules...))
-		ghost := metav1.OwnerReference{APIVersion: "v1", Kind: "ConfigMap", Name: "ghost", UID: "11111111-2222-3333-4444-555555555555"}
+		ghost := metav1.OwnerReference{
+			APIVersion: "v1", Kind: "ConfigMap", Name: "ghost", UID: "11111111-2222-3333-4444-555555555555",
+		}
 		mutations := map[string]func(*dorguv1alpha1.RemediationProposal){
-			"an owner reference to something that does not exist": func(p *dorguv1alpha1.RemediationProposal) { p.OwnerReferences = []metav1.OwnerReference{ghost} },
-			"a finalizer nobody removes":                          func(p *dorguv1alpha1.RemediationProposal) { p.Finalizers = []string{"example.com/stuck"} },
+			"an owner reference to something that does not exist": func(p *dorguv1alpha1.RemediationProposal) {
+				p.OwnerReferences = []metav1.OwnerReference{ghost}
+			},
+			"a finalizer nobody removes": func(p *dorguv1alpha1.RemediationProposal) {
+				p.Finalizers = []string{"example.com/stuck"}
+			},
 			"a dorgu.io annotation": func(p *dorguv1alpha1.RemediationProposal) {
 				p.Annotations = map[string]string{"dorgu.io/answers-signal": "x"}
 			},
@@ -239,7 +245,7 @@ func TestOperatorOnly(t *testing.T) {
 			require.NoError(t, alice.c.Create(ctxFor(t), prop))
 		})
 
-		t.Run("the operator sets them on a proposal it converts, and a later user update leaves them alone", func(t *testing.T) {
+		t.Run("the operator sets them, and a later user update leaves them alone", func(t *testing.T) {
 			prop := admissionenv.NewProposal(ns, uniq("p"), alice.name)
 			require.NoError(t, alice.c.Create(ctxFor(t), prop))
 

@@ -50,7 +50,8 @@ func approvedBy(t *testing.T, id, proposer, approver string) (detail string, blo
 	mem := personaMemory(t, ns)
 	byApproverCheck := false
 	for _, c := range ra.Status.Conditions {
-		byApproverCheck = byApproverCheck || (c.Type == dorguv1.ConditionGateRefused && c.Reason == dorguv1.ReasonApproverNotPermitted)
+		byApproverCheck = byApproverCheck ||
+			(c.Type == dorguv1.ConditionGateRefused && c.Reason == dorguv1.ReasonApproverNotPermitted)
 	}
 	// Refused by the approver check itself, not by some unrelated guardrail that would hide
 	// the attack.

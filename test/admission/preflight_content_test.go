@@ -33,6 +33,11 @@ import (
 // server stores for the chart's rendered policies (after its own defaulting), and notices
 // each tampering the review tried.
 
+const (
+	gateName      = "dorgu-approval-gate"
+	integrityName = "dorgu-action-integrity"
+)
+
 func operatorIs(username string) intake.UsernameSource {
 	return func(context.Context) (string, error) { return username, nil }
 }
@@ -70,21 +75,23 @@ func TestPreflightContent_EachTamperingOnTheRealServerIsWeakened(t *testing.T) {
 		}
 	}
 	cases := map[string]func() client.Object{
-		"matchConditions false": policy("dorgu-approval-gate", func(p *admissionregistrationv1.ValidatingAdmissionPolicy) {
+		"matchConditions false": policy(gateName, func(p *admissionregistrationv1.ValidatingAdmissionPolicy) {
 			p.Spec.MatchConditions = []admissionregistrationv1.MatchCondition{{Name: "never", Expression: "false"}}
 		}),
-		"a validation replaced by true": policy("dorgu-approval-gate", func(p *admissionregistrationv1.ValidatingAdmissionPolicy) {
+		"a validation replaced by true": policy(gateName, func(p *admissionregistrationv1.ValidatingAdmissionPolicy) {
 			p.Spec.Validations[0].Expression = "true"
 		}),
-		"another operator identity": policy("dorgu-action-integrity", func(p *admissionregistrationv1.ValidatingAdmissionPolicy) {
+		"another operator identity": policy(integrityName, func(p *admissionregistrationv1.ValidatingAdmissionPolicy) {
 			for i := range p.Spec.Variables {
 				if p.Spec.Variables[i].Name == "operator" {
 					p.Spec.Variables[i].Expression = "'system:serviceaccount:other:other'"
 				}
 			}
 		}),
-		"binding set to warn and audit": bind("dorgu-approval-gate", func(b *admissionregistrationv1.ValidatingAdmissionPolicyBinding) {
-			b.Spec.ValidationActions = []admissionregistrationv1.ValidationAction{admissionregistrationv1.Warn, admissionregistrationv1.Audit}
+		"binding set to warn and audit": bind(gateName, func(b *admissionregistrationv1.ValidatingAdmissionPolicyBinding) {
+			b.Spec.ValidationActions = []admissionregistrationv1.ValidationAction{
+				admissionregistrationv1.Warn, admissionregistrationv1.Audit,
+			}
 		}),
 	}
 	for name, tampered := range cases {

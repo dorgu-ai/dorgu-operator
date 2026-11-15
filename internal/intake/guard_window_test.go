@@ -42,8 +42,8 @@ func (c *clock) advance(d time.Duration) { c.t = c.t.Add(d) }
 
 // switchable is a ticket-guard check (a reason that blocks tickets) whose answer a test
 // flips.
-func switchable(name string, broken *atomic.Bool) Check {
-	return Check{Name: name, Reason: ReasonAdmissionPoliciesMissing, Run: func(context.Context) error {
+func switchable(broken *atomic.Bool) Check {
+	return Check{Name: "admission-policies", Reason: ReasonAdmissionPoliciesMissing, Run: func(context.Context) error {
 		if broken.Load() {
 			return errors.New("policy deleted")
 		}
@@ -60,7 +60,7 @@ func guardUnderTest(t *testing.T, checks ...Check) (*Preflight, *clock) {
 
 func TestTicketsBlockedNow_SeesAChangeTheLastPeriodicRunDidNot(t *testing.T) {
 	var broken atomic.Bool
-	p, _ := guardUnderTest(t, switchable("admission-policies", &broken))
+	p, _ := guardUnderTest(t, switchable(&broken))
 	p.Run(context.Background())
 	require.Nil(t, p.TicketsBlocked(), "the periodic run found everything in place")
 
@@ -97,7 +97,7 @@ func TestTicketsBlockedNow_NilPreflightBlocksNothing(t *testing.T) {
 
 func TestNotReadyAt_TheStartupWindowRunsFromCreationToTheFirstGoodRun(t *testing.T) {
 	var broken atomic.Bool
-	p, c := guardUnderTest(t, switchable("admission-policies", &broken))
+	p, c := guardUnderTest(t, switchable(&broken))
 	created := c.t
 	assert.True(t, p.NotReadyAt(created.Add(time.Second)), "before the first run nothing is known")
 
@@ -110,7 +110,7 @@ func TestNotReadyAt_TheStartupWindowRunsFromCreationToTheFirstGoodRun(t *testing
 
 func TestNotReadyAt_ARecordedWindowStartsAtTheLastGoodRunNotWhenTheFailureWasSeen(t *testing.T) {
 	var broken atomic.Bool
-	p, c := guardUnderTest(t, switchable("admission-policies", &broken))
+	p, c := guardUnderTest(t, switchable(&broken))
 	c.advance(time.Second)
 	p.Run(context.Background())
 	lastGood := c.t
@@ -137,7 +137,7 @@ func TestNotReadyAt_ARecordedWindowStartsAtTheLastGoodRunNotWhenTheFailureWasSee
 
 func TestNotReadyAt_AnOpenWindowCoversNow(t *testing.T) {
 	var broken atomic.Bool
-	p, c := guardUnderTest(t, switchable("admission-policies", &broken))
+	p, c := guardUnderTest(t, switchable(&broken))
 	p.Run(context.Background())
 	c.advance(time.Minute)
 	broken.Store(true)
@@ -149,7 +149,7 @@ func TestNotReadyAt_AnOpenWindowCoversNow(t *testing.T) {
 
 func TestNotReadyAt_ASynchronousCheckOpensAndClosesWindowsToo(t *testing.T) {
 	var broken atomic.Bool
-	p, c := guardUnderTest(t, switchable("admission-policies", &broken))
+	p, c := guardUnderTest(t, switchable(&broken))
 	c.advance(time.Second)
 	p.Run(context.Background())
 	good := c.t
@@ -183,7 +183,7 @@ func TestNotReadyAt_AFailingCheckThatDoesNotGateTicketsOpensNoWindow(t *testing.
 
 func TestNotReadyAt_ClockSkewWidensAWindowBothWays(t *testing.T) {
 	var broken atomic.Bool
-	p, c := guardUnderTest(t, switchable("admission-policies", &broken))
+	p, c := guardUnderTest(t, switchable(&broken))
 	p.Run(context.Background())
 	good := c.t
 	broken.Store(true)
@@ -201,7 +201,7 @@ func TestNotReadyAt_ClockSkewWidensAWindowBothWays(t *testing.T) {
 
 func TestNotReadyAt_ManyWindowsAreKeptBoundedWithoutForgettingAny(t *testing.T) {
 	var broken atomic.Bool
-	p, c := guardUnderTest(t, switchable("admission-policies", &broken))
+	p, c := guardUnderTest(t, switchable(&broken))
 	p.Run(context.Background())
 	first := c.t
 	for range 3 * maxGuardWindows {
