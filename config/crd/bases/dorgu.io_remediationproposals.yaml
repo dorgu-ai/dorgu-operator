@@ -512,7 +512,8 @@ spec:
                       IncidentResolved, ProposerInvalid, TargetNamespaceMismatch or, for a rollback,
                       RollbackNotHuman, RollbackTargetNotFound, RollbackTargetMismatch,
                       RollbackNotApplied, RollbackOfRollback, RollbackNoRecordedState,
-                      RollbackWorkloadDrifted, RollbackNothingToRestore or RollbackAlreadyOpen.
+                      RollbackWorkloadDrifted, RollbackNothingToRestore, RollbackAlreadyOpen or
+                      RollbackWouldBePartial (the gate would not clear the whole restore as derived).
                       At a gate stage it is the guardrail that refused.
                     maxLength: 63
                     type: string

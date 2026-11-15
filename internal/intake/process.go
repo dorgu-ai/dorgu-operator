@@ -151,11 +151,25 @@ func (p *Processor) Process(ctx context.Context, key client.ObjectKey, hint *Hin
 
 	var derived *gate.RollbackDerivation
 	if prop.Spec.RollbackOf != nil {
-		out, d, err := p.planRollback(ctx, &prop)
-		if out != nil || err != nil {
-			return out, err
+		// An action an earlier attempt of this very proposal already made settles it: by
+		// now it may have been approved, applied and completed, and a fresh derivation
+		// would call that "nothing to restore" and reject a proposal whose action exists.
+		// The planner's path finds its action before it judges anything, and so does this.
+		existing, err := p.existingAction(ctx, &prop)
+		var orphan *orphanedActionError
+		if errors.As(err, &orphan) {
+			return p.reject(ctx, &prop, nil, v1alpha1.StageIntake, v1alpha1.ReasonActionInvalid, nil, orphan.Error())
 		}
-		derived = d
+		if err != nil {
+			return nil, err
+		}
+		if existing == nil {
+			out, d, err := p.planRollback(ctx, &prop)
+			if out != nil || err != nil {
+				return out, err
+			}
+			derived = d
+		}
 	}
 
 	var incident *dorguv1.IncidentMemory
@@ -347,13 +361,24 @@ func (p *Processor) convert(
 		draft, facts = hint.Draft.DeepCopy(), hint.Facts
 	}
 
-	dec, err := p.gate.Run(ctx, candidateFor(draft, facts), gate.PhaseProposal)
+	cand := candidateFor(draft, facts)
+	if derived != nil {
+		// The action being undone is the reason for this plan, not a reason to refuse
+		// it (a failed cooldown), and a person's undo is not withheld by observe mode.
+		cand.RollbackOf = prop.Spec.RollbackOf.Name
+	}
+	dec, err := p.gate.Run(ctx, cand, gate.PhaseProposal)
 	if err != nil {
 		return nil, fmt.Errorf("gate: %w", err)
 	}
 	if !dec.Allowed() {
 		stage, guardrail := dec.RefusedBy()
 		return p.reject(ctx, prop, incident, stage, guardrail, dec, dec.SkipReason())
+	}
+	if derived != nil {
+		if why := partialRollbackReason(dec, derived); why != "" {
+			return p.reject(ctx, prop, incident, v1alpha1.StageIntake, v1alpha1.ReasonRollbackWouldBePartial, dec, why)
+		}
 	}
 
 	// status.gate is the record to trust, so it records this run: the one that

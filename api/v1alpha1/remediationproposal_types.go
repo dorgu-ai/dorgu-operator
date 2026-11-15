@@ -135,6 +135,12 @@ const (
 
 	// ReasonRollbackAlreadyOpen: a rollback of the same action is already in flight.
 	ReasonRollbackAlreadyOpen = "RollbackAlreadyOpen"
+
+	// ReasonRollbackWouldBePartial: the gate would not clear the whole restore as
+	// derived (it would clamp, strip or drop part of it), so the operator refuses the
+	// request instead of making an action that restores some of the fields. A rollback
+	// is whole or it is not made.
+	ReasonRollbackWouldBePartial = "RollbackWouldBePartial"
 )
 
 // ConditionConverted is the condition the reconciler keeps on a proposal. It is
@@ -279,7 +285,8 @@ type ProposalRejection struct {
 	// IncidentResolved, ProposerInvalid, TargetNamespaceMismatch or, for a rollback,
 	// RollbackNotHuman, RollbackTargetNotFound, RollbackTargetMismatch,
 	// RollbackNotApplied, RollbackOfRollback, RollbackNoRecordedState,
-	// RollbackWorkloadDrifted, RollbackNothingToRestore or RollbackAlreadyOpen.
+	// RollbackWorkloadDrifted, RollbackNothingToRestore, RollbackAlreadyOpen or
+	// RollbackWouldBePartial (the gate would not clear the whole restore as derived).
 	// At a gate stage it is the guardrail that refused.
 	// +kubebuilder:validation:MaxLength=63
 	Reason string `json:"reason"`

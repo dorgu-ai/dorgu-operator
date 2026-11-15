@@ -277,6 +277,15 @@ type Candidate struct {
 	// two simultaneously approved plans for one persona.
 	ApprovedAt *metav1.Time
 
+	// RollbackOf names the RemediationAction (in the candidate's namespace) this
+	// candidate undoes, when it is a ticketed rollback. The operator sets it, from the
+	// plan it derived at proposal and from provenance and annotation it wrote at
+	// approval; a caller cannot name one in a proposal. The action being undone is the
+	// reason for the request, so it is not a failed-cooldown sibling of its own
+	// rollback, and a person's undo of Dorgu's change is not a proposal observe mode
+	// withholds. Nothing else about the rollback is exempt.
+	RollbackOf string
+
 	// Final marks a candidate no further shaping will follow. The gate then also
 	// enforces the invariants earlier shaping was expected to meet, such as no
 	// workload-writing command on an owned workload. A Final candidate that is

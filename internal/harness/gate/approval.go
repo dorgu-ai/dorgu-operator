@@ -99,9 +99,21 @@ func ApprovalCandidate(action *dorguv1.RemediationAction, specHash string) Candi
 		Steps:       action.EffectiveSteps(),
 		ApprovedAt:  action.Status.ApprovedAt.DeepCopy(),
 		Final:       true,
+		RollbackOf:  rollbackOfFor(action),
 	}
 	cand.prior, cand.priorGuard, cand.priorProblem = operatorRecord(action, PhaseProposal)
 	return cand
+}
+
+// rollbackOfFor names the action a ticketed rollback undoes, or "". Both halves of the
+// operator's record have to say so: provenance (immutable, written only by the
+// operator when it converts a rollback proposal) and the annotation naming the action.
+// An annotation alone excuses nothing, so a stray one cannot lift a cooldown.
+func rollbackOfFor(action *dorguv1.RemediationAction) string {
+	if action.Spec.Provenance == nil || action.Spec.Provenance.Source != dorguv1.ProposalSourceRollback {
+		return ""
+	}
+	return action.Annotations[dorguv1.AnnotationRollbackOf]
 }
 
 // TicketCandidate builds the candidate the apply-time re-run uses: the same plan

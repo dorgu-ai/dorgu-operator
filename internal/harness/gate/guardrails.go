@@ -285,7 +285,7 @@ func approvedBefore(sib *dorguv1.RemediationAction, cand *Candidate) bool {
 func (s guardrailsStage) failedCooldown(cand *Candidate, d *Decision, siblings []dorguv1.RemediationAction) {
 	for i := range siblings {
 		sib := &siblings[i]
-		if !wentWrong(sib) {
+		if !wentWrong(sib) || undoneBy(cand, sib) {
 			continue
 		}
 		failedAt := sib.CreationTimestamp.Time
@@ -303,6 +303,15 @@ func (s guardrailsStage) failedCooldown(cand *Candidate, d *Decision, siblings [
 	}
 	d.pass(StageGuardrails, GuardrailFailedCooldown, "no recent failed remediation for the persona", nil).
 		From(dorguv1.CeilingSourceDefault)
+}
+
+// undoneBy reports whether sib is the very action the candidate is a ticketed rollback
+// of. That action is the reason for the request, so its own failure cannot be a reason
+// to refuse it: an action the operator rolled back minutes ago is exactly the one the
+// operator's advisory sends a person to undo. Only that one action is excused, and
+// only for its own rollback; any other sibling that went wrong still holds the persona.
+func undoneBy(cand *Candidate, sib *dorguv1.RemediationAction) bool {
+	return cand.RollbackOf != "" && sib.Name == cand.RollbackOf && sib.Namespace == cand.Namespace
 }
 
 // wentWrong reports whether a sibling is a remediation that actually went wrong:
