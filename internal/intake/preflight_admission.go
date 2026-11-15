@@ -315,7 +315,7 @@ const maxGapsListed = 8
 // A permission it lacks closes the intake with a message naming it; a review that cannot
 // be made is a failure too, never a pass.
 func OperatorRBACCheck(review AccessReviewer) Check {
-	return Check{Name: "operator-rbac", Reason: ReasonOperatorRBACMissing, Run: func(ctx context.Context) error {
+	return Check{Name: "operator-rbac", Reason: ReasonOperatorRBACMissing, PeriodicOnly: true, Run: func(ctx context.Context) error {
 		var gaps []string
 		for _, need := range OperatorAccess() {
 			names := need.Names

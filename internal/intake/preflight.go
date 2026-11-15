@@ -70,6 +70,11 @@ type Check struct {
 	// FailureReason() string method is reported with that reason instead of
 	// Reason, for a check that can fail in more than one way.
 	Run func(ctx context.Context) error
+
+	// PeriodicOnly keeps the check out of TicketsBlockedNow: it runs on the periodic schedule
+	// only, and its last result still blocks tickets. For a check that is expensive to make
+	// at every ticket and whose answer changes at human speed (the permission reviews).
+	PeriodicOnly bool
 }
 
 // Failure is one check that is failing.
@@ -104,6 +109,7 @@ type Preflight struct {
 	// Ticket guard bookkeeping (C2 F-4), see guard_window.go.
 	now           func() time.Time
 	syncMu        sync.Mutex
+	lastSync      *syncRound // guarded by syncMu
 	lastReady     time.Time
 	notReadySince time.Time
 	windows       []guardWindow

@@ -29,6 +29,13 @@ import (
 // is one approval asked for again, never an approval honoured that should not be.
 const GuardClockMargin = 5 * time.Second
 
+// TicketRecheckShare is how long the answer of a ticket-time check is shared with the callers
+// that ask after it: approvals that reach the operator together make one round of reads, not
+// one each (C2 re-review N-6). A policy changed inside this stretch is seen by the next round,
+// which is shorter than the periodic interval that already applies, than GuardClockMargin, and
+// than the 30 s an approval blocked by the guard waits to be looked at again.
+const TicketRecheckShare = 2 * time.Second
+
 // maxGuardWindows bounds the windows kept. Past it the two oldest are folded into one wider
 // window, so nothing that was suspect is ever forgotten, only remembered more coarsely.
 const maxGuardWindows = 64
@@ -118,38 +125,72 @@ func (p *Preflight) EverNotReady() bool {
 	return !p.notReadySince.IsZero() || len(p.windows) > 0
 }
 
+// syncRound is what one ticket-time round of reads found, kept for TicketRecheckShare.
+type syncRound struct {
+	startedAt time.Time
+	fresh     []Failure
+}
+
 // TicketsBlockedNow runs the checks that gate tickets again, now, and returns the first that
 // fails, or nil. It is what the operator asks right before it issues a ticket: the answer of the
 // last periodic run can be a minute old, and a policy deleted since is invisible to it (C2
 // F-4). What it finds replaces the stored answer for those checks (so the ClusterPersona
 // condition follows) and feeds the guard windows. A nil Preflight blocks nothing.
+//
+// Two things keep this cheap (C2 re-review N-6). Checks marked PeriodicOnly (the permission
+// reviews) are not run here; their last periodic result still blocks tickets, and until the
+// first periodic run nothing is known about them, so the guard is pending, not open. And the
+// reads of one round are shared with the callers that ask within TicketRecheckShare of it
+// starting, so approvals that arrive together cost one round, not one each.
 func (p *Preflight) TicketsBlockedNow(ctx context.Context) *Failure {
 	if p == nil {
 		return nil
 	}
-	// One at a time: a burst of approvals asks the API server once each, not all at once.
+	// One at a time: a burst of approvals asks the API server once, not all at once, and the
+	// callers behind the first find its round still fresh.
 	p.syncMu.Lock()
 	defer p.syncMu.Unlock()
 
 	p.mu.RLock()
-	checks := p.ticketChecks()
-	timeout := p.timeout
+	var checks []Check
+	periodicOnly := false
+	for _, c := range p.ticketChecks() {
+		if c.PeriodicOnly {
+			periodicOnly = true
+		} else {
+			checks = append(checks, c)
+		}
+	}
+	timeout, ran := p.timeout, p.ran
 	p.mu.RUnlock()
 
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+	if periodicOnly && !ran {
+		return &Failure{Check: "preflight", Reason: ReasonPreflightPending, Message: "the startup checks have not run yet"}
+	}
+	if last := p.lastSync; last != nil {
+		if age := p.now().Sub(last.startedAt); age >= 0 && age < TicketRecheckShare {
+			return p.ticketAnswer(last.fresh, checks)
+		}
+	}
+
+	rctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	start := p.now()
 	var fresh []Failure
 	for _, c := range checks {
-		if err := runCheck(ctx, c); err != nil {
+		if err := runCheck(rctx, c); err != nil {
 			fresh = append(fresh, Failure{Check: c.Name, Reason: failureReason(err, c.Reason), Message: err.Error()})
 		}
 	}
 	end := p.now()
+	// A round cut short by its own caller says nothing about the API server: it is not shared.
+	p.lastSync = nil
+	if ctx.Err() == nil {
+		p.lastSync = &syncRound{startedAt: start, fresh: fresh}
+	}
 
 	p.mu.Lock()
-	p.observeGuardLocked(start, end, ticketReady(fresh))
 	var (
 		changed     bool
 		subscribers []func([]Failure)
@@ -164,6 +205,11 @@ func (p *Preflight) TicketsBlockedNow(ctx context.Context) *Failure {
 				merged = append(merged, f)
 			}
 		}
+	}
+	// The guard is ready only if what this round found and what the periodic checks last
+	// found (not re-run here) both are.
+	p.observeGuardLocked(start, end, ticketReady(fresh) && ticketReady(merged))
+	if p.ran {
 		merged = append(merged, fresh...)
 		changed = !sameFailures(sortedFailures(p.failures), sortedFailures(merged))
 		p.failures = merged
@@ -177,9 +223,25 @@ func (p *Preflight) TicketsBlockedNow(ctx context.Context) *Failure {
 			fn(append([]Failure(nil), merged...))
 		}
 	}
+	return p.ticketAnswer(fresh, checks)
+}
+
+// ticketAnswer is the first failure that stops tickets: one a round just found, or else one a
+// check that is not run at ticket time last found.
+func (p *Preflight) ticketAnswer(fresh []Failure, ran []Check) *Failure {
 	for i := range fresh {
 		if ticketBlockers[fresh[i].Reason] {
 			return &fresh[i]
+		}
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if !p.ran {
+		return nil
+	}
+	for _, f := range p.failures {
+		if ticketBlockers[f.Reason] && !slices.ContainsFunc(ran, func(c Check) bool { return c.Name == f.Check }) {
+			return &f
 		}
 	}
 	return nil
