@@ -60,7 +60,7 @@ func guardUnderTest(t *testing.T, checks ...Check) (*Preflight, *clock) {
 
 func TestTicketsBlockedNow_SeesAChangeTheLastPeriodicRunDidNot(t *testing.T) {
 	var broken atomic.Bool
-	p, c := guardUnderTest(t, switchable(&broken))
+	p, _ := guardUnderTest(t, switchable(&broken))
 	p.Run(context.Background())
 	require.Nil(t, p.TicketsBlocked(), "the periodic run found everything in place")
 
@@ -73,7 +73,6 @@ func TestTicketsBlockedNow_SeesAChangeTheLastPeriodicRunDidNot(t *testing.T) {
 	require.NotNil(t, p.TicketsBlocked(), "and what it found is what it now reports")
 
 	broken.Store(false)
-	c.advance(TicketRecheckShare) // an answer is shared for TicketRecheckShare (C2 re-review N-6)
 	assert.Nil(t, p.TicketsBlockedNow(context.Background()), "a restored policy reopens it at the next round")
 	assert.Nil(t, p.TicketsBlocked())
 }

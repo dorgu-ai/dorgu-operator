@@ -29,13 +29,6 @@ import (
 // is one approval asked for again, never an approval honoured that should not be.
 const GuardClockMargin = 5 * time.Second
 
-// TicketRecheckShare is how long the answer of a ticket-time check is shared with the callers
-// that ask after it: approvals that reach the operator together make one round of reads, not
-// one each (C2 re-review N-6). A policy changed inside this stretch is seen by the next round,
-// which is shorter than the periodic interval that already applies, than GuardClockMargin, and
-// than the 30 s an approval blocked by the guard waits to be looked at again.
-const TicketRecheckShare = 2 * time.Second
-
 // maxGuardWindows bounds the windows kept. Past it the two oldest are folded into one wider
 // window, so nothing that was suspect is ever forgotten, only remembered more coarsely.
 const maxGuardWindows = 64
@@ -125,29 +118,24 @@ func (p *Preflight) EverNotReady() bool {
 	return !p.notReadySince.IsZero() || len(p.windows) > 0
 }
 
-// syncRound is what one ticket-time round of reads found, kept for TicketRecheckShare.
-type syncRound struct {
-	startedAt time.Time
-	fresh     []Failure
-}
-
 // TicketsBlockedNow runs the checks that gate tickets again, now, and returns the first that
 // fails, or nil. It is what the operator asks right before it issues a ticket: the answer of the
 // last periodic run can be a minute old, and a policy deleted since is invisible to it (C2
 // F-4). What it finds replaces the stored answer for those checks (so the ClusterPersona
 // condition follows) and feeds the guard windows. A nil Preflight blocks nothing.
 //
-// Two things keep this cheap (C2 re-review N-6). Checks marked PeriodicOnly (the permission
-// reviews) are not run here; their last periodic result still blocks tickets, and until the
-// first periodic run nothing is known about them, so the guard is pending, not open. And the
-// reads of one round are shared with the callers that ask within TicketRecheckShare of it
-// starting, so approvals that arrive together cost one round, not one each.
+// What keeps this cheap (C2 re-review N-6) is that checks marked PeriodicOnly (the permission
+// reviews) are not run here: their last periodic result still blocks tickets, and until the
+// first periodic run nothing is known about them, so the guard is pending, not open. What is
+// left is a few GETs of the policies and their bindings, read fresh at every ticket. No answer
+// is shared between tickets, however close together they are: a policy deleted right after a
+// clean check is seen by the next ticket (C2 re-check 2 R-2). The operator reconciles serially,
+// so there was nothing to save.
 func (p *Preflight) TicketsBlockedNow(ctx context.Context) *Failure {
 	if p == nil {
 		return nil
 	}
-	// One at a time: a burst of approvals asks the API server once, not all at once, and the
-	// callers behind the first find its round still fresh.
+	// One at a time: a burst of approvals asks the API server in turn, not all at once.
 	p.syncMu.Lock()
 	defer p.syncMu.Unlock()
 
@@ -167,12 +155,6 @@ func (p *Preflight) TicketsBlockedNow(ctx context.Context) *Failure {
 	if periodicOnly && !ran {
 		return &Failure{Check: "preflight", Reason: ReasonPreflightPending, Message: "the startup checks have not run yet"}
 	}
-	if last := p.lastSync; last != nil {
-		if age := p.now().Sub(last.startedAt); age >= 0 && age < TicketRecheckShare {
-			return p.ticketAnswer(last.fresh, checks)
-		}
-	}
-
 	rctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -184,11 +166,6 @@ func (p *Preflight) TicketsBlockedNow(ctx context.Context) *Failure {
 		}
 	}
 	end := p.now()
-	// A round cut short by its own caller says nothing about the API server: it is not shared.
-	p.lastSync = nil
-	if ctx.Err() == nil {
-		p.lastSync = &syncRound{startedAt: start, fresh: fresh}
-	}
 
 	p.mu.Lock()
 	var (

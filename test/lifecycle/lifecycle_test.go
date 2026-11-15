@@ -164,9 +164,6 @@ func TestLifecycle_AnApprovalWrittenWhilePoliciesWereGoneIsSentBack(t *testing.T
 	// The binding comes back. The forged approval is still there, but it was written while
 	// the guard was not ready: it goes back to Pending instead of being ticketed.
 	restore()
-	// The answer the operator just gave (blocked) is shared for TicketRecheckShare with whoever
-	// asks next (C2 re-review N-6); a restored policy reopens tickets at the round after it.
-	time.Sleep(intake.TicketRecheckShare + 200*time.Millisecond)
 	op.reconcileAction(t, ra)
 	got = actionPhase(t, ra)
 	assert.Equal(t, "Pending", got.Status.Phase, "sent back for a new approval; conditions: %+v", got.Status.Conditions)

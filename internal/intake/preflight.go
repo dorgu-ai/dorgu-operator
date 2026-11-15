@@ -109,7 +109,6 @@ type Preflight struct {
 	// Ticket guard bookkeeping (C2 F-4), see guard_window.go.
 	now           func() time.Time
 	syncMu        sync.Mutex
-	lastSync      *syncRound // guarded by syncMu
 	lastReady     time.Time
 	notReadySince time.Time
 	windows       []guardWindow
