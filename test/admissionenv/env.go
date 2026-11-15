@@ -284,9 +284,59 @@ func (e *Env) waitEnforcing(ctx context.Context) error {
 			}
 		}
 	}
-	// The approval gate acts on status writes; the integrity probe above proves the
-	// admission plugin is serving, and the policies were created together.
-	return nil
+	// The approval gate acts on status writes and uses the authorizer, so it can come up
+	// after the other two. Probe it with a dry run it always denies: the operator never
+	// approves (ServiceAccountCannotApprove).
+	if err := e.waitApprovalGateEnforcing(ctx, deadline); err != nil {
+		return err
+	}
+	// And the operator, whose writes the policies must never refuse: a policy that was
+	// changed and put back can still trust another identity as the operator for a moment.
+	for {
+		err := e.Operator.Create(ctx, ProbeAction(), client.DryRunAll)
+		if err == nil {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("the operator is still refused after 45s (last probe answer: %v)", err)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+}
+
+// WaitEnforcing returns once the policies enforce as shipped again: each denies what it
+// should and the operator is let through. A test that changes a policy calls it after it
+// puts the policy back, because the API server takes a moment to notice.
+func (e *Env) WaitEnforcing(ctx context.Context) error { return e.waitEnforcing(ctx) }
+
+// waitApprovalGateEnforcing waits until the approval gate denies a dry-run approval by the
+// operator. It makes a throwaway Pending action to ask about.
+func (e *Env) waitApprovalGateEnforcing(ctx context.Context, deadline time.Time) error {
+	probe := NewAction(ProbeNamespace, "approval-gate-probe", "")
+	if err := e.MakePending(ctx, probe); err != nil {
+		return fmt.Errorf("making the approval gate's probe action: %w", err)
+	}
+	defer func() { _ = e.Admin.Delete(context.Background(), probe) }()
+	for {
+		attempt := probe.DeepCopy()
+		attempt.Status.Phase = "Approved"
+		err := e.Operator.Status().Update(ctx, attempt, client.DryRunAll)
+		if err != nil && strings.Contains(err.Error(), "dorgu: ServiceAccountCannotApprove: ") {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("policy dorgu-approval-gate is not enforcing after 45s (last probe answer: %v)", err)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
 }
 
 // IsDorguDenial reports whether err is the API server refusing a request with a Dorgu

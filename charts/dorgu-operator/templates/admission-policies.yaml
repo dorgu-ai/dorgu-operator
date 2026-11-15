@@ -50,6 +50,22 @@ spec:
     # Absent (not empty) on a request for the resource itself.
     - name: subResource
       expression: "request.?subResource.orValue('')"
+    - name: newOwners
+      expression: "object.metadata.?ownerReferences.orValue([])"
+    - name: oldOwners
+      expression: "request.operation == 'CREATE' ? [] : oldObject.metadata.?ownerReferences.orValue([])"
+    - name: newFinalizers
+      expression: "object.metadata.?finalizers.orValue([])"
+    - name: oldFinalizers
+      expression: "request.operation == 'CREATE' ? [] : oldObject.metadata.?finalizers.orValue([])"
+    - name: newAnnotations
+      expression: "object.metadata.?annotations.orValue({})"
+    - name: oldAnnotations
+      expression: "request.operation == 'CREATE' ? {} : oldObject.metadata.?annotations.orValue({})"
+    - name: newLabels
+      expression: "object.metadata.?labels.orValue({})"
+    - name: oldLabels
+      expression: "request.operation == 'CREATE' ? {} : oldObject.metadata.?labels.orValue({})"
   validations:
     # A proposal says who proposed it, and the API server says who is asking: they must be
     # the same name, written exactly, so a proposer cannot be recorded as someone else.
@@ -66,6 +82,28 @@ spec:
     - expression: >-
         request.operation != 'UPDATE' || object.spec == oldObject.spec
       message: "dorgu: SpecImmutable: a proposal's spec cannot be changed after it is created. Write a new proposal instead."
+    # A proposer has no delete verb so that it cannot remove the record of what it proposed.
+    # An owner reference to something that does not exist would make the garbage collector
+    # delete the proposal anyway, and a finalizer nobody removes would wedge it for ever, so
+    # only the operator sets either. dorgu.io/ annotations and labels are operator state.
+    - expression: >-
+        variables.isOperator || variables.newOwners == variables.oldOwners
+      message: "dorgu: OperatorOnly: owner references on a proposal are set only by the Dorgu operator."
+    - expression: >-
+        variables.isOperator || variables.newFinalizers == variables.oldFinalizers
+      message: "dorgu: OperatorOnly: finalizers on a proposal are set only by the Dorgu operator."
+    - expression: >-
+        variables.isOperator ||
+        (variables.newAnnotations.all(k, !k.startsWith('dorgu.io/') ||
+        (k in variables.oldAnnotations && variables.oldAnnotations[k] == variables.newAnnotations[k])) &&
+        variables.oldAnnotations.all(k, !k.startsWith('dorgu.io/') || k in variables.newAnnotations))
+      message: "dorgu: OperatorOnly: annotations under dorgu.io/ are written only by the Dorgu operator."
+    - expression: >-
+        variables.isOperator ||
+        (variables.newLabels.all(k, !k.startsWith('dorgu.io/') ||
+        (k in variables.oldLabels && variables.oldLabels[k] == variables.newLabels[k])) &&
+        variables.oldLabels.all(k, !k.startsWith('dorgu.io/') || k in variables.newLabels))
+      message: "dorgu: OperatorOnly: labels under dorgu.io/ are written only by the Dorgu operator."
     # The operator answers every proposal in status; nobody else writes it.
     - expression: >-
         variables.subResource != 'status' || variables.isOperator

@@ -110,6 +110,9 @@ func TestPreflightContent_EachTamperingOnTheRealServerIsWeakened(t *testing.T) {
 					live.(*admissionregistrationv1.ValidatingAdmissionPolicyBinding).Spec = s.Spec
 				}
 				require.NoError(t, env.Admin.Update(context.Background(), live))
+				// The API server notices a changed policy a moment later: do not hand the next
+				// test a policy that is still the tampered one.
+				require.NoError(t, env.WaitEnforcing(context.Background()))
 			})
 
 			err := contentCheck().Run(ctxFor(t))

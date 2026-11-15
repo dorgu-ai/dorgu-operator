@@ -29,6 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
+	dorguv1alpha1 "github.com/dorgu-ai/dorgu-operator/api/v1alpha1"
 	"github.com/dorgu-ai/dorgu-operator/test/admissionenv"
 )
 
@@ -190,6 +191,79 @@ func TestOperatorOnly(t *testing.T) {
 		// A plain incident from a user is theirs to write: nothing here is operator state.
 		plain := newIncident(ns)
 		require.NoError(t, user.c.Create(ctxFor(t), plain))
+	})
+
+	// C2 review F-5: a proposer with no delete verb could still erase its own proposals by
+	// naming a missing owner (the garbage collector deletes what has none), wedge them with a
+	// finalizer, or write operator state under dorgu.io/. The operator is exempt: it owns the
+	// proposals it converts.
+	t.Run("ownerReferences, finalizers and dorgu.io metadata on a proposal", func(t *testing.T) {
+		alice := newActor(t, ns, "", nil, append(append([]rbacv1.PolicyRule{}, proposerRules...), writerRules...))
+		ghost := metav1.OwnerReference{APIVersion: "v1", Kind: "ConfigMap", Name: "ghost", UID: "11111111-2222-3333-4444-555555555555"}
+		mutations := map[string]func(*dorguv1alpha1.RemediationProposal){
+			"an owner reference to something that does not exist": func(p *dorguv1alpha1.RemediationProposal) { p.OwnerReferences = []metav1.OwnerReference{ghost} },
+			"a finalizer nobody removes":                          func(p *dorguv1alpha1.RemediationProposal) { p.Finalizers = []string{"example.com/stuck"} },
+			"a dorgu.io annotation": func(p *dorguv1alpha1.RemediationProposal) {
+				p.Annotations = map[string]string{"dorgu.io/answers-signal": "x"}
+			},
+			"a dorgu.io label": func(p *dorguv1alpha1.RemediationProposal) {
+				p.Labels = map[string]string{"dorgu.io/persona-name": "web"}
+			},
+			"all of them at once (the review's probe)": func(p *dorguv1alpha1.RemediationProposal) {
+				p.OwnerReferences = []metav1.OwnerReference{ghost}
+				p.Finalizers = []string{"example.com/stuck"}
+				p.Annotations = map[string]string{"dorgu.io/a": "1"}
+				p.Labels = map[string]string{"dorgu.io/l": "1"}
+			},
+		}
+		for name, mutate := range mutations {
+			t.Run("create with "+name, func(t *testing.T) {
+				prop := admissionenv.NewProposal(ns, uniq("p"), alice.name)
+				mutate(prop)
+				requireDenied(t, alice.c.Create(ctxFor(t), prop), "OperatorOnly")
+			})
+			t.Run("update adding "+name, func(t *testing.T) {
+				prop := admissionenv.NewProposal(ns, uniq("p"), alice.name)
+				require.NoError(t, alice.c.Create(ctxFor(t), prop))
+				fresh := &dorguv1alpha1.RemediationProposal{}
+				require.NoError(t, alice.c.Get(ctxFor(t), client.ObjectKeyFromObject(prop), fresh))
+				mutate(fresh)
+				requireDenied(t, alice.c.Update(ctxFor(t), fresh), "OperatorOnly")
+			})
+		}
+
+		t.Run("other annotations, labels and no owner are the proposer's own business", func(t *testing.T) {
+			prop := admissionenv.NewProposal(ns, uniq("p"), alice.name)
+			prop.Annotations = map[string]string{"example.com/note": "fine"}
+			prop.Labels = map[string]string{"team": "sre"}
+			require.NoError(t, alice.c.Create(ctxFor(t), prop))
+		})
+
+		t.Run("the operator sets them on a proposal it converts, and a later user update leaves them alone", func(t *testing.T) {
+			prop := admissionenv.NewProposal(ns, uniq("p"), alice.name)
+			require.NoError(t, alice.c.Create(ctxFor(t), prop))
+
+			owned := &dorguv1alpha1.RemediationProposal{}
+			require.NoError(t, env.Operator.Get(ctxFor(t), client.ObjectKeyFromObject(prop), owned))
+			owned.OwnerReferences = []metav1.OwnerReference{ghost}
+			owned.Finalizers = []string{"dorgu.io/proposal"}
+			owned.Annotations = map[string]string{"dorgu.io/converted-to": "ra-1"}
+			owned.Labels = map[string]string{"dorgu.io/state": "converted"}
+			require.NoError(t, env.Operator.Update(ctxFor(t), owned), "the operator is exempt")
+
+			// A user's update that touches none of them is fine; changing one is not.
+			fresh := &dorguv1alpha1.RemediationProposal{}
+			require.NoError(t, alice.c.Get(ctxFor(t), client.ObjectKeyFromObject(prop), fresh))
+			fresh.Annotations["example.com/note"] = "still fine"
+			require.NoError(t, alice.c.Update(ctxFor(t), fresh))
+
+			require.NoError(t, alice.c.Get(ctxFor(t), client.ObjectKeyFromObject(prop), fresh))
+			fresh.OwnerReferences = nil
+			requireDenied(t, alice.c.Update(ctxFor(t), fresh), "OperatorOnly")
+			require.NoError(t, alice.c.Get(ctxFor(t), client.ObjectKeyFromObject(prop), fresh))
+			fresh.Finalizers = nil
+			requireDenied(t, alice.c.Update(ctxFor(t), fresh), "OperatorOnly")
+		})
 	})
 
 	t.Run("a proposal's status", func(t *testing.T) {
