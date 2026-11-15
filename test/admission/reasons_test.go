@@ -501,9 +501,13 @@ func TestInvalidTransition(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "until the operator acts on it")
 	})
-	t.Run("a status write that changes nothing is not a change", func(t *testing.T) {
+	// C2 re-check 2 R-1: a status write that changes nothing visible still moves the field
+	// manager's time (a patch that names metadata the status subresource drops, or the same
+	// values again), so on an Approved action it is refused like any other write by a person.
+	t.Run("a status write that changes nothing still moves the stamp, so it is refused", func(t *testing.T) {
 		ra := approvedAction(t)
-		require.NoError(t, admissionenv.PatchStatus(ctxFor(t), alice.c, ra, map[string]any{"phase": "Approved"}))
+		err := admissionenv.PatchStatus(ctxFor(t), alice.c, ra, map[string]any{"phase": "Approved"})
+		requireDenied(t, err, "InvalidTransition")
 	})
 	t.Run("the operator still moves an Approved action on", func(t *testing.T) {
 		ra := approvedAction(t)

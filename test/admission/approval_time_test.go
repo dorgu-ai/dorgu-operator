@@ -18,6 +18,7 @@ package admission
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -25,6 +26,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
@@ -128,4 +130,62 @@ func TestApprovalWrittenAt_APersonCannotRefreshTheStampOfAnApprovalInAWindow(t *
 	require.NoError(t, err)
 	assert.Equal(t, stamp, stampAfter, "the denied write did not move the stamp")
 	assert.True(t, preflight.NotReadyAt(stampAfter), "so the approval is still voided")
+}
+
+// C2 re-check 2 R-1: the field manager records the fields a status patch names, including
+// metadata the status subresource then drops, and moves its time. Admission sees only the
+// stored object, where nothing changed, so a rule that looked at visible changes alone let this
+// refresh the stamp of an approval made in a window. Any person's status write on an Approved
+// action is refused, one that changes nothing visible included, and the voided approval stays
+// voided. Run by the approver and by someone who holds only status patch (the manager name,
+// not the user, keys the entry).
+func TestApprovalWrittenAt_AMetadataBearingStatusPatchCannotRefreshTheStamp(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		statusOnly bool
+	}{
+		{"the approver", false},
+		{"a user with status patch and no approve verb", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ns := namespace(t, "approval-time4")
+			ctx := ctxFor(t)
+			ok := intake.Check{
+				Name: "x", Reason: intake.ReasonAdmissionPoliciesMissing, Run: func(context.Context) error { return nil },
+			}
+			preflight := intake.NewPreflight(logr.Discard(), ok)
+
+			ra := pendingAction(t, ns, "agent-x")
+			alice := newActor(t, ns, "alice", nil, approverRules)
+			require.NoError(t, admissionenv.Approve(ctx, alice.c, ra, "alice"))
+			var written dorguv1.RemediationAction
+			require.NoError(t, env.Admin.Get(ctx, client.ObjectKeyFromObject(ra), &written))
+			stamp, err := controller.ApprovalWrittenAt(&written)
+			require.NoError(t, err)
+			preflight.Run(ctx)
+			require.True(t, preflight.NotReadyAt(stamp), "the approval is inside the window: it is voided")
+
+			actor := alice
+			if tc.statusOnly {
+				actor = newActor(t, ns, "mallory", nil, statusOnlyRules)
+			}
+			time.Sleep(intake.GuardClockMargin + 1500*time.Millisecond)
+			body, err := json.Marshal(map[string]any{
+				"metadata": map[string]any{"annotations": map[string]any{"launder": "1"}, "labels": map[string]any{"launder": "1"}},
+				"status":   map[string]any{"phase": "Approved"},
+			})
+			require.NoError(t, err)
+			target := &dorguv1.RemediationAction{ObjectMeta: metav1.ObjectMeta{Name: ra.Name, Namespace: ns}}
+			err = actor.c.Status().Patch(ctx, target, client.RawPatch(types.MergePatchType, body))
+			requireDenied(t, err, "InvalidTransition")
+
+			var after dorguv1.RemediationAction
+			require.NoError(t, env.Admin.Get(ctx, client.ObjectKeyFromObject(ra), &after))
+			stampAfter, err := controller.ApprovalWrittenAt(&after)
+			require.NoError(t, err)
+			assert.Equal(t, stamp, stampAfter, "the denied write did not move the stamp")
+			assert.True(t, preflight.NotReadyAt(stampAfter), "so the approval is still voided")
+			assert.Equal(t, "Approved", after.Status.Phase)
+		})
+	}
 }

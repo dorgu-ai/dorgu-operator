@@ -259,8 +259,14 @@ spec:
     # a person gets one transition and then waits. (humanChange is every field a person may
     # write; dorgu-action-integrity refuses a person on the rest, with its own reason, so a
     # write is never refused twice.)
+    # A write that changes nothing visible is refused too: the field manager records the
+    # fields a patch names, metadata the status subresource drops included, and moves its
+    # time, so a status patch carrying a label and the same phase would refresh the stamp
+    # without a change this policy can see (C2 re-check 2 R-1). A write that changes only a
+    # field the operator owns is left to dorgu-action-integrity (OperatorOnly).
     - expression: >-
-        variables.isOperator || variables.oldPhase != 'Approved' || !variables.humanChange
+        variables.isOperator || variables.oldPhase != 'Approved' ||
+        !(variables.humanChange || object.?status == oldObject.?status)
       message: "dorgu: InvalidTransition: an approved remediation cannot be changed by a person until the operator acts on it (it ticketed or voided the approval). The approval stands as it was recorded."
     # The decision records who made it, and only the authenticated user can be that person.
     # This is denied, not rewritten: mutating admission is not generally available.
