@@ -305,3 +305,31 @@ func TestOP24DoubleRollback(t *testing.T) {
 		fmt.Sprintf("sequential: first converted=%v second=%v; rollback actions %d; racing four: %d",
 			first.Action != nil, second.Rejection, len(rollbackActions(t, ns)), len(rollbackActions(t, ns2))))
 }
+
+// Not a scenario: the honest path. A rollback the operator derived is approved by the
+// person who asked (the operator is its proposer, so one person may do both), ticketed on
+// live state and applied to the persona, restoring exactly the recorded value. It guards
+// the other direction of OP-20 to OP-24: the defences must not also stop the rollback they
+// exist to protect (a 2x change reversed is the 50% decrease the blast-radius cap allows).
+func TestRollbackFlowsThroughApprovalAndTheTicket(t *testing.T) {
+	ns := appliedFixture(t, "rb-flow")
+	out := process(t, intakeProcessor(), rollbackProposalFor(ns, "rb-flow", alicePerson, rollbackRA))
+	if out.Action == nil {
+		t.Fatalf("the rollback was not converted: %s", out.Message)
+	}
+	rb := out.Action
+
+	approveAs(t, rb, alicePerson)
+	_, err := reconcile(t, newRemediationController(), rb)
+
+	if err != nil || rb.Status.ApplyTicket == nil || rb.Status.ApplyTicket.ApprovedBy != alicePerson {
+		t.Fatalf("the rollback was not ticketed for its requester: phase %q, err %v, ticket %v",
+			rb.Status.Phase, err, rb.Status.ApplyTicket)
+	}
+	if mem := personaMemory(t, ns); mem != baselineMemory {
+		t.Errorf("the persona holds %s after the rollback, want the recorded %s", mem, baselineMemory)
+	}
+	if rb.Spec.Provenance.RequestedBy != alicePerson || rb.Spec.Provenance.Proposer.Username != operatorUsername {
+		t.Errorf("provenance %+v", rb.Spec.Provenance)
+	}
+}
