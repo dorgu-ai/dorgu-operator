@@ -92,6 +92,9 @@ func buildHealthPipeline(
 	if cfg.ticketTTL > 0 {
 		gateOpts = append(gateOpts, gate.WithTicketTTL(cfg.ticketTTL))
 	}
+	if cfg.rolledBackValueTTL > 0 {
+		gateOpts = append(gateOpts, gate.WithRolledBackValueTTL(cfg.rolledBackValueTTL))
+	}
 	if reader != nil {
 		// Sibling RemediationActions (rate limit, concurrency, dedup) and the live
 		// workload at approval are read from the API server, not the cache, so a

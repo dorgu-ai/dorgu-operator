@@ -40,6 +40,11 @@ const DefaultRemediationPendingTTL = 24 * time.Hour
 // measured it at approval; a day is already far longer than that stays true.
 const maxTicketTTL = 24 * time.Hour
 
+// maxRolledBackValueTTL bounds --rolled-back-value-ttl: a person's rollback is a decision
+// about one incident, not a standing rule, so it is not remembered for longer than a
+// quarter. An admin who wants the planner to forget sooner deletes the rollback action.
+const maxRolledBackValueTTL = 90 * 24 * time.Hour
+
 // operatorConfig holds all operator configuration parsed from command-line flags.
 type operatorConfig struct {
 	// Metrics server
@@ -93,6 +98,12 @@ type operatorConfig struct {
 	// most maxTicketTTL; a zero value in a bare operatorConfig means the gate's
 	// default, but --ticket-ttl=0 on the command line is refused.
 	ticketTTL time.Duration
+
+	// rolledBackValueTTL is how long a value a person rolled back is not proposed again,
+	// counted from the rollback's completion (C6b). Positive and at most
+	// maxRolledBackValueTTL; a zero value in a bare operatorConfig means the gate's
+	// default, but --rolled-back-value-ttl=0 on the command line is refused.
+	rolledBackValueTTL time.Duration
 
 	// LLM (AI diagnosis)
 	llmProvider string // "claude", "gemini", or "" (disabled)
@@ -210,6 +221,11 @@ func parseFlagSet(fs *flag.FlagSet, args []string) (operatorConfig, error) {
 			"applied within it is refused: the action ends Expired with reason TicketExpired, nothing is applied "+
 			"and no cooldown starts. Must be positive and at most "+maxTicketTTL.String()+".")
 
+	fs.DurationVar(&cfg.rolledBackValueTTL, "rolled-back-value-ttl", gate.DefaultRolledBackValueTTL,
+		"How long Dorgu does not propose again a value a person rolled back, counted from the rollback's "+
+			"completion. The memory also ends if the rollback RemediationAction is deleted, which only a "+
+			"cluster admin can do. Must be positive and at most "+maxRolledBackValueTTL.String()+".")
+
 	// LLM flags
 	fs.StringVar(&cfg.llmProvider, "llm-provider", "",
 		"LLM provider for AI-enhanced diagnosis: 'claude' or 'gemini' (default: disabled).")
@@ -249,6 +265,10 @@ func parseFlagSet(fs *flag.FlagSet, args []string) (operatorConfig, error) {
 			ttlErr = fmt.Errorf("--ticket-ttl must be positive, got %s: "+
 				"a ticket that is born expired turns every approval into a refusal", cfg.ticketTTL)
 		}
+		if f.Name == "rolled-back-value-ttl" && cfg.rolledBackValueTTL <= 0 {
+			ttlErr = fmt.Errorf("--rolled-back-value-ttl must be positive, got %s: "+
+				"a memory that lapses before it begins forgets every rollback at once", cfg.rolledBackValueTTL)
+		}
 	})
 	if ttlErr != nil {
 		return operatorConfig{}, ttlErr
@@ -262,6 +282,10 @@ func parseFlagSet(fs *flag.FlagSet, args []string) (operatorConfig, error) {
 func (c operatorConfig) validate() error {
 	if c.ticketTTL < 0 || c.ticketTTL > maxTicketTTL {
 		return fmt.Errorf("--ticket-ttl must be positive and at most %s, got %s", maxTicketTTL, c.ticketTTL)
+	}
+	if c.rolledBackValueTTL < 0 || c.rolledBackValueTTL > maxRolledBackValueTTL {
+		return fmt.Errorf("--rolled-back-value-ttl must be positive and at most %s, got %s",
+			maxRolledBackValueTTL, c.rolledBackValueTTL)
 	}
 	if c.remediationPendingTTL < 0 {
 		return fmt.Errorf("--remediation-pending-ttl must not be negative (use 0 to disable), got %s",

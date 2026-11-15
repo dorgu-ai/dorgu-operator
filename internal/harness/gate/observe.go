@@ -115,6 +115,7 @@ var refusalCatalog = []refusalSite{
 	{Stage: StageGuardrails, Guardrail: GuardrailRateLimit, proposalOnly: true},
 	{Stage: StageGuardrails, Guardrail: GuardrailConcurrent},
 	{Stage: StageGuardrails, Guardrail: GuardrailFailedCooldown},
+	{Stage: StageGuardrails, Guardrail: GuardrailRolledBackValue},
 	{Stage: StageGuardrails, Guardrail: GuardrailAbsentField},
 	{Stage: StageGuardrails, Guardrail: GuardrailNoBaseline},
 	{Stage: StageGuardrails, Guardrail: GuardrailBlastRadius},
@@ -129,7 +130,7 @@ var refusalCatalog = []refusalSite{
 
 // clampReasons are the guardrails that narrow a plan instead of refusing it.
 var clampReasons = []string{
-	GuardrailAbsentField, GuardrailBlastRadius, GuardrailNoBaseline,
+	GuardrailAbsentField, GuardrailBlastRadius, GuardrailNoBaseline, GuardrailRolledBackValue,
 	GuardrailAutoExecutable, GuardrailFieldAllowlist, GuardrailVerifyBounds,
 }
 
@@ -197,7 +198,7 @@ func allGuardrails() []string {
 		GuardrailActionClass, GuardrailPolicyUnreadable, GuardrailUnknownMode, GuardrailNotTicketed,
 		GuardrailClusterUnreadable, GuardrailTicket, GuardrailNotApproved, GuardrailTicketMismatch, GuardrailTicketExpired,
 		GuardrailNoApprover, GuardrailBadApprover, GuardrailTicketIncomplete, GuardrailTooManySteps,
-		GuardrailRollbackWouldBePartial,
+		GuardrailRollbackWouldBePartial, GuardrailRolledBackValue,
 	}
 	return all
 }

@@ -120,7 +120,8 @@ func (p *Proposer) gateAndPersistPlan(
 	// The gate rules on the steps. Blast-radius and absent-field refusals strip the
 	// offending field and record the verdict as structured data; persona-wide
 	// refusals (rate limit, concurrency, deny-list, cooldown) end the proposal.
-	dec, err := p.gate.Run(ctx, candidateFor(action, diag, incident, false), gate.PhaseProposal)
+	cand := candidateFor(action, diag, incident, false)
+	dec, err := p.gate.Run(ctx, cand, gate.PhaseProposal)
 	if err != nil {
 		return nil, fmt.Errorf("gate: %w", err)
 	}
@@ -150,9 +151,20 @@ func (p *Proposer) gateAndPersistPlan(
 	// not a fix, however well it reads. Give the plan the deterministic patch the
 	// rule engine would have produced, or refuse the plan and let the caller fall
 	// back to the rule-based proposal.
-	ruleEngineDeclined, err := p.ensureAppliableResourcePlan(action, diag, rc.AppPersona, workloadRef)
+	//
+	// A value a person rolled back is not offered again, here either: the gate has
+	// already taken it out of the model's patch, and the rule engine's own sizing
+	// is held to the same list (C6b).
+	rolledBack, err := p.gate.RolledBackValues(ctx, &cand)
+	if err != nil {
+		return nil, fmt.Errorf("gate: %w", err)
+	}
+	ruleEngineDeclined, heldBack, err := p.ensureAppliableResourcePlan(action, diag, rc.AppPersona, workloadRef, rolledBack)
 	if err != nil {
 		return nil, err
+	}
+	if refusal := refuseRolledBackOnlyFix(action, dec, heldBack, diagnosisTargetPath(diag)); refusal != nil {
+		return refusal, nil
 	}
 
 	// A persona-update step with no patch applies nothing and instructs nobody.
@@ -193,6 +205,10 @@ func (p *Proposer) gateAndPersistPlan(
 	// This must stay ABOVE discloseBlastRadiusClamp: that appends the cap caveat
 	// to Explanation, and recomputing afterwards would erase it.
 	action.Spec.Explanation = planExplanation(action.Spec.Steps)
+
+	// A person rolled a value back: say so in the proposal, in Dorgu's own words,
+	// beside the explanation of what the plan does (C6b).
+	explainRolledBack(action, rolledBack, heldBack)
 
 	// The advisory fallback dropped a persona change the rules did not authorise. The
 	// model's prose for the steps that stayed can still describe it ("with memory

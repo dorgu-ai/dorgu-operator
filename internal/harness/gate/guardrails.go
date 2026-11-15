@@ -47,6 +47,7 @@ const (
 	phaseFailed    = "Failed"
 
 	phaseRolledBack = "RolledBack"
+	phaseCompleted  = "Completed"
 	phaseTicketed   = "Ticketed"
 
 	// conditionApplied mirrors the controller's Applied condition type, whose
@@ -97,6 +98,22 @@ func (s guardrailsStage) Run(ctx context.Context, cand *Candidate, d *Decision) 
 func (s guardrailsStage) completeness(cand *Candidate, d *Decision) {
 	target := cand.Facts.TargetPath
 	if target == "" || cand.Facts.AdvisoryAllowed {
+		return
+	}
+	if withheldRolledBack(d, target) && !AppliesDiagnosedChange(d.Steps, d.Action, target) {
+		// The diagnosed change was withheld because a person rolled it back (C6b), which is
+		// already recorded and said. With nothing else to apply that is the considered
+		// outcome (advice, or the refusal that was already made), and refusing it again as
+		// "applies nothing" would blame it twice.
+		if !hasAutoApplicable(d) {
+			return
+		}
+		// Something else would still apply: an OOM incident must not become an
+		// auto-executable CPU-only proposal because the memory step was withheld rather than
+		// stripped by a cap. The invariant is the same, and the reason is the true one.
+		d.refuse(StageGuardrails, GuardrailRolledBackValue, rolledBackReason(d, target)+RolledBackRestOfPlanNote,
+			map[string]string{"target": target}).
+			From(dorguv1.CeilingSourceDefault)
 		return
 	}
 	if DeployerOwned(d.WorkloadRef) {
@@ -171,6 +188,7 @@ func (s guardrailsStage) personaWide(ctx context.Context, cand *Candidate, d *De
 	}
 	s.concurrent(cand, d, siblings)
 	s.failedCooldown(cand, d, siblings)
+	s.withholdRolledBack(cand, d, siblings)
 	return nil
 }
 

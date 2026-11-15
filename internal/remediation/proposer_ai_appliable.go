@@ -73,43 +73,55 @@ func (p *Proposer) ensureAppliableResourcePlan(
 	diag diagnosis.Diagnosis,
 	persona *dorguv1.ApplicationPersona,
 	ref *dorguv1.WorkloadRef,
-) (ruleEngineDeclined bool, err error) {
+	rolledBack []gate.RolledBackValue,
+) (ruleEngineDeclined bool, heldBack []gate.RolledBackValue, err error) {
 	target := diagnosisTargetPath(diag)
 	if target == "" || gate.AppliesDiagnosedChange(action.Spec.Steps, action.Spec.Action, target) {
-		return false, nil
+		return false, nil, nil
 	}
 
 	change, err := p.calculateResourceChange(diag, persona, ref)
 	if err != nil {
-		return false, fmt.Errorf("sizing a resource change for an unappliable AI plan: %w", err)
+		return false, nil, fmt.Errorf("sizing a resource change for an unappliable AI plan: %w", err)
 	}
 	if change.skipReason != "" || change.patch == nil {
 		p.logger.V(1).Info("AI plan applies nothing and the rule engine will not size a change either; the plan stays advisory",
 			"action", action.Name, "field", target, "reason", change.skipReason)
-		return true, nil
+		return true, nil, nil
+	}
+
+	// The rule engine would size the very value a person rolled back. It is not
+	// offered: the plan stays advisory, which is a considered outcome, and the
+	// explanation says why (explainRolledBack).
+	if raw, marshalErr := json.Marshal(change.patch); marshalErr == nil {
+		if held := matchRolledBack(rolledBack, raw, planningBaselines(raw, persona, ref)); len(held) > 0 {
+			p.logger.Info("the rule engine would size a value a person rolled back; the plan stays advisory",
+				"action", action.Name, "field", target)
+			return true, held, nil
+		}
 	}
 
 	step := personaUpdateStep(action)
 	if step == nil {
-		return false, fmt.Errorf(
+		return false, nil, fmt.Errorf(
 			"AI plan for a diagnosed change to %s contains no persona-update step, the only kind the operator can apply",
 			target)
 	}
 
 	patchJSON, err := json.Marshal(change.patch)
 	if err != nil {
-		return false, fmt.Errorf("marshalling derived patch: %w", err)
+		return false, nil, fmt.Errorf("marshalling derived patch: %w", err)
 	}
 	prePatchJSON, err := json.Marshal(change.prePatch)
 	if err != nil {
-		return false, fmt.Errorf("marshalling derived pre-patch state: %w", err)
+		return false, nil, fmt.Errorf("marshalling derived pre-patch state: %w", err)
 	}
 
 	installDerivedPatch(step, patchJSON, prePatchJSON, change.explanation)
 
 	p.logger.Info("AI plan carried no appliable patch for a diagnosed resource change; Dorgu sized it deterministically",
 		"action", action.Name, "field", target, "step", step.ID)
-	return false, nil
+	return false, nil, nil
 }
 
 // dropPatchlessPersonaUpdates removes persona-update steps that carry no patch

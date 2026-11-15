@@ -108,6 +108,9 @@ spec:
                    chart) and keeps a --reuse-values upgrade from an older release
                    rendering the default, never an empty flag. */}}
             - --ticket-ttl={{ include "dorgu-operator.ticketTTL" . }}
+            {{- /* Rendered unconditionally so the pod spec states how long a value a
+                   person rolled back is withheld. Validated like the ticket lifetime. */}}
+            - --rolled-back-value-ttl={{ include "dorgu-operator.rolledBackValueTTL" . }}
             {{- with .Values.safety.excludedNamespaces }}
             - --safety-excluded-namespaces={{ join "," . }}
             {{- end }}

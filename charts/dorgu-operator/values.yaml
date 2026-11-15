@@ -121,6 +121,13 @@ remediation:
   # install and upgrade time. Needs CLI v0.15.0 or later to approve a ticket longer
   # than 10m: older CLIs refuse it. Maps to --ticket-ttl.
   ticketTTL: 15m
+  # How long Dorgu does not propose again a value a person rolled back, counted from the
+  # rollback's completion (a rollback of 256Mi to 512Mi withholds that same move, 256Mi
+  # to 512Mi, and nothing else). The memory also ends when the rollback RemediationAction
+  # is deleted, which only a cluster admin can do. A duration with a unit (168h, 48h),
+  # positive, at most 2160h (90 days); the chart refuses anything else at install and
+  # upgrade time. Maps to --rolled-back-value-ttl.
+  rolledBackValueTTL: 168h
 
 # Remediation safety. Dorgu never remediates kube-system or the namespace it is
 # installed in (read from the pod's own namespace). List any other namespace it
