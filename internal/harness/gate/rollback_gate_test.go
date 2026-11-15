@@ -152,7 +152,7 @@ func TestRollbackGate_ObserveModeAllowsAPersonsRollback(t *testing.T) {
 	assert.Equal(t, StageModePolicy, stage)
 	assert.Equal(t, GuardrailSelfHealingMode, guardrail)
 
-	cand.RollbackOf = "ra-applied"
+	cand.RollbackOf = appliedActionName
 	dec := run(t, g, cand, PhaseProposal)
 
 	require.True(t, dec.Allowed(), "refused: %s", dec.SkipReason())
@@ -169,7 +169,7 @@ func TestRollbackGate_ObserveModeStillRunsTheOtherGuardrailsOnARollback(t *testi
 	require.Nil(t, problem)
 	cand := planCandidate(d.Steps...)
 	cand.Facts = Facts{SuggestedAction: ClassResourceAdjustment}
-	cand.RollbackOf = "ra-applied"
+	cand.RollbackOf = appliedActionName
 
 	dec := run(t, g, cand, PhaseProposal)
 
@@ -207,7 +207,7 @@ func TestRollbackGate_TheApprovalCandidateTrustsOnlyAnOperatorMadeRollback(t *te
 	} {
 		t.Run(name, func(t *testing.T) {
 			rb := appliedAction(func(r *dorguv1.RemediationAction) {
-				r.Annotations = map[string]string{dorguv1.AnnotationRollbackOf: "ra-applied"}
+				r.Annotations = map[string]string{dorguv1.AnnotationRollbackOf: appliedActionName}
 				r.Spec.Provenance.Source = dorguv1.ProposalSourceRollback
 			})
 			mutate(rb)

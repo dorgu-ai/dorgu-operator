@@ -108,6 +108,7 @@ var refusalCatalog = []refusalSite{
 	{Stage: StageGuardrails, Guardrail: GuardrailNoApprover, approvalOnly: true},
 	{Stage: StageGuardrails, Guardrail: GuardrailBadApprover, approvalOnly: true},
 	{Stage: StageGuardrails, Guardrail: GuardrailTicketIncomplete, approvalOnly: true},
+	{Stage: StageGuardrails, Guardrail: GuardrailRollbackWouldBePartial, approvalOnly: true},
 	{Stage: StageGuardrails, Guardrail: GuardrailNothingApplies},
 	{Stage: StageGuardrails, Guardrail: GuardrailDenyList},
 	{Stage: StageGuardrails, Guardrail: GuardrailOperatorNamespace},
@@ -196,6 +197,7 @@ func allGuardrails() []string {
 		GuardrailActionClass, GuardrailPolicyUnreadable, GuardrailUnknownMode, GuardrailNotTicketed,
 		GuardrailClusterUnreadable, GuardrailTicket, GuardrailNotApproved, GuardrailTicketMismatch, GuardrailTicketExpired,
 		GuardrailNoApprover, GuardrailBadApprover, GuardrailTicketIncomplete, GuardrailTooManySteps,
+		GuardrailRollbackWouldBePartial,
 	}
 	return all
 }

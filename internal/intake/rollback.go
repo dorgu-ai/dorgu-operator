@@ -18,13 +18,10 @@ package intake
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"reflect"
 	"slices"
 	"strings"
 
-	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -170,63 +167,10 @@ func rollbackProvenance(prop *v1alpha1.RemediationProposal, operatorUsername str
 // operator derived, or "" when it is. A rollback is whole or it is not made: the gate
 // may clamp a field, strip one (the live workload sets no such limit) or drop a step, and
 // converting that would make an action that restores some of what Dorgu changed and
-// leaves the rest, a state nobody asked for and Dorgu never produced. So the decision
-// has to be a plain pass, and every derived step has to come through it unchanged.
+// leaves the rest, a state nobody asked for and Dorgu never produced.
 //
-// Nothing here reaches an exemption for the gate's caps: they stay in force on a
-// rollback, and are what catches a change made between the request and the approval.
+// The comparison is gate.PartialRollback, the one the approval re-check and the
+// apply-time re-run use as well, so the three cannot drift.
 func partialRollbackReason(dec *gate.Decision, derived *gate.RollbackDerivation) string {
-	switch {
-	case dec.Result != gate.ResultPass:
-		return partialMessage(dec, derived, fmt.Sprintf("its result was %s, not a pass", resultName(dec.Result)))
-	case len(dec.Steps) != len(derived.Steps):
-		return partialMessage(dec, derived, fmt.Sprintf("it kept %d of the %d steps", len(dec.Steps), len(derived.Steps)))
-	}
-	for i := range derived.Steps {
-		want, got := &derived.Steps[i], &dec.Steps[i]
-		switch {
-		case got.Type != want.Type || got.AutoExecutable != want.AutoExecutable:
-			return partialMessage(dec, derived, fmt.Sprintf("it changed what step %d does", want.Order))
-		case !samePatch(want.Patch, got.Patch):
-			return partialMessage(dec, derived, fmt.Sprintf("it changed the values step %d restores", want.Order))
-		}
-	}
-	return ""
-}
-
-func resultName(r gate.Result) string {
-	if r == "" {
-		return "unknown"
-	}
-	return string(r)
-}
-
-// samePatch compares two patches as JSON documents. A patch that is absent on either
-// side, or is not JSON, is not the same.
-func samePatch(a, b *apiextensionsv1.JSON) bool {
-	if a == nil || b == nil {
-		return false
-	}
-	var left, right any
-	if json.Unmarshal(a.Raw, &left) != nil || json.Unmarshal(b.Raw, &right) != nil {
-		return false
-	}
-	return reflect.DeepEqual(left, right)
-}
-
-// partialMessage is what the proposal's rejection says: what the gate did, and the
-// guardrail that did it when the gate named one.
-func partialMessage(dec *gate.Decision, derived *gate.RollbackDerivation, what string) string {
-	restoring := strings.Join(derived.Restored, ", ")
-	if restoring == "" {
-		restoring = "the recorded values"
-	}
-	msg := fmt.Sprintf("the gate would not clear the whole restore of %s as derived (%s), and Dorgu restores everything it recorded or nothing: "+
-		"the rollback is refused, not partially applied, and no action was made", restoring, what)
-	for _, v := range dec.Verdicts {
-		if v.Verdict != dorguv1.GateVerdictPass && v.Reason != "" {
-			return fmt.Sprintf("%s. The gate said (%s): %s", msg, v.Guardrail, safetext.Clean(v.Reason, true))
-		}
-	}
-	return msg
+	return gate.PartialRollback(dec, derived.Steps, derived.Restored)
 }

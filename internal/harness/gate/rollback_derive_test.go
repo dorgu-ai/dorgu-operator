@@ -47,7 +47,7 @@ const (
 // appliedAction is a Completed action whose ticket raised memory from 256Mi to 512Mi.
 func appliedAction(mutate ...func(*dorguv1.RemediationAction)) *dorguv1.RemediationAction {
 	ra := &dorguv1.RemediationAction{
-		ObjectMeta: metav1.ObjectMeta{Name: "ra-applied", Namespace: testNS, UID: "ra-uid"},
+		ObjectMeta: metav1.ObjectMeta{Name: appliedActionName, Namespace: testNS, UID: "ra-uid"},
 		Spec: dorguv1.RemediationActionSpec{
 			PersonaRef: target(),
 			Provenance: &dorguv1.RemediationProvenance{
