@@ -111,4 +111,4 @@ While it is closed nothing is converted (proposals wait, untouched), Dorgu's pla
 
 ## Permissions the operator needs
 
-`remediationproposals` get, list, watch, create, update, patch and delete (delete prunes rejected proposals), `remediationproposals/status` get, update and patch, plus the create it already had on `remediationactions` and `incidentmemories`, and `get` on exactly two CustomResourceDefinitions, `remediationactions.dorgu.io` and `remediationproposals.dorgu.io`, for the check above. The chart sets `OPERATOR_SERVICE_ACCOUNT` from the downward API so the planner knows its own username.
+`remediationproposals` get, list, watch, create, update, patch and delete (delete prunes rejected proposals), `remediationproposals/status` get, update and patch, plus the create it already had on `remediationactions` (and `delete` on it, for an orphan action the intake could not link) and `incidentmemories`, and `get` on exactly two CustomResourceDefinitions, `remediationactions.dorgu.io` and `remediationproposals.dorgu.io`, for the check above. The chart sets `OPERATOR_SERVICE_ACCOUNT` from the downward API so the planner knows its own username.
