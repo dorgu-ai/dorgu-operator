@@ -57,8 +57,8 @@ rules:
     resources: ["remediationproposals"]
     verbs: ["create", "get", "list", "watch"]
 ---
-# Decide a remediation, and record what `dorgu remediation heal` did. approve and reject
-# are custom verbs the admission policy checks; the status patch is not enough on its own.
+# Decide a remediation, ask for a rollback of an applied one, and record what
+# `dorgu remediation heal` did. approve and reject are custom verbs the admission policy checks; the status patch is not enough on its own.
 # The status writes are exactly the ones the CLI makes: the decision (phase, approvedBy,
 # approvedAt) and its two conditions (RejectionReason, WorkloadPatched). The policies
 # refuse a service account whatever it is granted, and the proposer of a remediation.
@@ -85,6 +85,12 @@ rules:
       - incidentmemories
       - remediationproposals
     verbs: ["get", "list", "watch"]
+  # `dorgu remediation rollback` asks for a rollback with a proposal that names the action.
+  # The policies let only a person holding the approve verb do that, as themselves; the
+  # operator writes the change and the same person approves it.
+  - apiGroups: ["dorgu.io"]
+    resources: ["remediationproposals"]
+    verbs: ["create"]
   # The CLI records a decline (an expired ticket, a refused ticket) as a Warning Event on
   # the remediation.
   - apiGroups: [""]

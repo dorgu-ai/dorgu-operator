@@ -11,7 +11,8 @@ suites, and a test fails when the two differ.
 Every denial message starts with "dorgu: <Reason>: ". The reasons are the contract with
 the CLI (P2-execution.md section 3): ProposerMismatch, OperatorOnly, SpecImmutable,
 ServiceAccountCannotApprove, ApprovedByMismatch, ApproverIsProposer, MissingApproveVerb,
-InvalidTransition, TargetNamespaceMismatch.
+InvalidTransition, TargetNamespaceMismatch. A rollback proposal (C6) reuses
+ServiceAccountCannotApprove and MissingApproveVerb: asking for one is the approver's authority.
 
 The operator's username is templated in. The API server returns only the first failing
 validation of a policy, so within a policy the order below is the order a person sees.
@@ -74,6 +75,20 @@ spec:
         (object.spec.proposer.username == request.userInfo.username &&
         !request.userInfo.username.matches({{ $unclean }}))
       message: "dorgu: ProposerMismatch: spec.proposer.username must be exactly the authenticated username. A name with control, format or invisible characters cannot be used."
+    # A rollback (spec.rollbackOf) is a person's request that the operator write a change
+    # to a workload: it ends as an action the operator proposed itself, which one person may
+    # approve alone. So who may ask is the approver's authority, and never an agent's: a
+    # system: identity (an agent, a CI job, the operator itself) cannot, and a person needs
+    # the approve verb. The reasons are the approval gate's, which this is the same power as.
+    - expression: >-
+        request.operation != 'CREATE' || !has(object.spec.rollbackOf) ||
+        !request.userInfo.username.startsWith('system:')
+      message: "dorgu: ServiceAccountCannotApprove: asking for a rollback is a human decision, because the operator writes the change and one person may approve it alone. A service account (an agent, a CI job, the operator) cannot ask."
+    - expression: >-
+        request.operation != 'CREATE' || !has(object.spec.rollbackOf) ||
+        authorizer.group('dorgu.io').resource('remediationactions').namespace(object.metadata.namespace)
+        .check('approve').allowed()
+      message: "dorgu: MissingApproveVerb: asking for a rollback needs the approve verb on remediationactions in this namespace. Ask a cluster admin to bind the dorgu-approver role."
     # CRD validation cannot read metadata.namespace, so the namespace rule lives here.
     - expression: >-
         request.operation != 'CREATE' ||
