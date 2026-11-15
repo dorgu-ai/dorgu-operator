@@ -44,6 +44,11 @@ const ConditionCPUThrottlingDetection = "CPUThrottlingDetection"
 // statusLogInterval bounds how often a failure to write the status is logged.
 const statusLogInterval = 5 * time.Minute
 
+// cpuFieldRecheckInterval is how long the sink goes on ignoring status.cpuThrottlingDetection
+// after the API server pruned it. When it elapses the field is written once more: if it
+// sticks the CRD has been upgraded and the sink compares the field again, with no restart.
+const cpuFieldRecheckInterval = 5 * time.Minute
+
 // CPUThrottlingStatusSink writes the CPU throttling collector's source state to every
 // ClusterPersona: a condition for kubectl, and a structured field for `dorgu health`.
 //
@@ -59,17 +64,27 @@ type CPUThrottlingStatusSink struct {
 	lastLog time.Time
 	held    int
 
-	// fieldPruned is set when a write came back without status.cpuThrottlingDetection:
-	// the installed CRD predates it (Helm does not upgrade crds/) and the API server
-	// drops the field. From then on only the condition, which an old CRD keeps, is
-	// compared, so the state is one write and not one per ClusterPersona per cycle.
-	fieldPruned atomic.Bool
+	// fieldPrunedAt is when (unix nanoseconds) a write last came back without
+	// status.cpuThrottlingDetection, or 0: the installed CRD predates it (Helm does not
+	// upgrade crds/) and the API server drops the field. For cpuFieldRecheckInterval
+	// after that only the condition, which an old CRD keeps, is compared, so the state is
+	// one write and not one per ClusterPersona per cycle. Then the field is tried again,
+	// so applying the new CRDs needs no restart.
+	fieldPrunedAt atomic.Int64
+
+	now func() time.Time
 }
 
 // NewCPUThrottlingStatusSink builds the sink over a client that can list and update
 // ClusterPersona status.
 func NewCPUThrottlingStatusSink(c client.Client, logger logr.Logger) *CPUThrottlingStatusSink {
-	return &CPUThrottlingStatusSink{client: c, logger: logger.WithName("cpu-throttling-status")}
+	return &CPUThrottlingStatusSink{client: c, logger: logger.WithName("cpu-throttling-status"), now: time.Now}
+}
+
+// ignoringField is true while the field is known to be pruned and the re-check is not due.
+func (s *CPUThrottlingStatusSink) ignoringField() bool {
+	at := s.fieldPrunedAt.Load()
+	return at != 0 && s.now().Sub(time.Unix(0, at)) < cpuFieldRecheckInterval
 }
 
 var _ detection.CPUThrottlingStatusSink = (*CPUThrottlingStatusSink)(nil)
@@ -83,7 +98,7 @@ func (s *CPUThrottlingStatusSink) ReportCPUThrottlingSource(ctx context.Context,
 	}
 	for i := range list.Items {
 		name := list.Items[i].Name
-		if !cpuStatusDiffers(&list.Items[i], status, s.fieldPruned.Load()) {
+		if !cpuStatusDiffers(&list.Items[i], status, s.ignoringField()) {
 			continue
 		}
 		err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
@@ -91,7 +106,8 @@ func (s *CPUThrottlingStatusSink) ReportCPUThrottlingSource(ctx context.Context,
 			if err := s.client.Get(ctx, client.ObjectKey{Name: name}, &fresh); err != nil {
 				return err
 			}
-			if !cpuStatusDiffers(&fresh, status, s.fieldPruned.Load()) {
+			ignoring := s.ignoringField()
+			if !cpuStatusDiffers(&fresh, status, ignoring) {
 				return nil
 			}
 			applyCPUStatus(&fresh, status)
@@ -99,19 +115,34 @@ func (s *CPUThrottlingStatusSink) ReportCPUThrottlingSource(ctx context.Context,
 				return err
 			}
 			// Update fills fresh from the API server's answer. A field that was set and
-			// is not there was pruned.
-			if fresh.Status.CPUThrottlingDetection == nil && !s.fieldPruned.Swap(true) {
-				s.logger.Error(errOldCRD, "the ClusterPersona CustomResourceDefinition in this cluster has no status.cpuThrottlingDetection, "+
-					"so `dorgu health` cannot show the CPU throttling detection state (and spec.metrics.prometheus.url is ignored). "+
-					"Helm does not upgrade crds/: apply the CRDs from this release with kubectl apply -f charts/dorgu-operator/crds",
-					"clusterPersona", name)
-			}
+			// is not there was pruned; one that is there means the CRD can hold it.
+			s.noteField(fresh.Status.CPUThrottlingDetection != nil, ignoring, name)
 			return nil
 		})
 		if err != nil {
 			s.logFailure(err, "could not write the CPU throttling detection state to the ClusterPersona", "clusterPersona", name)
 		}
 	}
+}
+
+// noteField records what a status write showed about the CRD. The first time the field
+// comes back pruned, and again once per cpuFieldRecheckInterval while it keeps coming
+// back pruned, the log says what to do: it is the operator's only way to say that
+// `dorgu health` is blind to this state.
+func (s *CPUThrottlingStatusSink) noteField(kept, wasIgnoring bool, persona string) {
+	if kept {
+		s.fieldPrunedAt.Store(0)
+		return
+	}
+	if wasIgnoring {
+		return
+	}
+	s.fieldPrunedAt.Store(s.now().UnixNano())
+	s.logger.Error(errOldCRD, "the ClusterPersona CustomResourceDefinition in this cluster has no status.cpuThrottlingDetection, "+
+		"so `dorgu health` cannot show the CPU throttling detection state (and spec.metrics.prometheus.url is ignored). "+
+		"Helm does not upgrade crds/: apply the CRDs from this release with kubectl apply -f charts/dorgu-operator/crds. "+
+		"The operator re-checks every 5 minutes, so no restart is needed once they are applied",
+		"clusterPersona", persona)
 }
 
 // desiredCPUStatus is the field the sink writes for a SourceStatus.
