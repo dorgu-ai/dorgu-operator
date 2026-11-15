@@ -85,6 +85,12 @@ const (
 	// ReasonNamespaceMismatch: the proposal's namespace is not its target's namespace.
 	ReasonNamespaceMismatch = "TargetNamespaceMismatch"
 
+	// ReasonProposerInvalid: spec.proposer.username is not a name the operator can
+	// record as it is: it holds a control, format or invisible character, is longer
+	// than the CRD allows, or is empty. An identity is never rewritten, so it is
+	// refused (the admission policy refuses the same names before they get here).
+	ReasonProposerInvalid = "ProposerInvalid"
+
 	// ReasonActionInvalid: the API server refused the RemediationAction this
 	// proposal would become as invalid. Retrying cannot help, so it is final; the
 	// condition message carries the server's reason, shortened.
@@ -220,7 +226,7 @@ type ProposalRejection struct {
 
 	// Reason is a machine-readable token. At Intake it is one of RateLimited,
 	// DuplicateIdempotencyKey, IncidentNotFound, IncidentTargetMismatch,
-	// IncidentResolved, NotYetSupported or TargetNamespaceMismatch. At a gate stage
+	// IncidentResolved, NotYetSupported, ProposerInvalid or TargetNamespaceMismatch. At a gate stage
 	// it is the guardrail that refused.
 	// +kubebuilder:validation:MaxLength=63
 	Reason string `json:"reason"`

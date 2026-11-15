@@ -32,16 +32,23 @@ import (
 // maxUsernameLength is the CRD's bound on proposer.username, in characters.
 const maxUsernameLength = 253
 
-// cleanUsername is a proposer's claimed username as the operator records and
-// prints it: stripped of control and invisible characters and cut to the CRD's
-// bound. It is also what proposals are compared by, so characters nobody can see
-// do not make one proposer into two.
-func cleanUsername(username string) string {
-	cleaned := safetext.Clean(username, false)
-	if utf8.RuneCountInString(cleaned) <= maxUsernameLength {
-		return cleaned
+// usernameProblem says why a proposer's username cannot be recorded as it is, or ""
+// when it can. An identity is never rewritten (C1 re-check 3, R-2): the admission
+// policy compares the authenticated name and the proposer, and the approver and the
+// recorded proposer, as they are, so a name the operator would have to change to
+// store is refused. That is a name safetext.Clean would change (control, format and
+// invisible characters), one over the CRD's bound, an empty one, or one that is not
+// valid UTF-8.
+func usernameProblem(username string) string {
+	switch {
+	case username == "":
+		return "is empty"
+	case utf8.RuneCountInString(username) > maxUsernameLength:
+		return fmt.Sprintf("is longer than %d characters", maxUsernameLength)
+	case !utf8.ValidString(username) || safetext.Clean(username, false) != username:
+		return "contains control, format or invisible characters"
 	}
-	return string([]rune(cleaned)[:maxUsernameLength])
+	return ""
 }
 
 // listProposals reads every proposal in the cluster (from the cache, see Config.Lister). The rate limit counts across
@@ -86,7 +93,7 @@ func earlierDuplicate(prop *v1alpha1.RemediationProposal, all []v1alpha1.Remedia
 	for i := range all {
 		other := &all[i]
 		if same(other, prop) || other.Namespace != prop.Namespace ||
-			cleanUsername(other.Spec.Proposer.Username) != cleanUsername(prop.Spec.Proposer.Username) ||
+			other.Spec.Proposer.Username != prop.Spec.Proposer.Username ||
 			other.Spec.IdempotencyKey != prop.Spec.IdempotencyKey ||
 			other.Status.Phase == v1alpha1.PhaseRejected {
 			continue
@@ -109,7 +116,7 @@ func countRecentBefore(prop *v1alpha1.RemediationProposal, all []v1alpha1.Remedi
 	n := 0
 	for i := range all {
 		other := &all[i]
-		if same(other, prop) || cleanUsername(other.Spec.Proposer.Username) != cleanUsername(prop.Spec.Proposer.Username) {
+		if same(other, prop) || other.Spec.Proposer.Username != prop.Spec.Proposer.Username {
 			continue
 		}
 		if before(other, prop) && other.CreationTimestamp.After(cutoff) {

@@ -20,10 +20,12 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/go-logr/logr"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -140,5 +142,31 @@ func TestNewIntakeSetup_VerifyIdentityFailsClosedOnAMismatch(t *testing.T) {
 	got = failureReasons(none.Preflight.Run(context.Background()))
 	if len(got) != 1 || got[0] != intake.ReasonOperatorIdentityUnknown {
 		t.Fatalf("with no configured identity there is nothing to verify, and it is already closed: %v", got)
+	}
+}
+
+// R-6: the clients the preflight asks the API server through carry a request timeout of
+// their own, on a copy of the rest config (the manager's keeps its own, which a long
+// watch needs), so a server that accepts the connection and goes quiet fails a call
+// instead of holding the preflight loop for ever.
+func TestPreflightRESTConfig_BoundsRequestsOnACopy(t *testing.T) {
+	base := &rest.Config{Host: "https://kubernetes.invalid", Timeout: 0}
+
+	got := preflightRESTConfig(base)
+
+	if got.Timeout != preflightTimeout {
+		t.Fatalf("timeout = %v, want %v", got.Timeout, preflightTimeout)
+	}
+	if base.Timeout != 0 {
+		t.Fatal("the manager's own config must not be changed")
+	}
+	if got.Host != base.Host {
+		t.Fatalf("host = %q, want %q", got.Host, base.Host)
+	}
+
+	// A config that is already stricter keeps its bound.
+	strict := &rest.Config{Timeout: time.Second}
+	if preflightRESTConfig(strict).Timeout != time.Second {
+		t.Fatal("a stricter timeout must be kept")
 	}
 }

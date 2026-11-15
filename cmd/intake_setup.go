@@ -20,6 +20,7 @@ import (
 	"sync"
 
 	"github.com/go-logr/logr"
+	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/dorgu-ai/dorgu-operator/internal/intake"
@@ -55,6 +56,17 @@ func newIntakeSetup(reader client.Reader, operatorNS string, log logr.Logger) in
 			intake.ActionProvenanceCheck(reader),
 		),
 	}
+}
+
+// preflightRESTConfig is a copy of cfg for a client the preflight asks the API server
+// through, with a request timeout (preflightTimeout) unless cfg already has a stricter
+// one. The manager's own config is left alone: its watches are long by design.
+func preflightRESTConfig(cfg *rest.Config) *rest.Config {
+	out := rest.CopyConfig(cfg)
+	if out.Timeout <= 0 || out.Timeout > preflightTimeout {
+		out.Timeout = preflightTimeout
+	}
+	return out
 }
 
 // verifyIdentity adds the check that the API server agrees about who the operator

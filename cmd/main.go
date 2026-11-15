@@ -182,7 +182,7 @@ func main() {
 	if cfg.enableHealthCheck {
 		intakeState = newIntakeSetup(mgr.GetAPIReader(), operatorNS, setupLog)
 		// The username above is a claim from the deployment: have the API server confirm it.
-		if identityClient, icErr := kubernetes.NewForConfig(restConfig); icErr != nil {
+		if identityClient, icErr := kubernetes.NewForConfig(preflightRESTConfig(restConfig)); icErr != nil {
 			setupLog.Error(icErr, "unable to build the client that verifies the operator's identity; the intake stays closed")
 			intakeState.Preflight.Add(intake.StaticCheck("operator-identity-verified",
 				intake.ReasonOperatorIdentityUnverified, icErr))
