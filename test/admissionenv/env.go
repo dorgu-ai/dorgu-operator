@@ -164,14 +164,23 @@ func binaryDir(root string) string {
 	return ""
 }
 
-// UserClient returns a client that authenticates as username, in groups. Its RBAC is
-// whatever the groups give it: bind roles with GrantRules, or pass "system:masters".
-func (e *Env) UserClient(username string, groups []string) (client.Client, error) {
+// UserConfig returns a rest config that authenticates as username, in groups.
+func (e *Env) UserConfig(username string, groups []string) (*rest.Config, error) {
 	user, err := e.env.AddUser(envtest.User{Name: username, Groups: groups}, e.Cfg)
 	if err != nil {
 		return nil, fmt.Errorf("adding user %s: %w", username, err)
 	}
-	return client.New(user.Config(), client.Options{Scheme: e.Scheme})
+	return user.Config(), nil
+}
+
+// UserClient returns a client that authenticates as username, in groups. Its RBAC is
+// whatever the groups give it: bind roles with GrantRules, or pass "system:masters".
+func (e *Env) UserClient(username string, groups []string) (client.Client, error) {
+	cfg, err := e.UserConfig(username, groups)
+	if err != nil {
+		return nil, err
+	}
+	return client.New(cfg, client.Options{Scheme: e.Scheme})
 }
 
 // GrantRules binds rules to username in namespace ns, with a Role and a RoleBinding.
