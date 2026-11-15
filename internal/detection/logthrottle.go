@@ -80,3 +80,24 @@ func (l *LogThrottle) Allow(key string, now time.Time) (bool, int) {
 	l.suppressed[key] = 0
 	return true, held
 }
+
+// Len is how many keys the throttle currently remembers.
+func (l *LogThrottle) Len() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.last)
+}
+
+// Retain forgets every key keep does not return true for, with the count it held back.
+// A throttle whose keys name things that come and go (incidents) uses it to drop the
+// ones that are gone, instead of waiting for the size cap. A nil keep forgets everything.
+func (l *LogThrottle) Retain(keep func(key string) bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for k := range l.last {
+		if keep == nil || !keep(k) {
+			delete(l.last, k)
+			delete(l.suppressed, k)
+		}
+	}
+}

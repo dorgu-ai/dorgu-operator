@@ -83,6 +83,11 @@ type ThrottleSample struct {
 	// Ratio is throttled periods over periods, in [0, 1]. An idle container (0/0, which
 	// Prometheus reports as NaN) is 0.
 	Ratio float64
+	// NoPeriods is true when the ratio was 0/0: the container ran no CFS periods in the
+	// window. It reads as idle, but a source whose every container is NoPeriods has not
+	// measured anything (the counters may never advance), and the collector does not take
+	// it as evidence that nothing is throttled.
+	NoPeriods bool
 }
 
 // ThrottleSource is the optional true-throttling source.
@@ -319,13 +324,15 @@ func sampleFrom(raw json.RawMessage) (ThrottleSample, bool) {
 	}
 	// The ratio is 0/0 for a container that ran no CFS periods in the window, which
 	// Prometheus writes as NaN. The container exists and the endpoint answered for it:
-	// it was idle, so nothing is throttled. Dropping it would make an idle but healthy
-	// cluster look as if cAdvisor were not scraped at all.
-	if math.IsNaN(ratio) {
+	// it was idle, so nothing is throttled. Dropping it would make a cluster where only some
+	// containers are idle look as if cAdvisor were not scraped at all. It is marked, though:
+	// when every container is like this the collector reads metrics.k8s.io instead.
+	noPeriods := math.IsNaN(ratio)
+	if noPeriods {
 		ratio = 0
 	}
 	if math.IsInf(ratio, 0) || ratio < 0 || ratio > 1 {
 		return ThrottleSample{}, false
 	}
-	return ThrottleSample{Namespace: ns, Pod: pod, Container: container, Ratio: ratio}, true
+	return ThrottleSample{Namespace: ns, Pod: pod, Container: container, Ratio: ratio, NoPeriods: noPeriods}, true
 }

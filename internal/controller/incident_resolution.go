@@ -44,17 +44,18 @@ import (
 // restarting for RecoveryStabilityWindow. Anything else, including any error
 // reading the cluster, leaves the incident open.
 func (r *HealthCheckReconciler) resolveCleared(ctx context.Context, activeSignalKeys map[string]bool) error {
-	return r.resolveClearedHolding(ctx, activeSignalKeys, nil)
+	return r.resolveClearedHolding(ctx, activeSignalKeys, detection.ResolutionSnapshot{})
 }
 
-// resolveClearedHolding is resolveCleared with the families that were blind when the
-// signals were collected (Engine.ResolutionBlindFamilies, read right after CollectAll).
-// An incident of a held family stays open even if the source has recovered since: a
-// verifier cycle between the collect and this step must not turn a blind collection into
-// evidence. The live answer is asked too, so a source that went blind after the collect
-// holds as well.
+// resolveClearedHolding is resolveCleared with what the engine said about silence when
+// the signals were collected (Engine.ResolutionSnapshot, read right after CollectAll): the
+// families that were blind, and the containers that were hot without a signal yet. An
+// incident of a held family stays open even if the source has recovered since: a verifier
+// cycle between the collect and this step must not turn a blind collection into evidence.
+// The live answer is asked too, so a source that went blind after the collect holds as
+// well.
 func (r *HealthCheckReconciler) resolveClearedHolding(
-	ctx context.Context, activeSignalKeys map[string]bool, heldFamilies map[detection.Family]bool,
+	ctx context.Context, activeSignalKeys map[string]bool, held detection.ResolutionSnapshot,
 ) error {
 	// Use label selector to only fetch non-resolved incidents.
 	var list dorguv1.IncidentMemoryList
@@ -90,7 +91,7 @@ func (r *HealthCheckReconciler) resolveClearedHolding(
 		// judged as usual. It includes the warm-up after a blind spell: until the source
 		// has read as many consecutive cycles as the signal needs, a pod that is still
 		// throttled has not had time to look throttled.
-		if r.resolutionBlind(detection.SignalType(im.Spec.Detection.Signal), heldFamilies) {
+		if r.resolutionBlind(detection.SignalType(im.Spec.Detection.Signal), held.BlindFamilies) {
 			r.Logger.V(1).Info("incident stays open: the source that would report this signal cannot look",
 				"name", im.Name, "signal", im.Spec.Detection.Signal)
 			continue
@@ -98,6 +99,16 @@ func (r *HealthCheckReconciler) resolveClearedHolding(
 
 		// Check grace period: signal must be absent for ResolutionGracePeriod.
 		if now.Sub(im.Spec.Detection.LastSeen.Time) < ResolutionGracePeriod {
+			continue
+		}
+
+		// The source as a whole can be warm and still new to one container of this
+		// workload: a pod pinned at its limit that has not yet been read for as many
+		// cycles as raise the signal reads as quiet. Its incident stays open until it is.
+		if ref, pending := r.resolutionPending(ctx, im, held); pending {
+			r.Logger.V(1).Info("incident stays open: a container of its workload is at the usage line and has not been read long enough to raise the signal",
+				"name", im.Name, "signal", im.Spec.Detection.Signal,
+				"pod", ref.Pod, "container", ref.Container)
 			continue
 		}
 
@@ -140,6 +151,43 @@ func (r *HealthCheckReconciler) resolutionBlind(signal detection.SignalType, hel
 		return true
 	}
 	return r.Detection != nil && r.Detection.ResolutionBlind(signal)
+}
+
+// resolutionPending reports whether the engine, at collect time (held) or now, names a
+// container of the incident's workload as pending for the incident's signal family: hot,
+// or throttled and not yet read again (detection.ResolutionPender). The workload's pods are
+// the ones verifyRecovery inspects. When they cannot be listed the incident is held: an
+// answer that could not be checked is not a reason to close it.
+func (r *HealthCheckReconciler) resolutionPending(
+	ctx context.Context, im *dorguv1.IncidentMemory, held detection.ResolutionSnapshot,
+) (detection.ContainerRef, bool) {
+	family, ok := detection.FamilyOf(detection.SignalType(im.Spec.Detection.Signal))
+	if !ok {
+		return detection.ContainerRef{}, false
+	}
+	var live detection.ResolutionSnapshot
+	if r.Detection != nil {
+		live = r.Detection.ResolutionSnapshot()
+	}
+	if len(held.PendingContainers[family]) == 0 && len(live.PendingContainers[family]) == 0 {
+		return detection.ContainerRef{}, false
+	}
+
+	namespace := incidentNamespace(im)
+	pods, err := r.workloadPods(ctx, im, namespace)
+	if err != nil {
+		logFailure(r.Logger, err, "could not list the workload's pods to check them for pending CPU readings", "name", im.Name)
+		return detection.ContainerRef{}, true
+	}
+	for i := range pods {
+		for _, ctr := range pods[i].Spec.Containers {
+			ref := detection.ContainerRef{Namespace: pods[i].Namespace, Pod: pods[i].Name, Container: ctr.Name}
+			if held.Pending(family, ref) || live.Pending(family, ref) {
+				return ref, true
+			}
+		}
+	}
+	return detection.ContainerRef{}, false
 }
 
 // resolutionEvidence is the full test an incident must pass to close: either its

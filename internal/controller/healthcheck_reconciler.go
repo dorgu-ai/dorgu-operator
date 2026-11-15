@@ -251,10 +251,11 @@ func (r *HealthCheckReconciler) runCycle(ctx context.Context) {
 	// the collector that failed may be the one that would have reported the
 	// incident, so nothing is resolved this cycle (B2b).
 	signals, err := r.Detection.CollectAll(ctx)
-	// Which families could not vouch for silence, asked once, right after the collection
-	// this cycle's resolution is based on: a verifier cycle that runs the collectors
-	// again before step 4 must not change the answer.
-	blindAtCollect := r.Detection.ResolutionBlindFamilies()
+	// Which families could not vouch for silence, and which containers are hot without a
+	// signal yet, asked once, right after the collection this cycle's resolution is based
+	// on: a verifier cycle that runs the collectors again before step 4 must not change
+	// the answer.
+	blindAtCollect := r.Detection.ResolutionSnapshot()
 	incomplete := false
 	if err != nil {
 		if !detection.IsPartial(err) {
@@ -299,6 +300,11 @@ func (r *HealthCheckReconciler) runCycle(ctx context.Context) {
 	// partial collection does not matter to it.
 	if err := r.pruneResolved(ctx, time.Now()); err != nil {
 		logFailure(r.Logger, err, "failed to prune Resolved incidents")
+	}
+
+	// 6. Forget the Event throttle's keys for incidents that resolved or were deleted.
+	if err := r.pruneMismatchEvents(ctx); err != nil {
+		logFailure(r.Logger, err, "failed to prune the container-mismatch Event throttle")
 	}
 }
 

@@ -112,11 +112,44 @@ func (r *HealthCheckReconciler) reportContainerMismatch(incident *dorguv1.Incide
 	if result.Stage != remediation.StagePropose || result.Reason != remediation.SkipContainerMismatch {
 		return
 	}
-	r.mismatchEventsOnce.Do(func() { r.mismatchEvents = detection.NewLogThrottle(containerMismatchEventInterval) })
-	if ok, _ := r.mismatchEvents.Allow(fmt.Sprintf("%s/%s", incident.Namespace, incident.Name), time.Now()); !ok {
+	if ok, _ := r.mismatchThrottle().Allow(mismatchEventKey(incident), time.Now()); !ok {
 		return
 	}
 	emit(r.Recorder, incident, corev1.EventTypeWarning, EventReasonContainerMismatch, result.SkipReason)
+}
+
+func mismatchEventKey(incident *dorguv1.IncidentMemory) string {
+	return fmt.Sprintf("%s/%s", incident.Namespace, incident.Name)
+}
+
+// mismatchThrottle is the container-mismatch Event throttle, created on first use.
+func (r *HealthCheckReconciler) mismatchThrottle() *detection.LogThrottle {
+	r.mismatchEventsOnce.Do(func() { r.mismatchEvents = detection.NewLogThrottle(containerMismatchEventInterval) })
+	return r.mismatchEvents
+}
+
+// pruneMismatchEvents drops the Event throttle's keys for incidents that are no longer
+// open: resolved by any path (this reconciler, a verified fix, a person) or deleted. One
+// List per cycle, and none while the throttle is empty, which is almost always. A
+// resolved incident that recurs is a new occurrence of the problem and gets its Event.
+func (r *HealthCheckReconciler) pruneMismatchEvents(ctx context.Context) error {
+	if r.mismatchEvents == nil || r.mismatchEvents.Len() == 0 {
+		return nil
+	}
+	var list dorguv1.IncidentMemoryList
+	if err := r.Client.List(ctx, &list); err != nil {
+		return fmt.Errorf("listing IncidentMemories to prune the Event throttle: %w", err)
+	}
+	open := make(map[string]bool, len(list.Items))
+	for i := range list.Items {
+		im := &list.Items[i]
+		if im.Status.Phase == PhaseResolved || im.Labels[LabelPhase] == PhaseResolved {
+			continue
+		}
+		open[mismatchEventKey(im)] = true
+	}
+	r.mismatchEvents.Retain(func(key string) bool { return open[key] })
+	return nil
 }
 
 // planRefusalsOf is every refusal a narrowed proposal answers, in order (L-5): a chain of
