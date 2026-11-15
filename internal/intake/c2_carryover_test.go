@@ -309,3 +309,46 @@ func (s *syncMutex) get(n *int) int {
 	defer s.mu.Unlock()
 	return *n
 }
+
+// R-3, the other branch (C2 review F-7): the lister (the cache) shows the orphan with no
+// phase, and by the time the intake re-reads it from the API server somebody has given it a
+// phase. It still has no provenance, so it can be neither removed nor adopted: a terminal
+// rejection, not a "continue" that tries to create the action again and fails with "already
+// exists" for ever. The branch that returns the orphan from the re-read is the only thing
+// standing between the two.
+func TestProcess_AnOrphanThatGainedAPhaseAfterTheListIsATerminalRejection(t *testing.T) {
+	w := newWorld(t, Config{}, baseObjects()...)
+	w.create(t, proposal("p-race", "alice", "k"))
+	prop := w.get(t, "p-race")
+	orphan := derivedAction(prop, incident("inc", "ImagePullBackOff"))
+	orphan.Annotations[AnnotationProposalUID] = string(prop.UID)
+	orphan.Spec.Provenance = nil
+	w.create(t, orphan) // the lister (the world's own client) lists it with no phase
+
+	var rereads int
+	w.p.reader = interceptor.NewClient(w.c.(client.WithWatch), interceptor.Funcs{
+		Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if err := cl.Get(ctx, key, obj, opts...); err != nil {
+				return err
+			}
+			if ra, ok := obj.(*dorguv1.RemediationAction); ok {
+				rereads++
+				ra.Status.Phase = "Approved" // written between the list and this read
+			}
+			return nil
+		},
+	})
+	w.p.lister = w.c
+
+	for attempt := range 3 {
+		out, err := w.p.Process(context.Background(), types.NamespacedName{Namespace: testNS, Name: "p-race"}, nil)
+		require.NoError(t, err, "attempt %d: a decision, not a retry", attempt)
+		require.Equal(t, v1alpha1.PhaseRejected, out.Phase, out.Message)
+		require.NotNil(t, out.Rejection)
+		assert.Equal(t, v1alpha1.ReasonActionInvalid, out.Rejection.Reason)
+		assert.Equal(t, v1alpha1.StageIntake, out.Rejection.Stage)
+		assert.Contains(t, out.Message, orphan.Name)
+	}
+	assert.Positive(t, rereads, "the decision came from the re-read, which is what this test is about")
+	assert.Equal(t, []string{orphan.Name}, actionNames(t, w.c), "nothing was removed: it has a phase now")
+}
