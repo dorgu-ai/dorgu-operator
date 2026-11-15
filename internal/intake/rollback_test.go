@@ -40,6 +40,7 @@ import (
 // person who asked in requestedBy.
 
 const (
+	pendingPhase  = "Pending"
 	appliedName   = "ra-applied"
 	rollbackAlice = "alice@example.com"
 )
@@ -154,7 +155,7 @@ func TestRollback_BecomesAnActionTheOperatorProposedForAPerson(t *testing.T) {
 	assert.Equal(t, "rb", ra.Spec.Provenance.Proposal)
 	assert.Nil(t, ra.Spec.Provenance.Agent)
 	assert.Equal(t, appliedName, ra.Annotations[dorguv1.AnnotationRollbackOf])
-	assert.Equal(t, "Pending", ra.Status.Phase, "it waits for a person's approval like any other action")
+	assert.Equal(t, pendingPhase, ra.Status.Phase, "it waits for a person's approval like any other action")
 	require.NotNil(t, ra.Spec.Approval)
 	assert.True(t, ra.Spec.Approval.Required)
 	require.Len(t, ra.Spec.Steps, 1)
@@ -237,7 +238,7 @@ func TestRollback_RefusalsAtIntake(t *testing.T) {
 		},
 		"the action never applied": {
 			objects: []client.Object{webPersona("512Mi"), webDeployment("512Mi"), appliedRA(func(ra *dorguv1.RemediationAction) {
-				ra.Status.Phase, ra.Status.ApplyTicket = "Pending", nil
+				ra.Status.Phase, ra.Status.ApplyTicket = pendingPhase, nil
 			})},
 			reason: v1alpha1.ReasonRollbackNotApplied,
 		},
@@ -335,7 +336,7 @@ func TestRollback_AnOpenRollbackOfAnotherActionDoesNotBlock(t *testing.T) {
 	other := appliedRA(func(ra *dorguv1.RemediationAction) {
 		ra.Name = "ra-rollback-other"
 		ra.Annotations = map[string]string{dorguv1.AnnotationRollbackOf: "some-other-action"}
-		ra.Status.Phase = "Pending"
+		ra.Status.Phase = pendingPhase
 	})
 	w := newWorld(t, Config{}, rollbackObjects(other)...)
 	w.create(t, rollbackProposal("rb", rollbackAlice, "k"))

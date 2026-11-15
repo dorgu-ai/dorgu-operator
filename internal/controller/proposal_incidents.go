@@ -37,6 +37,10 @@ const (
 
 	// proposalIncidentSource is the detection source of such an incident.
 	proposalIncidentSource = "remediation-proposal"
+
+	// categoryResource and categoryHealth classify an incident a proposal opened.
+	categoryResource = "resource"
+	categoryHealth   = "health"
 )
 
 // ProposalIncidents opens the IncidentMemory a RemediationProposal that names no
@@ -131,12 +135,12 @@ func (o *ProposalIncidents) Open(ctx context.Context, prop *dorguv1alpha1.Remedi
 // no steps (the operator derives them) and restores resources, so it is one.
 func proposalIncidentCategory(prop *dorguv1alpha1.RemediationProposal) string {
 	if prop.Spec.RollbackOf != nil {
-		return "resource"
+		return categoryResource
 	}
 	for i := range prop.Spec.Steps {
 		if prop.Spec.Steps[i].Type == dorguv1.StepTypePersonaUpdate {
-			return "resource"
+			return categoryResource
 		}
 	}
-	return "health"
+	return categoryHealth
 }

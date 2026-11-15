@@ -45,7 +45,8 @@ func rollbackProposal(ns, name, username string) *dorguv1alpha1.RemediationPropo
 	return p
 }
 
-var rollbackAskerRules = append(append([]rbacv1.PolicyRule{}, approverRules...), rule([]string{"remediationproposals"}, "create", "get", "list"))
+var rollbackAskerRules = append(append([]rbacv1.PolicyRule{}, approverRules...),
+	rule([]string{"remediationproposals"}, "create", "get", "list"))
 
 func TestRollbackProposal_APersonWithTheApproveVerbMayAsk(t *testing.T) {
 	ns := namespace(t, "rb-ok")
@@ -129,7 +130,9 @@ func TestRollbackProposal_TheCRDRefusesWhatARollbackMustNotCarry(t *testing.T) {
 
 func TestRollbackProposal_ItsSpecIsImmutableLikeAnyOther(t *testing.T) {
 	ns := namespace(t, "rb-imm")
-	alice := newActor(t, ns, "", nil, append(append([]rbacv1.PolicyRule{}, rollbackAskerRules...), rule([]string{"remediationproposals"}, "update", "patch")))
+	rules := append(append([]rbacv1.PolicyRule{}, rollbackAskerRules...),
+		rule([]string{"remediationproposals"}, "update", "patch"))
+	alice := newActor(t, ns, "", nil, rules)
 	prop := rollbackProposal(ns, uniq("rb"), alice.name)
 	require.NoError(t, alice.c.Create(ctxFor(t), prop))
 

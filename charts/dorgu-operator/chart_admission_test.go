@@ -418,7 +418,8 @@ func TestAdmissionPolicies_RollbackProposalsNeedAPersonWithTheApproveVerb(t *tes
 	}
 	require.Len(t, found, 2, "one rule for who may ask, one for the verb")
 	for _, v := range found {
-		assert.Contains(t, v.Expression, "request.operation != 'CREATE'", "a rollback is asked for at create, and the spec is immutable after")
+		assert.Contains(t, v.Expression, "request.operation != 'CREATE'",
+			"a rollback is asked for at create, and the spec is immutable after")
 		assert.Contains(t, []string{"ServiceAccountCannotApprove", "MissingApproveVerb"}, reasonOf(v.Message))
 	}
 	assert.Contains(t, found[0].Expression, "startsWith('system:')")

@@ -67,14 +67,14 @@ func intakeProcessor() *intake.Processor {
 // operator proposed, a person approved, and the operator ticketed and applied: its gate
 // record and ticket are the real ones. The workload is then given the change (as the
 // CLI's heal does with the person's own credentials) and the action ends Completed.
-func appliedFixture(t *testing.T, id string) (ns string, ra *dorguv1.RemediationAction) {
+func appliedFixture(t *testing.T, id string) (ns string) {
 	t.Helper()
 	ns = newNamespace(t, id)
 	createPersona(t, ns)
 	createIncident(t, ns)
 	deploy := createDeployment(t, ns)
 
-	ra = createRA(t, newRA(ns, rollbackRA, withProposer(operatorUsername)), "Pending")
+	ra := createRA(t, newRA(ns, rollbackRA, withProposer(operatorUsername)), "Pending")
 	approveAs(t, ra, alicePerson)
 	if _, err := reconcile(t, newRemediationController(), ra); err != nil {
 		t.Fatalf("applying the fixture action: %v", err)
@@ -91,7 +91,7 @@ func appliedFixture(t *testing.T, id string) (ns string, ra *dorguv1.Remediation
 	if err := k8sClient.Status().Update(context.Background(), ra); err != nil {
 		t.Fatalf("ending the fixture action Completed: %v", err)
 	}
-	return ns, ra
+	return ns
 }
 
 // rollbackProposalFor is what `dorgu remediation rollback` writes.
@@ -170,7 +170,8 @@ func TestOP20RollbackOfAnActionThatNeverApplied(t *testing.T) {
 	for _, reason := range reasons {
 		blocked = blocked && reason == dorguv1alpha1.ReasonRollbackNotApplied
 	}
-	Expect(t, "OP-20", blocked, fmt.Sprintf("rollback proposals for never-applied actions ended %v; rollback actions made: %d; persona memory %s",
+	Expect(t, "OP-20", blocked, fmt.Sprintf(
+		"rollback proposals for never-applied actions ended %v; rollback actions made: %d; persona memory %s",
 		reasons, len(rollbackActions(t, ns)), personaMemory(t, ns)))
 }
 
@@ -181,7 +182,7 @@ func TestOP20RollbackOfAnActionThatNeverApplied(t *testing.T) {
 // claimed by an ordinary proposal either, so a forged "rollback" label cannot make an
 // action look like the operator's own restore.
 func TestOP21RollbackWithForgedSteps(t *testing.T) {
-	ns, _ := appliedFixture(t, "op-21")
+	ns := appliedFixture(t, "op-21")
 
 	forged := rollbackProposalFor(ns, "rb-forged-steps", alicePerson, rollbackRA)
 	forged.Spec.Steps = []dorguv1.RemediationStep{{
@@ -220,7 +221,8 @@ func TestOP22RollbackRequestedByAServiceAccount(t *testing.T) {
 	ns, _ := e.NewNamespace(context.Background(), "op-22")
 
 	rules := append(append([]rbacv1.PolicyRule{}, approverRules...), rbacv1.PolicyRule{
-		APIGroups: []string{"dorgu.io"}, Resources: []string{"remediationproposals"}, Verbs: []string{"create", "get", "list"},
+		APIGroups: []string{"dorgu.io"}, Resources: []string{"remediationproposals"},
+		Verbs: []string{"create", "get", "list"},
 	})
 	botName := "system:serviceaccount:" + ns + ":agent"
 	bot := idUser(t, e, ns, botName,
@@ -245,8 +247,14 @@ func TestOP23RollbackWithAForgedRequester(t *testing.T) {
 	ns, _ := e.NewNamespace(context.Background(), "op-23")
 
 	rules := []rbacv1.PolicyRule{
-		{APIGroups: []string{"dorgu.io"}, Resources: []string{"remediationactions"}, Verbs: []string{"get", "list", "approve", "reject"}},
-		{APIGroups: []string{"dorgu.io"}, Resources: []string{"remediationproposals"}, Verbs: []string{"create", "get", "list"}},
+		{
+			APIGroups: []string{"dorgu.io"}, Resources: []string{"remediationactions"},
+			Verbs: []string{"get", "list", "approve", "reject"},
+		},
+		{
+			APIGroups: []string{"dorgu.io"}, Resources: []string{"remediationproposals"},
+			Verbs: []string{"create", "get", "list"},
+		},
 	}
 	mallory := idUser(t, e, ns, "mallory@example.com", nil, rules)
 
@@ -271,7 +279,7 @@ func TestOP23RollbackWithAForgedRequester(t *testing.T) {
 // the other and at the same moment. Exactly one rollback action may exist, or the
 // restore would be applied twice from two approvals.
 func TestOP24DoubleRollback(t *testing.T) {
-	ns, _ := appliedFixture(t, "op-24")
+	ns := appliedFixture(t, "op-24")
 	p := intakeProcessor()
 
 	first := process(t, p, rollbackProposalFor(ns, "rb-first", alicePerson, rollbackRA))
@@ -281,17 +289,15 @@ func TestOP24DoubleRollback(t *testing.T) {
 		second.Rejection.Reason == dorguv1alpha1.ReasonRollbackAlreadyOpen
 
 	// The same moment, on another action.
-	ns2, _ := appliedFixture(t, "op-24b")
+	ns2 := appliedFixture(t, "op-24b")
 	p2 := intakeProcessor()
 	var wg sync.WaitGroup
 	for i := range 4 {
 		prop := rollbackProposalFor(ns2, fmt.Sprintf("rb-race-%d", i), fmt.Sprintf("user-%d@example.com", i), rollbackRA)
 		mustCreate(t, prop)
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			_, _ = p2.Process(context.Background(), client.ObjectKeyFromObject(prop), nil)
-		}()
+		})
 	}
 	wg.Wait()
 
