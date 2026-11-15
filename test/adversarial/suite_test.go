@@ -87,6 +87,7 @@ func run(m *testing.M) int {
 	}
 
 	code := m.Run()
+	stopIdentityEnv()
 	WriteSummary(os.Stdout)
 	return code
 }
