@@ -493,7 +493,7 @@ spec:
                     description: |-
                       Reason is a machine-readable token. At Intake it is one of RateLimited,
                       DuplicateIdempotencyKey, IncidentNotFound, IncidentTargetMismatch,
-                      IncidentResolved, NotYetSupported or TargetNamespaceMismatch. At a gate stage
+                      IncidentResolved, NotYetSupported, ProposerInvalid or TargetNamespaceMismatch. At a gate stage
                       it is the guardrail that refused.
                     maxLength: 63
                     type: string

@@ -64,7 +64,7 @@ func TestTicketV1_ApprovalWritesTheSpecHashAndTheApprover(t *testing.T) {
 func TestTicketV1_ConfiguredLifetimeIsUsed(t *testing.T) {
 	ra := lcRA("Approved")
 	rc, c := lcController(t, []client.Object{lcPersonaObj(lcBaseline), lcIncidentObj(), ra.DeepCopy()})
-	rc.Gate = gate.New(c, logr.Discard(), gate.WithTicketTTL(3*time.Minute))
+	rc.Gate = gate.New(c, logr.Discard(), gate.WithTicketTTL(3*time.Minute), gate.WithReader(c))
 	rc.Executor = remediation.NewExecutor(c, rc.Gate, logr.Discard())
 
 	_, got := lcReconcile(t, rc, ra)

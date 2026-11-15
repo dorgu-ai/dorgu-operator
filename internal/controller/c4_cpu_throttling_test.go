@@ -68,7 +68,7 @@ func newCPUEnv(t *testing.T, signals ...detection.Signal) *cpuEnv {
 	c := noiseClient(t, recurrencePersonaObject())
 	collector := &stubCollector{name: "stub", signals: signals}
 	r := newNoiseReconciler(c, collector)
-	r.Proposer = remediation.NewProposer(c, gate.New(c, noiseLogger()), noiseLogger())
+	r.Proposer = remediation.NewProposer(c, gate.New(c, noiseLogger(), gate.WithReader(c)), noiseLogger())
 	return &cpuEnv{t: t, c: c, r: r, collector: collector}
 }
 

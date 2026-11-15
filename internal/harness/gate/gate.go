@@ -18,6 +18,7 @@ package gate
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"time"
@@ -103,6 +104,22 @@ func WithOperatorNamespaceUnknown() Option {
 	return func(g *Gate) { g.operatorNamespaceUnknown = true }
 }
 
+// ErrNoLiveReader is what every read that must not come from a cache returns when the
+// gate was built without WithReader. It is a refusal to read, never a fall back to
+// the cached client.
+var ErrNoLiveReader = errors.New("the gate has no uncached reader (WithReader), so it will not read through the cache")
+
+// noLiveReader is the reader of a gate built without WithReader.
+type noLiveReader struct{}
+
+func (noLiveReader) Get(context.Context, client.ObjectKey, client.Object, ...client.GetOption) error {
+	return ErrNoLiveReader
+}
+
+func (noLiveReader) List(context.Context, client.ObjectList, ...client.ListOption) error {
+	return ErrNoLiveReader
+}
+
 // WithReader sets the uncached reader the gate uses for the reads a stale cache
 // would make permissive: sibling RemediationActions (rate limit, concurrency,
 // dedup) and the live workload at approval.
@@ -154,7 +171,9 @@ func New(c client.Client, logger logr.Logger, opts ...Option) *Gate {
 		opt(g)
 	}
 	if g.reader == nil {
-		g.reader = c
+		// Never the cached client: a gate with no live reader reads nothing through
+		// the cache that exists to be avoided, it refuses (fail closed).
+		g.reader = noLiveReader{}
 	}
 	g.stages = []Stage{
 		validateStage{g},

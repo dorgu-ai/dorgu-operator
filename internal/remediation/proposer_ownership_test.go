@@ -104,7 +104,7 @@ func proposeAgainst(t *testing.T, owner string) *dorguv1.RemediationAction {
 		WithRuntimeObjects(persona, deploy).
 		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
-	p := NewProposer(c, gate.New(c, testLogger()), testLogger(),
+	p := NewProposer(c, gate.New(c, testLogger(), gate.WithReader(c)), testLogger(),
 		WithPlanner(&stubPlanner{plan: memoryFixPlan()}))
 
 	result, err := p.Propose(context.Background(),
@@ -256,7 +256,7 @@ func TestProposer_AIPath_CapIsRelativeToLiveWorkload(t *testing.T) {
 		WithRuntimeObjects(persona, deploy).
 		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
-	p := NewProposer(c, gate.New(c, testLogger()), testLogger(), WithPlanner(&stubPlanner{plan: plan}))
+	p := NewProposer(c, gate.New(c, testLogger(), gate.WithReader(c)), testLogger(), WithPlanner(&stubPlanner{plan: plan}))
 	result, err := p.Propose(context.Background(),
 		newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical), incident)
 	require.NoError(t, err)
@@ -304,7 +304,7 @@ func TestProposer_AIPath_DropsPatchKeysTheWorkloadLacks(t *testing.T) {
 		WithRuntimeObjects(persona, deploy).
 		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
-	p := NewProposer(c, gate.New(c, testLogger()), testLogger(), WithPlanner(&stubPlanner{plan: plan}))
+	p := NewProposer(c, gate.New(c, testLogger(), gate.WithReader(c)), testLogger(), WithPlanner(&stubPlanner{plan: plan}))
 	result, err := p.Propose(context.Background(),
 		newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical), incident)
 	require.NoError(t, err)
@@ -345,7 +345,7 @@ func TestProposer_AIPath_EmptiedPatchBecomesAdvisory(t *testing.T) {
 		WithRuntimeObjects(persona, deploy).
 		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
-	p := NewProposer(c, gate.New(c, testLogger()), testLogger(), WithPlanner(&stubPlanner{plan: plan}))
+	p := NewProposer(c, gate.New(c, testLogger(), gate.WithReader(c)), testLogger(), WithPlanner(&stubPlanner{plan: plan}))
 	result, err := p.Propose(context.Background(),
 		newCPUDiagnosis(defaultNamespace, "my-app", detection.SeverityWarning), incident)
 	require.NoError(t, err)
@@ -457,7 +457,7 @@ func TestProposer_OwnerInstructionQuotesThePermittedValue(t *testing.T) {
 		WithRuntimeObjects(persona, deploy).
 		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
-	p := NewProposer(c, gate.New(c, testLogger()), testLogger(),
+	p := NewProposer(c, gate.New(c, testLogger(), gate.WithReader(c)), testLogger(),
 		WithPlanner(&stubPlanner{plan: plan}))
 
 	result, err := p.Propose(context.Background(),

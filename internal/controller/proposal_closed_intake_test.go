@@ -63,6 +63,28 @@ func TestClusterPersona_ReportsAClosedAndAnOpenIntake(t *testing.T) {
 	assert.Equal(t, "IntakeOpen", cond.Reason)
 }
 
+// D8: the reason is first, and when the failure is one of the admission or permission
+// checks the message also says that no apply ticket is issued, so an approver who sees an
+// Approved action sit still knows why.
+func TestClusterPersona_AnAdmissionFailureSaysTicketsStopToo(t *testing.T) {
+	p := personaWithExcluded()
+	(&ClusterPersonaReconciler{IntakeReadiness: stubReadiness{
+		{Check: "admission-policies", Reason: intake.ReasonAdmissionPoliciesMissing, Message: "policy dorgu-approval-gate is not installed."},
+	}}).reportSafetyConfiguration(p)
+	cond := conditionOf(p, ConditionIntakeReady)
+	require.NotNil(t, cond)
+	assert.Equal(t, metav1.ConditionFalse, cond.Status)
+	assert.Equal(t, intake.ReasonAdmissionPoliciesMissing, cond.Reason)
+	assert.Contains(t, cond.Message, "no apply ticket is issued")
+	assert.Contains(t, cond.Message, "policy dorgu-approval-gate is not installed.")
+
+	(&ClusterPersonaReconciler{IntakeReadiness: stubReadiness{
+		{Check: "proposal-crd", Reason: intake.ReasonProposalCRDMissing, Message: "apply the CRD."},
+	}}).reportSafetyConfiguration(p)
+	cond = conditionOf(p, ConditionIntakeReady)
+	assert.NotContains(t, cond.Message, "no apply ticket is issued", "a missing CRD stops no ticket")
+}
+
 func TestClusterPersona_WithNoIntakeWritesNoIntakeCondition(t *testing.T) {
 	p := personaWithExcluded()
 	(&ClusterPersonaReconciler{}).reportSafetyConfiguration(p)

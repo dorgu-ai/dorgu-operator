@@ -98,7 +98,7 @@ func TestUnreadableClusterPersona_LogIsRateLimitedButEveryProposalIsStillRefused
 	log := &errorLog{}
 	clock := fixedNow
 	c := failingListClient(t, isKind[*dorguv1.ClusterPersonaList], persona("256Mi"), deployment("256Mi"))
-	g := New(c, log.logger(), WithClock(func() time.Time { return clock }))
+	g := New(c, log.logger(), WithClock(func() time.Time { return clock }), WithReader(c))
 
 	for i := range 20 {
 		d := run(t, g, planCandidate(personaUpdateStep(memPatch("300Mi"))), PhaseProposal)

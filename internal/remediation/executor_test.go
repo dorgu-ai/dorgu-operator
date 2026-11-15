@@ -69,7 +69,7 @@ func newTestExecutor(objs ...client.Object) *Executor {
 		WithObjects(append(objs, testDeployment())...).
 		WithStatusSubresource(&dorguv1.RemediationAction{}, &dorguv1.ApplicationPersona{}).
 		Build()
-	return NewExecutor(c, gate.New(c, logr.Discard()), logr.Discard())
+	return NewExecutor(c, gate.New(c, logr.Discard(), gate.WithReader(c)), logr.Discard())
 }
 
 // applyServed stores the action where the gate reads it (the gate hashes the spec
@@ -327,7 +327,7 @@ func TestExecutor_Apply_AnUnreadableWorkloadIsARefusalNotAPass(t *testing.T) {
 			}
 			return nil
 		}})
-	executor := NewExecutor(broken, gate.New(broken, logr.Discard()), logr.Discard())
+	executor := NewExecutor(broken, gate.New(broken, logr.Discard(), gate.WithReader(broken)), logr.Discard())
 
 	err := applyServed(t, executor, baseRemediationAction())
 

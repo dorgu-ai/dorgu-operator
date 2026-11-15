@@ -9,3 +9,7 @@
 # Re-include Go module files
 !go.mod
 !go.sum
+
+# Re-include what a package embeds with //go:embed. The build fails without it ("no matching
+# files found"); test/dockerctx fails when an embed target is missing here.
+!internal/intake/admission_reference.yaml

@@ -171,61 +171,6 @@ func TestActionFor_ReturnsACopyOfWhatTheCacheListed(t *testing.T) {
 	assert.Equal(t, before.Spec, store[0].Spec)
 }
 
-// N-5: the claimed username is copied into provenance and into messages, cleaned
-// and bounded; it is also what the dedupe and the rate limit compare, so invisible
-// characters do not make one proposer into two.
-func TestProcess_ProposerUsernameIsCleanedBeforeItIsCopied(t *testing.T) {
-	w := newWorld(t, Config{}, baseObjects()...)
-	w.create(t, proposal("p-name", "alice\x1b[2J\u202e\U000E0041\u200b", "k"))
-
-	out := w.process(t, "p-name", nil)
-
-	require.Equal(t, v1alpha1.PhaseConverted, out.Phase, out.Message)
-	assert.Equal(t, "alice[2J", out.Action.Spec.Provenance.Proposer.Username)
-}
-
-func TestProcess_ProposerUsernameIsBounded(t *testing.T) {
-	w := newWorld(t, Config{}, baseObjects()...)
-	w.create(t, proposal("p-long", strings.Repeat("é", 700), "k"))
-
-	out := w.process(t, "p-long", nil)
-
-	require.Equal(t, v1alpha1.PhaseConverted, out.Phase, out.Message)
-	got := out.Action.Spec.Provenance.Proposer.Username
-	assert.LessOrEqual(t, utf8.RuneCountInString(got), maxUsernameLength)
-	assert.True(t, utf8.ValidString(got))
-}
-
-func TestProcess_TheRateLimitMessageNamesACleanQuotedUsername(t *testing.T) {
-	w := newWorld(t, Config{RateLimit: 1}, baseObjects()...)
-	w.create(t, proposal("p-1", "mallory\x1b[31m", "k1"))
-	w.create(t, proposal("p-2", "mallory\x1b[31m", "k2"))
-	w.process(t, "p-1", nil)
-
-	out := w.process(t, "p-2", nil)
-
-	require.Equal(t, v1alpha1.ReasonRateLimited, out.Rejection.Reason)
-	assert.NotContains(t, out.Message, "\x1b")
-	assert.Contains(t, out.Message, `"mallory[31m"`, "quoted, so a name cannot pass for part of the sentence")
-	cond := w.get(t, "p-2").Status.Conditions
-	require.NotEmpty(t, cond)
-	assert.NotContains(t, cond[0].Message, "\x1b")
-}
-
-func TestProcess_InvisibleCharactersDoNotMakeOneProposerTwo(t *testing.T) {
-	w := newWorld(t, Config{RateLimit: 1}, baseObjects()...)
-	w.create(t, proposal("p-a", "mallory", "same"))
-	w.create(t, proposal("p-b", "mallory\u200b", "same"))
-	w.create(t, proposal("p-c", "mallory\U000E0041", "other"))
-	require.Equal(t, v1alpha1.PhaseConverted, w.process(t, "p-a", nil).Phase)
-
-	dup := w.process(t, "p-b", nil)
-	assert.Equal(t, v1alpha1.ReasonDuplicate, dup.Rejection.Reason, "the same key from the same proposer")
-
-	limited := w.process(t, "p-c", nil)
-	assert.Equal(t, v1alpha1.ReasonRateLimited, limited.Rejection.Reason, "the same proposer's allowance")
-}
-
 // N-7: after a failed decision the planner asks whether an action exists. The cache
 // may not show one made a moment ago, so FindAction asks the API server.
 func TestFindAction_ReadsTheAPIServerNotTheCache(t *testing.T) {
@@ -362,8 +307,12 @@ func TestProcess_AnActionWithAPhaseIsNeverRemovedWhateverItsProvenance(t *testin
 	live.Status = dorguv1.RemediationActionStatus{Phase: "Approved"}
 	require.NoError(t, w.c.Status().Update(context.Background(), live))
 
-	_, err := w.p.actionFor(context.Background(), prop, true, w.p.lister)
+	got, err := w.p.actionFor(context.Background(), prop, true, w.p.lister)
 
-	require.NoError(t, err)
+	// It carries this proposal's UID, has a phase and has no provenance: neither
+	// removable nor adoptable, so it is reported as an orphan (R-3), and left alone.
+	var orphan *orphanedActionError
+	require.ErrorAs(t, err, &orphan)
+	assert.Nil(t, got)
 	assert.Equal(t, []string{live.Name}, actionNames(t, w.c), "an Approved action was not touched")
 }

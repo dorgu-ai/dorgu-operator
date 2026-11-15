@@ -73,7 +73,7 @@ func TestActionClassRefusal_FallsBackToTheAdvisorySteps(t *testing.T) {
 		WithRuntimeObjects(newTestPersona(defaultNamespace, "my-app")).
 		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 	cp := &planCounter{plan: memoryRaisePlusAdvice()}
-	p := NewProposer(c, gate.New(c, testLogger()), testLogger(), WithPlanner(cp))
+	p := NewProposer(c, gate.New(c, testLogger(), gate.WithReader(c)), testLogger(), WithPlanner(cp))
 	diag := newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical)
 	diag.Contributing[0].Signal.Type = detection.SignalCrashLoopBackOff
 	diag.SuggestedAction = rulesInvestigate // the rules do not recommend a resource adjustment
@@ -114,7 +114,7 @@ func TestActionClassRefusal_FallbackDoesNotLoop(t *testing.T) {
 		WithRuntimeObjects(newTestPersona(defaultNamespace, "my-app")).
 		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 	cp := &planCounter{plan: memoryRaisePlusAdvice()}
-	p := NewProposer(c, gate.New(c, testLogger()), testLogger(), WithPlanner(cp))
+	p := NewProposer(c, gate.New(c, testLogger(), gate.WithReader(c)), testLogger(), WithPlanner(cp))
 	diag := newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical)
 	diag.Contributing[0].Signal.Type = detection.SignalCrashLoopBackOff
 	diag.SuggestedAction = rulesInvestigate
@@ -144,7 +144,7 @@ func TestActionClassRefusal_AMemoryOnlyPlanIsStillRefused(t *testing.T) {
 		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 	plan := memoryRaisePlusAdvice()
 	plan.Steps = plan.Steps[:1]
-	p := NewProposer(c, gate.New(c, testLogger()), testLogger(), WithPlanner(&planCounter{plan: plan}))
+	p := NewProposer(c, gate.New(c, testLogger(), gate.WithReader(c)), testLogger(), WithPlanner(&planCounter{plan: plan}))
 	diag := newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical)
 	diag.Contributing[0].Signal.Type = detection.SignalCrashLoopBackOff
 	diag.SuggestedAction = rulesInvestigate
@@ -175,7 +175,7 @@ func TestActionClassRefusal_AFailedFallbackStillReportsTheRefusal(t *testing.T) 
 			return w.List(ctx, list, opts...)
 		},
 	})
-	p := NewProposer(c, gate.New(c, testLogger()), testLogger(), WithPlanner(pc))
+	p := NewProposer(c, gate.New(c, testLogger(), gate.WithReader(c)), testLogger(), WithPlanner(pc))
 	diag := newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical)
 	diag.Contributing[0].Signal.Type = detection.SignalCrashLoopBackOff
 	diag.SuggestedAction = rulesInvestigate

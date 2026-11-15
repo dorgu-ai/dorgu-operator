@@ -52,7 +52,8 @@ type ProposalReconciler struct {
 
 // +kubebuilder:rbac:groups=dorgu.io,resources=remediationproposals,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=dorgu.io,resources=remediationproposals/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=dorgu.io,resources=remediationactions,verbs=create
+// delete: the intake removes an orphan action (one it made but could not link) before it retries.
+// +kubebuilder:rbac:groups=dorgu.io,resources=remediationactions,verbs=create;delete
 // +kubebuilder:rbac:groups=dorgu.io,resources=incidentmemories,verbs=create
 // +kubebuilder:rbac:groups=dorgu.io,resources=incidentmemories/status,verbs=update
 

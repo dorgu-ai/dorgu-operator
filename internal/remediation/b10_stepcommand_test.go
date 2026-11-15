@@ -73,7 +73,7 @@ func proposeImageError(t *testing.T, plan *planner.RemediationPlan) (*ProposalRe
 		WithRuntimeObjects(newTestPersona(defaultNamespace, "my-app")).
 		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 	cp := &planCounter{plan: plan}
-	p := NewProposer(c, gate.New(c, testLogger()), testLogger(), WithPlanner(cp))
+	p := NewProposer(c, gate.New(c, testLogger(), gate.WithReader(c)), testLogger(), WithPlanner(cp))
 	diag := newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical)
 	diag.Contributing[0].Signal.Type = detection.SignalImagePullBackOff
 	diag.SuggestedAction = rulesDeploymentFix
@@ -206,7 +206,7 @@ func TestStepCommandRefusal_ANarrowedPlanThatCannotBeGatedLeavesTheFirstRefusal(
 	c := interceptor.NewClient(base, interceptor.Funcs{List: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error {
 		return boom
 	}})
-	p := NewProposer(c, gate.New(c, testLogger()), testLogger())
+	p := NewProposer(c, gate.New(c, testLogger(), gate.WithReader(c)), testLogger())
 	refusal := &ProposalResult{Stage: gate.StageValidate, Reason: gate.GuardrailStepCommand}
 	diag := newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical)
 	diag.SuggestedAction = rulesDeploymentFix
@@ -346,7 +346,7 @@ func TestStepCommandRefusal_ChainedNarrowingsRecordBothRefusals(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(newTestScheme()).
 		WithRuntimeObjects(newTestPersona(defaultNamespace, "my-app")).
 		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
-	p := NewProposer(c, gate.New(c, testLogger()), testLogger(), WithPlanner(&planCounter{plan: plan}))
+	p := NewProposer(c, gate.New(c, testLogger(), gate.WithReader(c)), testLogger(), WithPlanner(&planCounter{plan: plan}))
 	diag := newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical)
 	diag.Contributing[0].Signal.Type = detection.SignalCrashLoopBackOff
 	diag.SuggestedAction = rulesInvestigate

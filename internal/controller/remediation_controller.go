@@ -34,6 +34,7 @@ import (
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
+	"github.com/dorgu-ai/dorgu-operator/internal/intake"
 	"github.com/dorgu-ai/dorgu-operator/internal/metrics"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation"
 )
@@ -171,11 +172,46 @@ type RemediationController struct {
 	// records none.
 	Recorder record.EventRecorder
 
+	// TicketGuard says whether apply tickets may be issued. While the admission policies
+	// that check who approved are missing or the operator lacks the permissions it needs,
+	// it names why, and an approved action waits for it to open instead of being ticketed
+	// (P2-D8). Nil never blocks (no preflight: the health pipeline is off).
+	TicketGuard TicketGuard
+
+	// OperatorUsername is the operator's own Kubernetes username (verified against the
+	// API server by the preflight). An action with no recorded proposer was proposed by
+	// the operator, so this is the proposer an approver is compared with then. Empty when
+	// the operator does not know it; no approval is then compared with it.
+	OperatorUsername string
+
 	// PendingTTL is how long a proposal may wait for approval, counted from its
 	// creation, before it becomes Expired. Zero disables the TTL (an explicit
 	// spec.approval.deadline still applies).
 	PendingTTL time.Duration
 }
+
+// TicketGuard is what the operator asks before it issues an apply ticket.
+type TicketGuard interface {
+	// TicketsBlockedNow checks again, synchronously, and returns why tickets must not be
+	// issued right now, or nil. The answer of the last periodic run can be a minute old.
+	TicketsBlockedNow(ctx context.Context) *intake.Failure
+
+	// NotReadyAt reports whether the guard was not ready at t (closed, in its startup
+	// window, or unable to have noticed a change): an approval written then was not checked
+	// by admission policies known to be working.
+	NotReadyAt(t time.Time) bool
+
+	// EverNotReady reports whether the guard has been not ready at any time, so there is a
+	// window to compare an approval's time with.
+	EverNotReady() bool
+}
+
+// ticketGuardRecheck is how long an approved action waits before the guard is asked again.
+const ticketGuardRecheck = 30 * time.Second
+
+// EventReasonTicketsPaused is the Warning Event on an approved action the operator will not
+// ticket yet.
+const EventReasonTicketsPaused = "DorguTicketsPaused"
 
 // Reconcile drives the RemediationAction through its lifecycle state machine.
 func (r *RemediationController) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -388,12 +424,25 @@ func (r *RemediationController) handleApproved(ctx context.Context, logger logr.
 		return ctrl.Result{}, r.transitionToAcknowledged(ctx, action)
 	}
 
+	// Admission checked who approved; check again before the gate runs and a ticket can be
+	// issued (C2 F-2): the approver is a person, and not the one who proposed this. An
+	// advisory plan above issues no ticket, so it needs no approver.
+	if problem := approverProblem(action, r.OperatorUsername); problem != "" {
+		return ctrl.Result{}, r.refuseApprover(ctx, logger, action, problem)
+	}
+
 	// The ticket binds the hash of the spec as the API server serves it now (P2-D14),
 	// read live: the typed object in hand is a Go view of it and hashes differently
 	// for empty arrays, durations and timestamps. A served spec newer than the one in
 	// hand (an edit this reconcile has not seen) is retried, so the hash is always of
 	// the spec the gate is about to clear.
 	specHash, err := r.Gate.ServedSpecHash(ctx, action)
+	if errors.Is(err, gate.ErrSpecUnhashable) {
+		// No canonical form of the served spec exists, so no ticket can bind it, and a
+		// retry reads the same spec. Same as at apply: SpecChanged, terminal, nothing
+		// applied, no outcome booked. Only a read that failed is retried.
+		return ctrl.Result{}, r.refuseUnhashableSpec(ctx, logger, action, err)
+	}
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("the spec of the approved action could not be read as served; nothing was applied, will retry: %w", err)
 	}
@@ -417,6 +466,26 @@ func (r *RemediationController) handleApproved(ctx context.Context, logger logr.
 		logger.Info("approved plan is advice for an owned workload; recording the approval without applying anything",
 			"managedBy", decision.Ownership.ManagedBy)
 		return ctrl.Result{}, r.transitionToAcknowledged(ctx, action)
+	}
+
+	if r.TicketGuard != nil {
+		// Asked again now, not from the last periodic run (C2 F-4): a policy deleted since
+		// then would otherwise be invisible until the next tick.
+		if blocked := r.TicketGuard.TicketsBlockedNow(ctx); blocked != nil {
+			// The approval is only as good as the admission policies that checked who gave
+			// it. Nothing is written: the action stays Approved and is looked at again.
+			message := fmt.Sprintf("no apply ticket is issued while the operator's admission checks fail (%s): %s",
+				blocked.Reason, blocked.Message)
+			logger.Info("approval cleared the gate but no ticket is issued: the admission checks fail",
+				"reason", blocked.Reason)
+			emit(r.Recorder, action, corev1.EventTypeWarning, EventReasonTicketsPaused, message)
+			return ctrl.Result{RequeueAfter: ticketGuardRecheck}, nil
+		}
+		// The guard is ready now. An approval written while it was not was never checked by
+		// working policies: send it back to be given again, whatever approvedBy says.
+		if why := r.approvalVoidedBy(action); why != "" {
+			return ctrl.Result{}, r.voidApproval(ctx, logger, action, why)
+		}
 	}
 
 	ticket, err := decision.Ticket()
@@ -448,6 +517,25 @@ func (r *RemediationController) handleApproved(ctx context.Context, logger logr.
 	logger.Info("approval cleared the gate on live state; ticket issued", "expiresAt", ticket.ExpiresAt)
 
 	return r.handleTicketed(ctx, logger, action)
+}
+
+// refuseUnhashableSpec ends an approval whose served spec cannot be hashed (P2-D14):
+// Failed with the SpecChanged reason, as the same condition is at apply, and a
+// GateRefused condition that says why. Nothing was applied and nothing is booked.
+func (r *RemediationController) refuseUnhashableSpec(
+	ctx context.Context, logger logr.Logger, action *dorguv1.RemediationAction, hashErr error,
+) error {
+	message := fmt.Sprintf("refused at approval (%s): the spec as the API server serves it cannot be hashed (%s); nothing was applied",
+		dorguv1.ReasonSpecChanged, truncateMessage(hashErr.Error(), 512))
+	logger.Info("the served spec cannot be hashed; ending the approval instead of retrying", "error", hashErr.Error())
+
+	setCondition(&action.Status.Conditions, dorguv1.ConditionGateRefused, metav1.ConditionTrue,
+		dorguv1.ReasonSpecChanged, message)
+	if err := r.transitionToFailedWithReason(ctx, action, dorguv1.ReasonSpecChanged, message); err != nil {
+		return err
+	}
+	r.reportApprovalRefusal(action, gate.StageGuardrails, message)
+	return nil
 }
 
 // refuseUnwritableTicket ends an approval whose apply ticket the API server refused

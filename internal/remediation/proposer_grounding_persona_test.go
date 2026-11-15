@@ -46,7 +46,7 @@ func TestProposer_PersonaMissingTheLimitTheWorkloadHas(t *testing.T) {
 		WithRuntimeObjects(persona, deploy).
 		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
-	p := NewProposer(c, gate.New(c, testLogger()), testLogger())
+	p := NewProposer(c, gate.New(c, testLogger(), gate.WithReader(c)), testLogger())
 	result, err := p.Propose(context.Background(),
 		newOOMDiagnosis(defaultNamespace, groundedPersona, detection.SeverityCritical), incident)
 	require.NoError(t, err)

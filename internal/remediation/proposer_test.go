@@ -126,7 +126,7 @@ func TestProposer_OOM_MemoryIncrease_Warning(t *testing.T) {
 		WithRuntimeObjects(persona).
 		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
-	safety := gate.New(c, testLogger())
+	safety := gate.New(c, testLogger(), gate.WithReader(c))
 	proposer := NewProposer(c, safety, testLogger())
 
 	diag := newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityWarning)
@@ -156,7 +156,7 @@ func TestProposer_OOM_MemoryIncrease_Critical(t *testing.T) {
 		WithRuntimeObjects(persona).
 		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
-	safety := gate.New(c, testLogger())
+	safety := gate.New(c, testLogger(), gate.WithReader(c))
 	proposer := NewProposer(c, safety, testLogger())
 
 	diag := newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical)
@@ -183,7 +183,7 @@ func TestProposer_CPUSaturation(t *testing.T) {
 		WithRuntimeObjects(persona).
 		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
-	safety := gate.New(c, testLogger())
+	safety := gate.New(c, testLogger(), gate.WithReader(c))
 	proposer := NewProposer(c, safety, testLogger())
 
 	diag := diagnosis.Diagnosis{
@@ -237,7 +237,7 @@ func TestProposer_BlastRadiusCap(t *testing.T) {
 		WithRuntimeObjects(persona).
 		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
-	safety := gate.New(c, testLogger())
+	safety := gate.New(c, testLogger(), gate.WithReader(c))
 	proposer := NewProposer(c, safety, testLogger())
 
 	diag := newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical)
@@ -282,7 +282,7 @@ func TestProposer_RateLimitBlocks(t *testing.T) {
 		WithRuntimeObjects(objects...).
 		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
-	safety := gate.New(c, testLogger())
+	safety := gate.New(c, testLogger(), gate.WithReader(c))
 	proposer := NewProposer(c, safety, testLogger())
 
 	diag := newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical)
@@ -305,7 +305,7 @@ func TestProposer_DenyListBlocks(t *testing.T) {
 		WithRuntimeObjects(persona).
 		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
-	safety := gate.New(c, testLogger())
+	safety := gate.New(c, testLogger(), gate.WithReader(c))
 	proposer := NewProposer(c, safety, testLogger())
 
 	diag := newOOMDiagnosis("kube-system", "coredns", detection.SeverityCritical)
@@ -327,7 +327,7 @@ func TestProposer_CrashLoopWithOOM_ProposesMemoryIncrease(t *testing.T) {
 		WithRuntimeObjects(persona).
 		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
-	safety := gate.New(c, testLogger())
+	safety := gate.New(c, testLogger(), gate.WithReader(c))
 	proposer := NewProposer(c, safety, testLogger())
 
 	diag := diagnosis.Diagnosis{
@@ -375,7 +375,7 @@ func TestProposer_CrashLoopWithoutOOM_Skips(t *testing.T) {
 		WithRuntimeObjects(persona).
 		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
-	safety := gate.New(c, testLogger())
+	safety := gate.New(c, testLogger(), gate.WithReader(c))
 	proposer := NewProposer(c, safety, testLogger())
 
 	diag := diagnosis.Diagnosis{
@@ -410,7 +410,7 @@ func TestProposer_UnknownActionType_Skips(t *testing.T) {
 	scheme := newTestScheme()
 	c := fake.NewClientBuilder().WithScheme(scheme).Build()
 
-	safety := gate.New(c, testLogger())
+	safety := gate.New(c, testLogger(), gate.WithReader(c))
 	proposer := NewProposer(c, safety, testLogger())
 
 	diag := diagnosis.Diagnosis{
@@ -437,7 +437,7 @@ func TestProposer_RestartAction_Skips(t *testing.T) {
 	scheme := newTestScheme()
 	c := fake.NewClientBuilder().WithScheme(scheme).Build()
 
-	safety := gate.New(c, testLogger())
+	safety := gate.New(c, testLogger(), gate.WithReader(c))
 	proposer := NewProposer(c, safety, testLogger())
 
 	diag := diagnosis.Diagnosis{
@@ -464,7 +464,7 @@ func TestProposer_NilPersonaRef_Skips(t *testing.T) {
 	scheme := newTestScheme()
 	c := fake.NewClientBuilder().WithScheme(scheme).Build()
 
-	safety := gate.New(c, testLogger())
+	safety := gate.New(c, testLogger(), gate.WithReader(c))
 	proposer := NewProposer(c, safety, testLogger())
 
 	diag := diagnosis.Diagnosis{
@@ -491,7 +491,7 @@ func TestProposer_PrePatchStateCaptured(t *testing.T) {
 		WithRuntimeObjects(persona).
 		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
-	safety := gate.New(c, testLogger())
+	safety := gate.New(c, testLogger(), gate.WithReader(c))
 	proposer := NewProposer(c, safety, testLogger())
 
 	diag := newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityWarning)
@@ -518,7 +518,7 @@ func TestProposer_RollbackSpec(t *testing.T) {
 		WithRuntimeObjects(persona).
 		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
-	safety := gate.New(c, testLogger())
+	safety := gate.New(c, testLogger(), gate.WithReader(c))
 	proposer := NewProposer(c, safety, testLogger())
 
 	diag := newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityWarning)

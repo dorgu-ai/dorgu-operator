@@ -584,7 +584,7 @@ func lcControllerIntercepted(t *testing.T, objs []client.Object, funcs intercept
 	c := interceptor.NewClient(base, funcs)
 	log := logr.Discard()
 	engine := detection.NewEngine(log, &stubCollector{name: "lc", signals: signals})
-	g := gate.New(c, log)
+	g := gate.New(c, log, gate.WithReader(c))
 	return &RemediationController{
 		Client: c, Gate: g, Executor: remediation.NewExecutor(c, g, log),
 		Verifier: remediation.NewVerifier(engine, c, log), Rollback: remediation.NewRollback(c, log), Logger: log,

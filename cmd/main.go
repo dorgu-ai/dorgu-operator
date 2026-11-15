@@ -182,12 +182,16 @@ func main() {
 	if cfg.enableHealthCheck {
 		intakeState = newIntakeSetup(mgr.GetAPIReader(), operatorNS, setupLog)
 		// The username above is a claim from the deployment: have the API server confirm it.
-		if identityClient, icErr := kubernetes.NewForConfig(restConfig); icErr != nil {
-			setupLog.Error(icErr, "unable to build the client that verifies the operator's identity; the intake stays closed")
+		if preflightClient, icErr := kubernetes.NewForConfig(preflightRESTConfig(restConfig)); icErr != nil {
+			setupLog.Error(icErr, "unable to build the client that verifies the operator's identity and permissions; "+
+				"the intake stays closed")
 			intakeState.Preflight.Add(intake.StaticCheck("operator-identity-verified",
 				intake.ReasonOperatorIdentityUnverified, icErr))
+			intakeState.Preflight.Add(intake.StaticCheck("operator-rbac",
+				intake.ReasonOperatorRBACUnverified, icErr))
 		} else {
-			intakeState.verifyIdentity(intake.WhoAmIFromSelfSubjectReview(identityClient))
+			intakeState.verifyIdentity(intake.WhoAmIFromSelfSubjectReview(preflightClient))
+			intakeState.verifyRBAC(intake.AccessReviewerFromClientset(preflightClient))
 		}
 		preflightCtx, cancelPreflight := context.WithTimeout(context.Background(), preflightTimeout)
 		intakeState.Preflight.Run(preflightCtx)
@@ -407,6 +411,14 @@ func main() {
 			Rollback: rollbackHandler,
 			Recorder: recorder,
 			Logger:   setupLog.WithName("remediation-controller"),
+
+			// With the admission policies missing (or the operator's permissions partial)
+			// no ticket is issued; a nil preflight (no health check) blocks nothing.
+			TicketGuard: ticketGuardFor(intakeState),
+
+			// An approval is compared with the proposer, which for an action with no
+			// recorded one is the operator itself.
+			OperatorUsername: intakeState.Username,
 
 			PendingTTL: cfg.remediationPendingTTL,
 		}).SetupWithManager(mgr); err != nil {

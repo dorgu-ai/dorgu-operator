@@ -184,7 +184,7 @@ func (d *Decision) Ticket() (*dorguv1.ApplyTicket, error) {
 	}
 	ticket := &dorguv1.ApplyTicket{
 		Patch:      patch,
-		Verdicts:   append([]dorguv1.GateVerdict(nil), d.Verdicts...),
+		Verdicts:   capVerdicts(d.Verdicts),
 		SpecHash:   d.specHash,
 		ApprovedBy: d.approvedBy,
 		IssuedAt:   &issued,

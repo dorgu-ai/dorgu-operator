@@ -164,7 +164,7 @@ func TestF13_FailingPodsInExcludedNamespacesRaiseNothingAndCallNoModel(t *testin
 			t.Run(ns.name+"/"+fault, func(t *testing.T) {
 				pod := failingPods(ns.namespace)[fault]
 				c := noiseClient(t, excludingClusterPersona("cert-manager"), probePersona(ns.namespace), pod)
-				g := gate.New(c, noiseLogger(), gate.WithProtectedNamespaces("dorgu-system", "gateway"))
+				g := gate.New(c, noiseLogger(), gate.WithProtectedNamespaces("dorgu-system", "gateway"), gate.WithReader(c))
 				stub := &stubLLMClient{}
 				r := aiReconciler(t, c, g, stub)
 
@@ -211,7 +211,7 @@ func TestStaleOOMKilled_StopsRaisingSignalsAndModelCalls(t *testing.T) {
 		},
 	}
 	c := noiseClient(t, probePersona("shop"), pod)
-	g := gate.New(c, noiseLogger())
+	g := gate.New(c, noiseLogger(), gate.WithReader(c))
 	stub := &stubLLMClient{}
 	r := aiReconciler(t, c, g, stub)
 
@@ -248,7 +248,7 @@ func TestStaleOOMKilled_JustRestartedIsStillDetectedThenGoesQuiet(t *testing.T) 
 		Status:     status(20*time.Second, 25*time.Second),
 	}
 	c := noiseClient(t, probePersona("shop"), pod)
-	g := gate.New(c, noiseLogger())
+	g := gate.New(c, noiseLogger(), gate.WithReader(c))
 	stub := &stubLLMClient{}
 	r := aiReconciler(t, c, g, stub)
 

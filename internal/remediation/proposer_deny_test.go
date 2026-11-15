@@ -54,7 +54,7 @@ func TestProposer_DenyListRefusesBeforeThePlannerRuns(t *testing.T) {
 				WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 
 			model := &countingPlanner{}
-			p := NewProposer(c, gate.New(c, testLogger(), tt.options...), testLogger(), WithPlanner(model))
+			p := NewProposer(c, gate.New(c, testLogger(), append(tt.options, gate.WithReader(c))...), testLogger(), WithPlanner(model))
 
 			diag := newOOMDiagnosis(tt.namespace, "my-app", detection.SeverityCritical)
 			result, err := p.Propose(context.Background(), diag, incident)

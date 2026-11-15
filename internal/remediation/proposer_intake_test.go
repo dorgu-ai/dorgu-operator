@@ -63,7 +63,7 @@ func proposerWorld(t *testing.T, mutate func(*intake.Config), personas ...string
 	base := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(objs...).
 		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
 	c := ticking(base)
-	g := gate.New(c, testLogger())
+	g := gate.New(c, testLogger(), gate.WithReader(c))
 	cfg := intake.Config{Client: c, Gate: g, OperatorUsername: operatorUser, Logger: testLogger()}
 	if mutate != nil {
 		mutate(&cfg)
@@ -193,7 +193,7 @@ func TestPropose_AFailedActionWriteLeavesNoProposalAndNoAction(t *testing.T) {
 			return cl.Create(ctx, obj, opts...)
 		},
 	})
-	g := gate.New(c, testLogger())
+	g := gate.New(c, testLogger(), gate.WithReader(c))
 	p := NewProposer(c, g, testLogger(), WithIntake(intake.New(intake.Config{Client: c, Gate: g, OperatorUsername: operatorUser, Logger: testLogger()})))
 
 	result, err := p.Propose(context.Background(),
@@ -225,7 +225,7 @@ func TestPropose_AFailedConvertedWriteKeepsTheProposalAndReportsTheAction(t *tes
 			return cl.SubResource(sub).Update(ctx, obj, opts...)
 		},
 	})
-	g := gate.New(c, testLogger())
+	g := gate.New(c, testLogger(), gate.WithReader(c))
 	processor := intake.New(intake.Config{Client: c, Gate: g, OperatorUsername: operatorUser, Logger: testLogger()})
 	p := NewProposer(c, g, testLogger(), WithIntake(processor))
 
@@ -293,7 +293,7 @@ func TestPropose_AClosedIntakePlansNothingAndProposesNothing(t *testing.T) {
 
 func TestPropose_AnIntakeWithNoOperatorUsernameProposesNothing(t *testing.T) {
 	base := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(newTestPersona(defaultNamespace, "my-app")).Build()
-	g := gate.New(base, testLogger())
+	g := gate.New(base, testLogger(), gate.WithReader(base))
 	p := NewProposer(base, g, testLogger(), WithIntake(intake.New(intake.Config{Client: base, Gate: g, Logger: testLogger()})))
 
 	result, err := p.Propose(context.Background(),

@@ -42,10 +42,12 @@ rules:
     resources: ["incidentmemories/status"]
     verbs: ["get", "update", "patch"]
   # RemediationAction CRD (created by the proposal reconciler from an accepted
-  # RemediationProposal; lifecycle managed by remediation controller)
+  # RemediationProposal; lifecycle managed by remediation controller). `delete` is the
+  # intake removing an orphan action it made but could not link: dorgu's own record,
+  # never a workload.
   - apiGroups: ["dorgu.io"]
     resources: ["remediationactions"]
-    verbs: ["get", "list", "watch", "create", "update", "patch"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["dorgu.io"]
     resources: ["remediationactions/status"]
     verbs: ["get", "update", "patch"]
@@ -69,6 +71,18 @@ rules:
   # proposal intake if that is not the ServiceAccount it was configured as.
   - apiGroups: ["authentication.k8s.io"]
     resources: ["selfsubjectreviews"]
+    verbs: ["create"]
+  # The preflight reads the operator's own admission policies and bindings, by name, and
+  # closes the intake and stops issuing tickets if one is missing or would not deny.
+  - apiGroups: ["admissionregistration.k8s.io"]
+    resources: ["validatingadmissionpolicies", "validatingadmissionpolicybindings"]
+    resourceNames: ["dorgu-proposal-identity", "dorgu-action-integrity", "dorgu-approval-gate"]
+    verbs: ["get"]
+  # ... and asks the API server whether it holds the permissions it needs
+  # (SelfSubjectAccessReview), so a partial hand-written role closes the intake with a
+  # message that names what is missing.
+  - apiGroups: ["authorization.k8s.io"]
+    resources: ["selfsubjectaccessreviews"]
     verbs: ["create"]
   # DorguEvent CRD (event pipeline). `delete` is the retention and cap cleaner
   # pruning dorgu's own records, which without it grew without bound in etcd. It

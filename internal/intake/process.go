@@ -18,6 +18,7 @@ package intake
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -204,6 +205,11 @@ func (p *Processor) lockProposal(ctx context.Context, key client.ObjectKey) (fun
 func (p *Processor) intakeChecks(
 	ctx context.Context, prop *v1alpha1.RemediationProposal, plannerRun bool,
 ) (*Outcome, error) {
+	if problem := usernameProblem(prop.Spec.Proposer.Username); problem != "" {
+		return p.reject(ctx, prop, nil, v1alpha1.StageIntake, v1alpha1.ReasonProposerInvalid, nil,
+			fmt.Sprintf("spec.proposer.username %s: an identity is recorded exactly as it is or not at all, "+
+				"so write the proposal as a user whose name has none of those", problem))
+	}
 	if prop.Spec.RollbackOf != nil {
 		return p.reject(ctx, prop, nil, v1alpha1.StageIntake, v1alpha1.ReasonNotYetSupported, nil,
 			"rollbackOf is reserved and not supported yet: a ticketed rollback is not available in this version")
@@ -227,7 +233,7 @@ func (p *Processor) intakeChecks(
 	if n := countRecentBefore(prop, all, p.rateWindow); n >= p.rateLimit {
 		return p.reject(ctx, prop, nil, v1alpha1.StageIntake, v1alpha1.ReasonRateLimited, nil,
 			fmt.Sprintf("%q has already had %d proposals received in the last %s (limit %d)",
-				cleanUsername(prop.Spec.Proposer.Username), n, p.rateWindow, p.rateLimit))
+				prop.Spec.Proposer.Username, n, p.rateWindow, p.rateLimit))
 	}
 	return nil, nil
 }
@@ -302,6 +308,10 @@ func (p *Processor) convert(
 	ctx context.Context, prop *v1alpha1.RemediationProposal, incident *dorguv1.IncidentMemory, hint *Hint,
 ) (*Outcome, error) {
 	existing, err := p.existingAction(ctx, prop)
+	var orphan *orphanedActionError
+	if errors.As(err, &orphan) {
+		return p.reject(ctx, prop, incident, v1alpha1.StageIntake, v1alpha1.ReasonActionInvalid, nil, orphan.Error())
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -340,6 +350,16 @@ func (p *Processor) convert(
 	if apierrors.IsInvalid(err) {
 		// The API server will refuse this action however often it is asked, so the
 		// proposal ends here: an error would make the reconciler retry it forever.
+		//
+		// But not over an orphan. When the refusal was of the status written after the
+		// create, the action created a moment ago was deleted, and if that delete failed
+		// it is still there with no phase, which the gate counts as an active remediation
+		// for this persona. A rejected proposal never reaches convert again, so nothing
+		// would ever remove it: take it away now, and retry the whole proposal if that
+		// cannot be done.
+		if _, cleanErr := p.actionFor(ctx, prop, true, p.reader); cleanErr != nil && !errors.As(cleanErr, new(*orphanedActionError)) {
+			return nil, fmt.Errorf("removing the unfinished RemediationAction before rejecting the proposal: %w", cleanErr)
+		}
 		return p.reject(ctx, prop, incident, v1alpha1.StageIntake, v1alpha1.ReasonActionInvalid, dec,
 			"the API server refused the RemediationAction this proposal would become: "+shortened(err.Error()))
 	}
@@ -415,17 +435,27 @@ func (p *Processor) actionFor(
 			}
 			if fresh.Status.Phase != "" {
 				if fresh.Spec.Provenance == nil {
-					continue
+					return nil, orphanOf(&fresh)
 				}
 				return &fresh, nil
 			}
-			if err := p.deleteAction(ctx, &fresh); err != nil && !apierrors.IsNotFound(err) {
+			// The delete names the version just read as well as the UID: anyone who
+			// writes a phase in between makes it a conflict (an ordinary retry), and the
+			// action they gave a phase to is not taken with it.
+			if err := p.deleteAction(ctx, &fresh, true); err != nil && !apierrors.IsNotFound(err) {
 				return nil, fmt.Errorf("removing the unfinished RemediationAction %s: %w", ra.Name, err)
 			}
 			continue
 		}
 		if ra.Spec.Provenance == nil {
-			// Not made by this intake (it writes a status only after checking provenance).
+			// Stamped with this proposal's UID, with a phase, and with no provenance: an
+			// action this intake made, lost the provenance of (an API server whose
+			// schema dropped it) and could not delete, and that somebody then gave a
+			// phase. It cannot be removed (it has a phase) and cannot be adopted (nothing
+			// says who proposed it), so the proposal ends here, naming it.
+			if removeUnfinished {
+				return nil, orphanOf(ra)
+			}
 			continue
 		}
 		return ra.DeepCopy(), nil
@@ -433,15 +463,34 @@ func (p *Processor) actionFor(
 	return nil, nil
 }
 
+// orphanedActionError is an action this intake made for the proposal that can be
+// neither removed (it has a phase) nor adopted (it has no provenance).
+type orphanedActionError struct{ name string }
+
+func (e *orphanedActionError) Error() string {
+	return fmt.Sprintf("the RemediationAction %q was made for this proposal but has no provenance and has already been given a phase, "+
+		"so it can be neither removed nor adopted: delete it by hand, then write the proposal again", e.name)
+}
+
+func orphanOf(ra *dorguv1.RemediationAction) error {
+	return &orphanedActionError{name: shortened(ra.Name)}
+}
+
 // deleteAction removes the action it was given and no other: the delete carries the
 // object's UID, so a name that has since been reused, or an object recreated, is not
-// removed in its place.
-func (p *Processor) deleteAction(ctx context.Context, action *dorguv1.RemediationAction) error {
+// removed in its place. With withVersion it carries the object's resourceVersion as
+// well, for an action that was read just before to be sure it had no phase; the ones
+// this call has just created and nobody else has touched keep the UID alone.
+func (p *Processor) deleteAction(ctx context.Context, action *dorguv1.RemediationAction, withVersion bool) error {
 	uid := action.UID
 	if uid == "" {
 		return p.client.Delete(ctx, action)
 	}
-	return p.client.Delete(ctx, action, client.Preconditions{UID: &uid})
+	pre := client.Preconditions{UID: &uid}
+	if rv := action.ResourceVersion; withVersion && rv != "" {
+		pre.ResourceVersion = &rv
+	}
+	return p.client.Delete(ctx, action, pre)
 }
 
 // createAction writes the RemediationAction and records the gate's decision on its
@@ -468,7 +517,7 @@ func (p *Processor) createAction(
 	// an action with none reads as one the operator proposed itself, which is the
 	// fail-open direction for the approval rules: take it back and close the intake.
 	if action.Spec.Provenance == nil {
-		if delErr := p.deleteAction(ctx, action); delErr != nil && !apierrors.IsNotFound(delErr) {
+		if delErr := p.deleteAction(ctx, action, false); delErr != nil && !apierrors.IsNotFound(delErr) {
 			p.log.Error(delErr, "could not remove a RemediationAction that lost its provenance; it needs deleting by hand",
 				"name", action.Name, "namespace", action.Namespace)
 		}
@@ -506,7 +555,7 @@ func (p *Processor) createAction(
 	if err != nil {
 		p.log.Error(err, "RemediationAction created but its status could not be written; removing it",
 			"name", action.Name)
-		if delErr := p.deleteAction(ctx, action); delErr != nil && !apierrors.IsNotFound(delErr) {
+		if delErr := p.deleteAction(ctx, action, false); delErr != nil && !apierrors.IsNotFound(delErr) {
 			p.log.Error(delErr, "could not remove the RemediationAction that has no status; it needs deleting by hand",
 				"name", action.Name, "namespace", action.Namespace)
 		}

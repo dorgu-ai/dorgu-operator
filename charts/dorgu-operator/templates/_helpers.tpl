@@ -102,3 +102,13 @@ default, never an empty flag.
 {{- end -}}
 {{- $raw -}}
 {{- end -}}
+
+{{/*
+Labels of the admission policies and bindings. They carry nothing that changes from release
+to release (no chart version), so config/admission/policies.yaml, rendered from the same
+template for the kustomize install and the envtest suites, stays equal to the chart's.
+*/}}
+{{- define "dorgu-operator.admissionLabels" -}}
+app.kubernetes.io/name: {{ include "dorgu-operator.name" . }}
+app.kubernetes.io/component: admission
+{{- end }}

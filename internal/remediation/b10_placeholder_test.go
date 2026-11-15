@@ -43,7 +43,7 @@ func proposeCrashLoop(t *testing.T, plan *planner.RemediationPlan) *ProposalResu
 	c := fake.NewClientBuilder().WithScheme(newTestScheme()).
 		WithRuntimeObjects(newTestPersona(defaultNamespace, "my-app")).
 		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
-	p := NewProposer(c, gate.New(c, testLogger()), testLogger(), WithPlanner(&planCounter{plan: plan}))
+	p := NewProposer(c, gate.New(c, testLogger(), gate.WithReader(c)), testLogger(), WithPlanner(&planCounter{plan: plan}))
 	diag := newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical)
 	diag.Contributing[0].Signal.Type = detection.SignalCrashLoopBackOff
 	diag.SuggestedAction = rulesInvestigate
@@ -110,7 +110,7 @@ func TestPlaceholder_ThePersistChokepointNeverWritesOne(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(newTestScheme()).
 		WithRuntimeObjects(newTestPersona(defaultNamespace, "my-app")).
 		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
-	p := NewProposer(c, gate.New(c, testLogger()), testLogger())
+	p := NewProposer(c, gate.New(c, testLogger(), gate.WithReader(c)), testLogger())
 	action := &dorguv1.RemediationAction{}
 	action.Name, action.Namespace = "ra-x", defaultNamespace
 	action.Spec.PlanSummary = "the real summary"
@@ -125,7 +125,7 @@ func TestPlaceholder_ThePersistChokepointNeverWritesOne(t *testing.T) {
 
 func TestPlaceholder_PersistRepairEdgeCases(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(newTestScheme()).Build()
-	p := NewProposer(c, gate.New(c, testLogger()), testLogger())
+	p := NewProposer(c, gate.New(c, testLogger(), gate.WithReader(c)), testLogger())
 
 	// A plan with no steps passes through (a legacy single-action plan).
 	same, err := p.repairBeforePersist(&dorguv1.RemediationAction{})
@@ -154,7 +154,7 @@ func TestPlaceholder_AnAIPlanOfOnlyPlaceholdersFallsBackToTheRules(t *testing.T)
 	plan := &planner.RemediationPlan{Confidence: 0.5, Steps: []planner.PlannedStep{
 		{Order: 1, Type: dorguv1.StepTypeManual, Description: "placeholder", Rationale: "placeholder", Risk: "low"},
 	}}
-	p := NewProposer(c, gate.New(c, testLogger()), testLogger(), WithPlanner(&planCounter{plan: plan}))
+	p := NewProposer(c, gate.New(c, testLogger(), gate.WithReader(c)), testLogger(), WithPlanner(&planCounter{plan: plan}))
 
 	result, err := p.Propose(context.Background(),
 		newOOMDiagnosis(defaultNamespace, "my-app", detection.SeverityCritical),

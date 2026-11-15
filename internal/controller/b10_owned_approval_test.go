@@ -107,7 +107,7 @@ func TestOwned_ApprovalRecheckLeavesNothingToApply(t *testing.T) {
 			_, c := lcController(t, []client.Object{lcPersonaObj(lcBaseline), lcIncidentObj(), ownedDeployment(owner), ra.DeepCopy()}, lcOOMSignal())
 			personaBefore, deploymentBefore := snapshot(t, c)
 
-			g := gate.New(c, noiseLogger())
+			g := gate.New(c, noiseLogger(), gate.WithReader(c))
 			specHash, err := g.ServedSpecHash(context.Background(), ra)
 			require.NoError(t, err)
 			decision, err := g.Run(context.Background(), gate.ApprovalCandidate(ra, specHash), gate.PhaseApprovalRecheck)

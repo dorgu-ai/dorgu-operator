@@ -133,7 +133,7 @@ func proposeFor(t *testing.T, container string) *ProposalResult {
 	c := fake.NewClientBuilder().WithScheme(newWorkloadScheme()).
 		WithRuntimeObjects(persona, deploy).
 		WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
-	result, err := NewProposer(c, gate.New(c, testLogger()), testLogger()).Propose(context.Background(), diag, incident)
+	result, err := NewProposer(c, gate.New(c, testLogger(), gate.WithReader(c)), testLogger()).Propose(context.Background(), diag, incident)
 	require.NoError(t, err)
 	return result
 }
@@ -207,7 +207,7 @@ func TestProposer_CPUThrottling_CriticalFromAThrottledRatioOfHalfOrMore(t *testi
 		incident := newTestIncident(defaultNamespace, "cpu-throttle", "my-app", "CPUThrottling")
 		c := fake.NewClientBuilder().WithScheme(newWorkloadScheme()).WithRuntimeObjects(persona, deploy).
 			WithStatusSubresource(&dorguv1alpha1.RemediationProposal{}, &dorguv1.RemediationAction{}).Build()
-		result, err := NewProposer(c, gate.New(c, testLogger()), testLogger()).Propose(context.Background(), diags[0], incident)
+		result, err := NewProposer(c, gate.New(c, testLogger(), gate.WithReader(c)), testLogger()).Propose(context.Background(), diags[0], incident)
 		require.NoError(t, err)
 		require.True(t, result.Proposed, "ratio %.2f: %s", tt.ratio, result.SkipReason)
 		assert.Equal(t, tt.want, patchLimit(t, planned(result.Action).Patch.Raw, "cpu"), "ratio %.2f", tt.ratio)

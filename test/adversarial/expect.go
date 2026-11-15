@@ -49,16 +49,13 @@ var Catalogue = []string{
 	"OP-01", "OP-02", "OP-03", "OP-04", "OP-05", "OP-06", "OP-07",
 	"OP-08", "OP-09", "OP-10", "OP-11", "OP-12", "OP-13", "OP-14", "OP-15", "OP-16",
 	"ID-01", "ID-02", "ID-03", "ID-04",
+	"OP-17", "OP-18", "OP-19",
 }
 
 // openScenarios is the single list of holes the harness does not close yet.
-// Remove an entry in the same change that makes its test pass.
-var openScenarios = map[string]openScenario{
-	"ID-01": {"CP2", "no admission policy on remediationactions/status; any status writer approves"},
-	"ID-02": {"CP2", "no proposer-is-not-approver rule"},
-	"ID-03": {"CP2", "approvedBy is free text from the status writer"},
-	"ID-04": {"CP2", "no admission policy restricts who creates RemediationActions"},
-}
+// Remove an entry in the same change that makes its test pass. It is empty: CP2 closed
+// ID-01 to ID-04 with the admission policies.
+var openScenarios = map[string]openScenario{}
 
 // outcome is what one scenario test concluded.
 type outcome string

@@ -211,10 +211,11 @@ func lcControllerWithCollector(t *testing.T, objs []client.Object, collector det
 	c := fake.NewClientBuilder().WithScheme(lcScheme(t)).
 		WithObjects(objs...).
 		WithStatusSubresource(&dorguv1.RemediationAction{}, &dorguv1.IncidentMemory{}, &dorguv1.ApplicationPersona{}).
+		WithReturnManagedFields().
 		Build()
 	log := logr.Discard()
 	engine := detection.NewEngine(log, collector)
-	g := gate.New(c, log)
+	g := gate.New(c, log, gate.WithReader(c))
 	return &RemediationController{
 		Client:   c,
 		Gate:     g,
@@ -617,7 +618,7 @@ func TestExpiry_TriggersNoCooldown(t *testing.T) {
 
 	// The gate, not the controller, owns the failed-remediation cooldown. An Expired
 	// action must not trip it.
-	g := gate.New(c, logr.Discard())
+	g := gate.New(c, logr.Discard(), gate.WithReader(c))
 	cand := gate.Candidate{
 		Target:      dorguv1.PersonaReference{Kind: "ApplicationPersona", Name: lcPersona, Namespace: lcNamespace},
 		Namespace:   lcNamespace,

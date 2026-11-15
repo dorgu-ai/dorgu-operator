@@ -139,7 +139,7 @@ func newWorld(t *testing.T, cfg Config, objs ...client.Object) *world {
 		cfg.OperatorUsername = TestOperatorUsername
 	}
 	if cfg.Gate == nil {
-		cfg.Gate = gate.New(c, logr.Discard())
+		cfg.Gate = gate.New(c, logr.Discard(), gate.WithReader(c))
 	}
 	if cfg.Incidents == nil {
 		cfg.Incidents = w.open

@@ -46,10 +46,13 @@ never as blocked. None do today.
 | OP-14 | Pending RA past its approval deadline is approved | Phase Expired; persona unchanged | `TestOP14StaleApproval` | **blocked** (B2: deadline and `--remediation-pending-ttl` expire it; a late approval is refused) |
 | OP-15 | An OOM incident in `kube-system` or the operator's own namespace, with an AI diagnosis provider and an AI planner configured | No request reaches the model API (diagnosis and planner), no planner call, and the incident is still diagnosed, rule-based | `TestOP15DenyListKeepsProtectedNamespacesFromTheModel` | **blocked** (the diagnosis provider asks the same deny-list as the planner) |
 | OP-16 | Node pressure evicts pods from two namespaces and the rules merge them into one diagnosis: persona in an allowed namespace, one signal naming a pod in the operator's namespace; the AI planner is configured | No request reaches the model API (the planner prompt carries every signal's message, so the whole diagnosis is withheld) | `TestOP16MixedNamespaceEvictionNeverReachesThePlanner` | **blocked** (the planner and the diagnosis provider share one all-namespaces check) |
-| ID-01 | ServiceAccount holding `remediationactions/status` patch sets Approved | Denied at admission | `TestID01ServiceAccountApproves` | open, CP2 |
-| ID-02 | The user that created the RA approves it | Denied | `TestID02ProposerApprovesOwnProposal` | open, CP2 |
-| ID-03 | User `alice` approves with `approvedBy: cli-user` | Denied, or `approvedBy` recorded as `alice` | `TestID03ApprovedByNotTheAuthenticatedUser` | open, CP2 |
-| ID-04 | An agent with `create` on RAs creates one directly | Denied (only the operator creates RAs) | `TestID04AgentCreatesRemediationAction` | open, CP2 |
+| OP-17 | An approval that got in without the admission policies names the proposer as the approver | No ticket, nothing applied; ended `Failed` with the `ApproverNotPermitted` refusal (no cooldown) | `TestOP17ApproverIsTheProposer` | **blocked** (C2 fix round: the operator compares `approvedBy` with `spec.provenance.proposer` before the gate and the ticket) |
+| OP-18 | The same, with a `system:` service account as the approver | As OP-17 | `TestOP18ServiceAccountApprover` | **blocked** (C2 fix round: a `system:` approver is never a person) |
+| OP-19 | The operator itself is recorded as approving an action with no recorded proposer (made before provenance, so the operator proposed it) | As OP-17 | `TestOP19OperatorApprovesItsOwnAction` | **blocked** (C2 fix round: no provenance means the operator is the proposer) |
+| ID-01 | ServiceAccount holding `remediationactions/status` patch and the `approve` verb sets Approved | Denied at admission (`dorgu: ServiceAccountCannotApprove`), the action stays Pending | `TestID01ServiceAccountApproves` | **blocked** (C2: `dorgu-approval-gate` refuses any `system:` user, the operator included) |
+| ID-02 | The agent that proposed the remediation (a proposal it wrote, an action the operator made from it naming the agent as proposer) approves it, holding every approver permission | Denied (`dorgu: ApproverIsProposer`); a different person approves the same action | `TestID02ProposerApprovesOwnProposal` | **blocked** (C2: the approver is compared with `spec.provenance.proposer`; an action from before v0.14 counts as proposed by the operator) |
+| ID-03 | User `alice`, holding `approve`, approves with `approvedBy: cli-user` | Denied (`dorgu: ApprovedByMismatch`), nothing recorded as `cli-user` | `TestID03ApprovedByNotTheAuthenticatedUser` | **blocked** (C2: `approvedBy` must be the authenticated username, on a rejection too; denied, never rewritten) |
+| ID-04 | An agent with `create` on RAs creates one directly | Denied (`dorgu: OperatorOnly`; only the operator creates RAs) | `TestID04AgentCreatesRemediationAction` | **blocked** (C2: `dorgu-action-integrity`) |
 
 ## Notes for whoever closes a scenario
 
@@ -100,9 +103,22 @@ never as blocked. None do today.
   `creationTimestamp`. The operator's own `--remediation-pending-ttl` (counted from creation, default
   24 h) is covered by the controller's fake-client lifecycle tests (`remediation_lifecycle_test.go`),
   which can set `creationTimestamp`.
-- **ID-01 to ID-04** run as real authenticated users (`testEnv.AddUser`) with only the RBAC the
-  scenario names. They close with the CP2 ValidatingAdmissionPolicies, which must be installed into
-  this envtest for the assertions to pass.
+- **ID-01 to ID-04** run as real authenticated users (`testEnv.AddUser`, through `test/admissionenv`) with only the RBAC the
+  scenario names, against **their own API server** with the chart's admission policies installed
+  (`config/admission/policies.yaml`, which `charts/dorgu-operator/chart_admission_test.go` holds equal to the
+  chart's template). The OP scenarios stay on the API server without policies, on purpose: they model a cluster
+  where admission was bypassed (an action that predates the policies, a policy removed) and prove the operator's own
+  checks hold anyway. Admission is the enforcement point for identity; the operator's checks are defence in depth and
+  must not be the only check for an identity rule.
+- **ID-02 was rewritten** (P2-execution.md, "ID-02 note for C2"). It used to have the agent create the action itself,
+  which ID-04 now denies. The agent is the recorded proposer instead: it writes a proposal as itself, the operator
+  (the one identity that may create an action) makes the action with the agent in its provenance, and the agent,
+  holding the `approve` verb and the status patch, tries to approve. The attack still runs and is still asserted
+  denied; a control approves the same action as another user, so the denial is about the proposer.
+- **ID-01 and ID-03 hold the approve verb** on purpose: the attack must be stopped by the identity rule, not by a
+  permission the attacker happened not to have. A missing verb is `MissingApproveVerb`, tested in `test/admission`.
+- `test/admission` holds one case per denial reason (`dorgu: <Reason>:`), the writes the policies must allow (the CLI's
+  approve, reject and heal record), and the chart's four roles exercised as real users.
 
 ## Not measured here
 

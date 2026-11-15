@@ -49,6 +49,11 @@ const (
 // DefaultPreflightInterval is how often the checks are run again.
 const DefaultPreflightInterval = time.Minute
 
+// DefaultPreflightTimeout bounds one run of every check. A check that never answers (an
+// API server that accepts the connection and goes quiet) is a failure of that run, so
+// the next tick still happens.
+const DefaultPreflightTimeout = 30 * time.Second
+
 // Check is one thing that must be true before the intake may convert a proposal or
 // the planner may plan: the operator's own identity is known, the CRDs it writes are
 // installed with the fields it relies on. Admission policies (C2, task 2.8) are
@@ -65,6 +70,11 @@ type Check struct {
 	// FailureReason() string method is reported with that reason instead of
 	// Reason, for a check that can fail in more than one way.
 	Run func(ctx context.Context) error
+
+	// PeriodicOnly keeps the check out of TicketsBlockedNow: it runs on the periodic schedule
+	// only, and its last result still blocks tickets. For a check that is expensive to make
+	// at every ticket and whose answer changes at human speed (the permission reviews).
+	PeriodicOnly bool
 }
 
 // Failure is one check that is failing.
@@ -93,12 +103,28 @@ type Preflight struct {
 	failures    []Failure
 	ran         bool
 	interval    time.Duration
+	timeout     time.Duration
 	subscribers []func([]Failure)
+
+	// Ticket guard bookkeeping (C2 F-4), see guard_window.go.
+	now           func() time.Time
+	syncMu        sync.Mutex
+	lastReady     time.Time
+	notReadySince time.Time
+	windows       []guardWindow
 }
 
 // NewPreflight builds a Preflight over checks.
 func NewPreflight(log logr.Logger, checks ...Check) *Preflight {
-	return &Preflight{log: log.WithName("preflight"), checks: checks, interval: DefaultPreflightInterval}
+	return newPreflightAt(log, time.Now, checks...)
+}
+
+// newPreflightAt is NewPreflight with its own clock, for the tests of the guard windows.
+func newPreflightAt(log logr.Logger, now func() time.Time, checks ...Check) *Preflight {
+	p := &Preflight{log: log.WithName("preflight"), checks: checks, interval: DefaultPreflightInterval, timeout: DefaultPreflightTimeout, now: now}
+	// Until a run has found the guard ready, it is not: the startup window begins now.
+	p.notReadySince = now()
+	return p
 }
 
 // Add appends a check. It takes effect from the next run.
@@ -117,6 +143,17 @@ func (p *Preflight) SetInterval(d time.Duration) {
 	}
 }
 
+// SetTimeout changes how long one run started by Start may take before every check
+// still running is cancelled and reported as failing. A zero or negative value is
+// ignored.
+func (p *Preflight) SetTimeout(d time.Duration) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if d > 0 {
+		p.timeout = d
+	}
+}
+
 // Subscribe registers fn to be called, with the current failures, after every run.
 func (p *Preflight) Subscribe(fn func([]Failure)) {
 	p.mu.Lock()
@@ -130,16 +167,19 @@ func (p *Preflight) Run(ctx context.Context) []Failure {
 	checks := append([]Check(nil), p.checks...)
 	p.mu.RUnlock()
 
+	start := p.now()
 	var failures []Failure
 	for _, c := range checks {
 		if err := runCheck(ctx, c); err != nil {
 			failures = append(failures, Failure{Check: c.Name, Reason: failureReason(err, c.Reason), Message: err.Error()})
 		}
 	}
+	end := p.now()
 
 	p.mu.Lock()
 	changed := !p.ran || !sameFailures(p.failures, failures)
 	p.failures, p.ran = failures, true
+	p.observeGuardLocked(start, end, ticketReady(failures))
 	subscribers := append([]func([]Failure){}, p.subscribers...)
 	p.mu.Unlock()
 
@@ -163,6 +203,9 @@ func (p *Preflight) Report(f Failure) {
 	}
 	p.failures = append(append([]Failure(nil), p.failures...), f)
 	p.ran = true
+	if ticketBlockers[f.Reason] {
+		p.observeGuardLocked(p.now(), p.now(), false)
+	}
 	p.mu.Unlock()
 	p.report([]Failure{f})
 }
@@ -229,7 +272,7 @@ func (p *Preflight) Blocked() *Failure {
 // intake is known at startup.
 func (p *Preflight) Start(ctx context.Context) error {
 	p.mu.RLock()
-	interval := p.interval
+	interval, timeout := p.interval, p.timeout
 	p.mu.RUnlock()
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -238,7 +281,10 @@ func (p *Preflight) Start(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
-			p.Run(ctx)
+			// Every run is bounded: one hung call must not stop the runs after it.
+			runCtx, cancel := context.WithTimeout(ctx, timeout)
+			p.Run(runCtx)
+			cancel()
 		}
 	}
 }

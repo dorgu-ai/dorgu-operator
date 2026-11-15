@@ -19,14 +19,19 @@ package controller
 import (
 	"context"
 	"errors"
+	"math"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/go-logr/logr"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
@@ -133,7 +138,7 @@ func TestApproved_RefusedAtApprovalIsFailedWithAPersistedReasonAndNoCooldown(t *
 
 	// No cooldown: nothing was applied, so the persona is free to be proposed for
 	// again at once.
-	fresh := gate.New(c, logr.Discard())
+	fresh := gate.New(c, logr.Discard(), gate.WithReader(c))
 	d, err := fresh.Run(context.Background(), gate.Candidate{
 		Target: got.Spec.PersonaRef, Namespace: lcNamespace, Name: "ra-next",
 		IncidentRef: got.Spec.IncidentRef,
@@ -228,7 +233,7 @@ func TestApproved_AnUnreadableClusterIsRetriedNotPassed(t *testing.T) {
 		},
 	})
 	rc.Client = broken
-	rc.Gate = gate.New(broken, logr.Discard())
+	rc.Gate = gate.New(broken, logr.Discard(), gate.WithReader(broken))
 
 	if _, err := rc.Reconcile(context.Background(), reqFor(ra)); err == nil {
 		t.Fatal("want an error when the live workload cannot be read")
@@ -236,6 +241,44 @@ func TestApproved_AnUnreadableClusterIsRetriedNotPassed(t *testing.T) {
 	if mem := lcPersonaMemory(t, c); mem != lcBaseline {
 		t.Errorf("persona memory = %s: an unreadable cluster must never pass an approval", mem)
 	}
+}
+
+// R-2 of the C3 re-check 2: a served spec the hash cannot be taken of used to be
+// retried for ever at issue (the error was returned and never reached a phase). At
+// apply the same condition is the terminal SpecChanged; at issue it now is too: the
+// action ends Failed/SpecChanged, nothing is applied, and no outcome is booked. A
+// read that merely fails is still retried.
+func TestApproved_AnUnhashableServedSpecEndsTheApprovalInsteadOfRetrying(t *testing.T) {
+	ra := lcRA("Approved")
+	rc, c := lcController(t, []client.Object{lcPersonaObj(lcBaseline), lcIncidentObj(), ra.DeepCopy()})
+	unhashable := interceptor.NewClient(c, interceptor.Funcs{
+		Get: func(ctx context.Context, inner client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if err := inner.Get(ctx, key, obj, opts...); err != nil {
+				return err
+			}
+			if u, ok := obj.(*unstructured.Unstructured); ok {
+				// NaN is not JSON: no canonical form of this spec exists.
+				return unstructured.SetNestedField(u.Object, math.NaN(), "spec", "trustLevel")
+			}
+			return nil
+		},
+	})
+	rc.Gate = gate.New(unhashable, logr.Discard(), gate.WithReader(unhashable))
+
+	for attempt := range 2 {
+		_, err := rc.Reconcile(context.Background(), reqFor(ra))
+		require.NoError(t, err, "attempt %d: an unhashable spec is a decision, not an error to retry", attempt)
+	}
+
+	var got dorguv1.RemediationAction
+	require.NoError(t, c.Get(context.Background(), client.ObjectKeyFromObject(ra), &got))
+	assert.Equal(t, RemediationPhaseFailed, got.Status.Phase)
+	cond := meta.FindStatusCondition(got.Status.Conditions, ConditionApplied)
+	require.NotNil(t, cond)
+	assert.Equal(t, dorguv1.ReasonSpecChanged, cond.Reason)
+	assert.Nil(t, got.Status.ApplyTicket, "no ticket is issued for a spec nobody can hash")
+	assert.Equal(t, lcBaseline, lcPersonaMemory(t, c), "nothing was applied")
+	assert.True(t, gate.RejectedBeforeApply(&got), "a refusal before apply books no outcome and starts no cooldown")
 }
 
 func TestApproved_AdvisoryPlansNeedNoGate(t *testing.T) {
@@ -323,7 +366,7 @@ func TestTicketed_AWorkloadChangedUnderTheTicketIsRefused(t *testing.T) {
 		},
 	})
 	rc.Client = edited
-	rc.Gate = gate.New(edited, logr.Discard())
+	rc.Gate = gate.New(edited, logr.Discard(), gate.WithReader(edited))
 	rc.Executor = remediation.NewExecutor(edited, rc.Gate, logr.Discard())
 
 	_, err := rc.Reconcile(context.Background(), reqFor(ra))
@@ -410,7 +453,7 @@ func TestVerifyingHealthy_PartialWhenSomeoneElseEditedTheWorkload(t *testing.T) 
 		},
 	})
 	rc.Client = edited
-	rc.Gate = gate.New(edited, logr.Discard())
+	rc.Gate = gate.New(edited, logr.Discard(), gate.WithReader(edited))
 
 	_, got := lcReconcile(t, rc, ra)
 
@@ -444,7 +487,7 @@ func TestVerifyingHealthy_TheCLIsOwnPatchIsNotDivergence(t *testing.T) {
 		},
 	})
 	rc.Client = patched
-	rc.Gate = gate.New(patched, logr.Discard())
+	rc.Gate = gate.New(patched, logr.Discard(), gate.WithReader(patched))
 
 	_, got := lcReconcile(t, rc, ra)
 
@@ -468,7 +511,7 @@ func TestVerifyingHealthy_AnUnreadableWorkloadIsNotACleanHeal(t *testing.T) {
 		},
 	})
 	rc.Client = broken
-	rc.Gate = gate.New(broken, logr.Discard())
+	rc.Gate = gate.New(broken, logr.Discard(), gate.WithReader(broken))
 
 	_, got := lcReconcile(t, rc, ra)
 

@@ -268,6 +268,21 @@ const (
 	// cooldown.
 	ReasonGateRefusedAtApproval = "GateRefusedAtApproval"
 
+	// ReasonApproverNotPermitted is the GateRefused reason when the operator, checking the
+	// approval again before it issues a ticket, finds that approvedBy is empty, is not a
+	// person (a "system:" user) or is the one who proposed the action. Admission refuses
+	// these first; this is the second wall (C2).
+	ReasonApproverNotPermitted = "ApproverNotPermitted"
+
+	// ConditionApprovalVoided records that the operator sent an approved action back to
+	// Pending because the approval was written while the admission guard was not ready, so
+	// no working admission policy checked who gave it (C2). It stays on the action as the
+	// record of why the approval has to be given again.
+	ConditionApprovalVoided = "ApprovalVoided"
+
+	// ReasonAdmissionGuardWasNotReady is the ApprovalVoided reason.
+	ReasonAdmissionGuardWasNotReady = "AdmissionGuardWasNotReady"
+
 	// ReasonWorkloadDivergedFromTicket is the condition reason (on WorkloadDiverged) and the
 	// outcome reason of a remediation whose workload was changed by someone else
 	// after the ticket was written. A heal that verified healthy and carries this

@@ -99,7 +99,7 @@ var _ = Describe("HealthCheckReconciler AI diagnosis persistence", func() {
 			Detection: detection.NewEngine(testLogger, collector),
 			Diagnosis: diagnosis.NewEngine(testLogger,
 				diagnosis.NewRuleBasedProvider(testLogger),
-				diagnosis.NewAIProvider(stub, gate.New(k8sClient, testLogger), testLogger),
+				diagnosis.NewAIProvider(stub, gate.New(k8sClient, testLogger, gate.WithReader(k8sClient)), testLogger),
 			),
 			EventStore:        &noopEventStore{},
 			EventEmitter:      &noopEmitter{},

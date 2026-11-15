@@ -67,7 +67,7 @@ func newRecurrenceEnv(t *testing.T, c client.Client) *recurrenceEnv {
 		Source: "stub", Message: "container api was OOMKilled", Resource: pod, PersonaRef: ref, DetectedAt: time.Now(),
 	}}}
 	r := newNoiseReconciler(c, collector)
-	r.Proposer = remediation.NewProposer(c, gate.New(c, noiseLogger()), noiseLogger())
+	r.Proposer = remediation.NewProposer(c, gate.New(c, noiseLogger(), gate.WithReader(c)), noiseLogger())
 	return &recurrenceEnv{t: t, c: c, r: r, pod: pod, count: collector}
 }
 
