@@ -342,10 +342,10 @@ func newRemediationController(signals ...detection.Signal) *controller.Remediati
 		Client:           k8sClient,
 		OperatorUsername: operatorUsername,
 		Gate:             testGate(),
-		Executor: remediation.NewExecutor(k8sClient, testGate(), log),
-		Verifier: remediation.NewVerifier(engine, k8sClient, log),
-		Rollback: remediation.NewRollback(k8sClient, log),
-		Logger:   log,
+		Executor:         remediation.NewExecutor(k8sClient, testGate(), log),
+		Verifier:         remediation.NewVerifier(engine, k8sClient, log),
+		Rollback:         remediation.NewRollback(k8sClient, log),
+		Logger:           log,
 	}
 }
 

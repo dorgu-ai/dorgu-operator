@@ -35,6 +35,7 @@ import (
 
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -94,7 +95,7 @@ func ModuleRoot() (string, error) {
 func newScheme() (*runtime.Scheme, error) {
 	s := runtime.NewScheme()
 	for _, add := range []func(*runtime.Scheme) error{
-		clientgoscheme.AddToScheme, dorguv1.AddToScheme, dorguv1alpha1.AddToScheme,
+		clientgoscheme.AddToScheme, dorguv1.AddToScheme, dorguv1alpha1.AddToScheme, apiextensionsv1.AddToScheme,
 	} {
 		if err := add(s); err != nil {
 			return nil, err
