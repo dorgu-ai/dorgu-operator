@@ -190,9 +190,20 @@ type RemediationController struct {
 	PendingTTL time.Duration
 }
 
-// TicketGuard reports why apply tickets must not be issued right now, or nil.
+// TicketGuard is what the operator asks before it issues an apply ticket.
 type TicketGuard interface {
-	TicketsBlocked() *intake.Failure
+	// TicketsBlockedNow checks again, synchronously, and returns why tickets must not be
+	// issued right now, or nil. The answer of the last periodic run can be a minute old.
+	TicketsBlockedNow(ctx context.Context) *intake.Failure
+
+	// NotReadyAt reports whether the guard was not ready at t (closed, in its startup
+	// window, or unable to have noticed a change): an approval written then was not checked
+	// by admission policies known to be working.
+	NotReadyAt(t time.Time) bool
+
+	// EverNotReady reports whether the guard has been not ready at any time, so there is a
+	// window to compare an approval's time with.
+	EverNotReady() bool
 }
 
 // ticketGuardRecheck is how long an approved action waits before the guard is asked again.
@@ -458,7 +469,9 @@ func (r *RemediationController) handleApproved(ctx context.Context, logger logr.
 	}
 
 	if r.TicketGuard != nil {
-		if blocked := r.TicketGuard.TicketsBlocked(); blocked != nil {
+		// Asked again now, not from the last periodic run (C2 F-4): a policy deleted since
+		// then would otherwise be invisible until the next tick.
+		if blocked := r.TicketGuard.TicketsBlockedNow(ctx); blocked != nil {
 			// The approval is only as good as the admission policies that checked who gave
 			// it. Nothing is written: the action stays Approved and is looked at again.
 			message := fmt.Sprintf("no apply ticket is issued while the operator's admission checks fail (%s): %s",
@@ -467,6 +480,11 @@ func (r *RemediationController) handleApproved(ctx context.Context, logger logr.
 				"reason", blocked.Reason)
 			emit(r.Recorder, action, corev1.EventTypeWarning, EventReasonTicketsPaused, message)
 			return ctrl.Result{RequeueAfter: ticketGuardRecheck}, nil
+		}
+		// The guard is ready now. An approval written while it was not was never checked by
+		// working policies: send it back to be given again, whatever approvedBy says.
+		if why := r.approvalVoidedBy(action); why != "" {
+			return ctrl.Result{}, r.voidApproval(ctx, logger, action, why)
 		}
 	}
 

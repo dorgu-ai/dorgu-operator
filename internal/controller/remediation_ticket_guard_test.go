@@ -17,7 +17,9 @@ limitations under the License.
 package controller
 
 import (
+	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -28,9 +30,25 @@ import (
 	"github.com/dorgu-ai/dorgu-operator/internal/intake"
 )
 
-type stubTicketGuard struct{ blocked *intake.Failure }
+// stubTicketGuard answers what a test says. blocked is what the guard finds when asked at ticket
+// time; notReady says when it was not ready (nil: always ready).
+type stubTicketGuard struct {
+	blocked  *intake.Failure
+	notReady func(time.Time) bool
+	asked    *int
+}
 
-func (s stubTicketGuard) TicketsBlocked() *intake.Failure { return s.blocked }
+// EverNotReady is true when the stub has a window.
+func (s stubTicketGuard) EverNotReady() bool { return s.notReady != nil }
+
+func (s stubTicketGuard) TicketsBlockedNow(context.Context) *intake.Failure {
+	if s.asked != nil {
+		*s.asked++
+	}
+	return s.blocked
+}
+
+func (s stubTicketGuard) NotReadyAt(t time.Time) bool { return s.notReady != nil && s.notReady(t) }
 
 // P2-D8: with the admission policies missing the operator issues no ticket. An approved
 // action waits as it is, nothing is applied, nothing fails and nothing is rewritten; it

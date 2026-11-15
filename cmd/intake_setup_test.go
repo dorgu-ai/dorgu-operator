@@ -226,7 +226,7 @@ func TestTicketGuardFor(t *testing.T) {
 	setup := newIntakeSetup(crdOnlyClient(t), testOperatorNS, logr.Discard())
 	setup.Preflight.Run(context.Background())
 	guard := ticketGuardFor(setup)
-	if guard == nil || guard.TicketsBlocked() == nil {
+	if guard == nil || guard.TicketsBlockedNow(context.Background()) == nil {
 		t.Fatal("a preflight with failing policies blocks tickets")
 	}
 	setup.verifyRBAC(nil) // nothing to verify with: adds nothing, never panics
