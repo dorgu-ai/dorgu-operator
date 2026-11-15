@@ -42,10 +42,12 @@ rules:
     resources: ["incidentmemories/status"]
     verbs: ["get", "update", "patch"]
   # RemediationAction CRD (created by the proposal reconciler from an accepted
-  # RemediationProposal; lifecycle managed by remediation controller)
+  # RemediationProposal; lifecycle managed by remediation controller). `delete` is the
+  # intake removing an orphan action it made but could not link: dorgu's own record,
+  # never a workload.
   - apiGroups: ["dorgu.io"]
     resources: ["remediationactions"]
-    verbs: ["get", "list", "watch", "create", "update", "patch"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["dorgu.io"]
     resources: ["remediationactions/status"]
     verbs: ["get", "update", "patch"]

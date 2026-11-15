@@ -205,32 +205,33 @@ func AccessReviewerFromClientset(cs kubernetes.Interface) AccessReviewer {
 	}
 }
 
-// access is one thing the operator must be allowed to do, cluster-wide.
-type access struct {
-	group, resource, subresource string
-	names                        []string
-	verbs                        []string
+// Access is one thing the operator must be allowed to do, cluster-wide: every verb on
+// the resource (and subresource), on each named object when Names is set.
+type Access struct {
+	Group, Resource, Subresource string
+	Names                        []string
+	Verbs                        []string
 }
 
 var dorguGroup = "dorgu.io"
 
-// operatorAccess is what the intake and the approval path need the operator to hold. It is
+// OperatorAccess is what the intake and the approval path need the operator to hold. It is
 // not the whole ClusterRole (the controllers' other needs are theirs to report); it is what
 // the proposal intake, the admission-policy check and ticket issue cannot work without, so
 // that a partial hand-written role closes the intake with a message instead of a cache
 // that never syncs.
-func operatorAccess() []access {
-	var needs []access
-	add := func(a access) { needs = append(needs, a) }
-	add(access{group: dorguGroup, resource: "remediationproposals", verbs: []string{"get", "list", "watch", "create", "update", "patch", "delete"}})
-	add(access{group: dorguGroup, resource: "remediationproposals", subresource: "status", verbs: []string{"get", "update", "patch"}})
-	add(access{group: dorguGroup, resource: "remediationactions", verbs: []string{"get", "list", "watch", "create", "delete"}})
-	add(access{group: dorguGroup, resource: "remediationactions", subresource: "status", verbs: []string{"get", "update", "patch"}})
-	add(access{group: dorguGroup, resource: "incidentmemories", verbs: []string{"get", "list", "watch", "create", "update", "patch"}})
-	add(access{group: dorguGroup, resource: "incidentmemories", subresource: "status", verbs: []string{"get", "update", "patch"}})
-	add(access{group: "authentication.k8s.io", resource: "selfsubjectreviews", verbs: []string{"create"}})
-	add(access{group: "admissionregistration.k8s.io", resource: "validatingadmissionpolicies", names: AdmissionPolicyNames, verbs: []string{"get"}})
-	add(access{group: "admissionregistration.k8s.io", resource: "validatingadmissionpolicybindings", names: AdmissionPolicyNames, verbs: []string{"get"}})
+func OperatorAccess() []Access {
+	var needs []Access
+	add := func(a Access) { needs = append(needs, a) }
+	add(Access{Group: dorguGroup, Resource: "remediationproposals", Verbs: []string{"get", "list", "watch", "create", "update", "patch", "delete"}})
+	add(Access{Group: dorguGroup, Resource: "remediationproposals", Subresource: "status", Verbs: []string{"get", "update", "patch"}})
+	add(Access{Group: dorguGroup, Resource: "remediationactions", Verbs: []string{"get", "list", "watch", "create", "delete"}})
+	add(Access{Group: dorguGroup, Resource: "remediationactions", Subresource: "status", Verbs: []string{"get", "update", "patch"}})
+	add(Access{Group: dorguGroup, Resource: "incidentmemories", Verbs: []string{"get", "list", "watch", "create", "update", "patch"}})
+	add(Access{Group: dorguGroup, Resource: "incidentmemories", Subresource: "status", Verbs: []string{"get", "update", "patch"}})
+	add(Access{Group: "authentication.k8s.io", Resource: "selfsubjectreviews", Verbs: []string{"create"}})
+	add(Access{Group: "admissionregistration.k8s.io", Resource: "validatingadmissionpolicies", Names: AdmissionPolicyNames, Verbs: []string{"get"}})
+	add(Access{Group: "admissionregistration.k8s.io", Resource: "validatingadmissionpolicybindings", Names: AdmissionPolicyNames, Verbs: []string{"get"}})
 	return needs
 }
 
@@ -244,15 +245,15 @@ const maxGapsListed = 8
 func OperatorRBACCheck(review AccessReviewer) Check {
 	return Check{Name: "operator-rbac", Reason: ReasonOperatorRBACMissing, Run: func(ctx context.Context) error {
 		var gaps []string
-		for _, need := range operatorAccess() {
-			names := need.names
+		for _, need := range OperatorAccess() {
+			names := need.Names
 			if len(names) == 0 {
 				names = []string{""}
 			}
 			for _, name := range names {
-				for _, verb := range need.verbs {
+				for _, verb := range need.Verbs {
 					attrs := authzv1.ResourceAttributes{
-						Verb: verb, Group: need.group, Resource: need.resource, Subresource: need.subresource, Name: name,
+						Verb: verb, Group: need.Group, Resource: need.Resource, Subresource: need.Subresource, Name: name,
 					}
 					allowed, _, err := review(ctx, attrs)
 					if err != nil {

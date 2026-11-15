@@ -87,6 +87,7 @@ rules:
   - applicationpersonas
   - clusterpersonas
   - incidentmemories
+  - remediationactions
   - remediationproposals
   verbs:
   - create
@@ -124,17 +125,6 @@ rules:
   - delete
   - get
   - list
-  - watch
-- apiGroups:
-  - dorgu.io
-  resources:
-  - remediationactions
-  verbs:
-  - create
-  - get
-  - list
-  - patch
-  - update
   - watch
 - apiGroups:
   - metrics.k8s.io
