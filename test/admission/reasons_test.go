@@ -470,6 +470,47 @@ func TestInvalidTransition(t *testing.T) {
 		err := admissionenv.PatchStatus(ctxFor(t), bob.c, ra, map[string]any{"approvedBy": bob.name})
 		requireDenied(t, err, "InvalidTransition")
 	})
+	// C2 re-review N-3: an approval stands, untouched, until the operator acts on it. A person's
+	// write on an Approved action would refresh the managedFields time the operator reads as
+	// "when the approval was written", and so launder an approval made while the policies were
+	// down. No CLI flow writes status on Approved (approve is Pending to Approved; the heal
+	// record comes after the ticket, when the action is Ticketed), so every such write is denied.
+	approvedAction := func(t *testing.T) *dorguv1.RemediationAction {
+		t.Helper()
+		ra := pendingAction(t, ns, "")
+		require.NoError(t, admissionenv.Approve(ctxFor(t), alice.c, ra, alice.name))
+		return ra
+	}
+	t.Run("the heal record's condition written on an Approved action", func(t *testing.T) {
+		ra := approvedAction(t)
+		requireDenied(t, admissionenv.PatchStatus(ctxFor(t), alice.c, ra, healRecordCondition(t, ra)), "InvalidTransition")
+	})
+	t.Run("a field the operator owns, written on an Approved action", func(t *testing.T) {
+		ra := approvedAction(t)
+		requireDenied(t, admissionenv.PatchStatus(ctxFor(t), alice.c, ra, map[string]any{"verificationResult": "Healthy"}), "OperatorOnly")
+	})
+	t.Run("a user without the approve verb gets the verb's refusal, as before", func(t *testing.T) {
+		ra := approvedAction(t)
+		mallory := newActor(t, ns, "", nil, statusOnlyRules)
+		requireDenied(t, admissionenv.PatchStatus(ctxFor(t), mallory.c, ra, healRecordCondition(t, ra)), "MissingApproveVerb")
+	})
+	t.Run("the message says the approval stands until the operator acts", func(t *testing.T) {
+		ra := approvedAction(t)
+		err := admissionenv.PatchStatus(ctxFor(t), alice.c, ra, healRecordCondition(t, ra))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "until the operator acts on it")
+	})
+	t.Run("a status write that changes nothing is not a change", func(t *testing.T) {
+		ra := approvedAction(t)
+		require.NoError(t, admissionenv.PatchStatus(ctxFor(t), alice.c, ra, map[string]any{"phase": "Approved"}))
+	})
+	t.Run("the operator still moves an Approved action on", func(t *testing.T) {
+		ra := approvedAction(t)
+		stored := &dorguv1.RemediationAction{}
+		require.NoError(t, env.Operator.Get(ctxFor(t), client.ObjectKeyFromObject(ra), stored))
+		stored.Status.Phase = phaseTicketed
+		require.NoError(t, env.Operator.Status().Update(ctxFor(t), stored))
+	})
 	t.Run("an action with no phase yet is not decided by a person", func(t *testing.T) {
 		ra := admissionenv.NewAction(ns, uniq("ra"), "")
 		require.NoError(t, env.Operator.Create(ctxFor(t), ra))
@@ -507,10 +548,15 @@ func TestTheCLIsWritesAreAllowed(t *testing.T) {
 		}))
 	})
 
-	t.Run("the heal record on an approved action touches only its condition", func(t *testing.T) {
+	// The CLI records a heal only after the operator's ticket, so the action is Ticketed (or
+	// later), never Approved (C2 re-review N-3: nothing a person writes can land on Approved).
+	t.Run("the heal record on a ticketed action touches only its condition", func(t *testing.T) {
 		ra := pendingAction(t, ns, "")
 		require.NoError(t, admissionenv.Approve(ctxFor(t), alice.c, ra, alice.name))
 		stored := &dorguv1.RemediationAction{}
+		require.NoError(t, env.Operator.Get(ctxFor(t), client.ObjectKeyFromObject(ra), stored))
+		stored.Status.Phase = phaseTicketed
+		require.NoError(t, env.Operator.Status().Update(ctxFor(t), stored))
 		require.NoError(t, env.Operator.Get(ctxFor(t), client.ObjectKeyFromObject(ra), stored))
 		conditions := append(conditionMaps(stored.Status.Conditions), map[string]any{
 			"type": "WorkloadPatched", "status": "True", "reason": "WorkloadPatched", "message": "patched",
@@ -643,4 +689,16 @@ func conditionMaps(in []metav1.Condition) []map[string]any {
 		out = append(out, m)
 	}
 	return out
+}
+
+// healRecordCondition is the status the CLI's heal record writes: every condition as read,
+// plus WorkloadPatched.
+func healRecordCondition(t *testing.T, ra *dorguv1.RemediationAction) map[string]any {
+	t.Helper()
+	stored := &dorguv1.RemediationAction{}
+	require.NoError(t, env.Operator.Get(ctxFor(t), client.ObjectKeyFromObject(ra), stored))
+	return map[string]any{"conditions": append(conditionMaps(stored.Status.Conditions), map[string]any{
+		"type": "WorkloadPatched", "status": "True", "reason": "CLIAppliedResourceChange", "message": "x",
+		"lastTransitionTime": nowText(),
+	})}
 }

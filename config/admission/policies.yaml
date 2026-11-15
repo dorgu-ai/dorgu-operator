@@ -249,6 +249,19 @@ spec:
         authorizer.group('dorgu.io').resource('remediationactions').namespace(object.metadata.namespace)
         .check(variables.newPhase == 'Rejected' ? 'reject' : 'approve').allowed()
       message: "dorgu: MissingApproveVerb: this needs the approve verb (reject, for a rejection) on remediationactions in this namespace. Ask a cluster admin to bind the dorgu-approver role."
+    # An approval stands, untouched, until the operator acts on it. The operator reads when an
+    # approval was written from the time of the status write that owns approvedBy, and any
+    # later write by the same person moves that time, so a person's write on an Approved
+    # action (any field, the heal record's condition included) could take an approval made
+    # while these policies were down out of the window that would void it. No CLI flow writes
+    # status on Approved: approve moves Pending to Approved, and the heal record comes after
+    # the operator's ticket, when the action is Ticketed. The reason is the transition rule's:
+    # a person gets one transition and then waits. (humanChange is every field a person may
+    # write; dorgu-action-integrity refuses a person on the rest, with its own reason, so a
+    # write is never refused twice.)
+    - expression: >-
+        variables.isOperator || variables.oldPhase != 'Approved' || !variables.humanChange
+      message: "dorgu: InvalidTransition: an approved remediation cannot be changed by a person until the operator acts on it (it ticketed or voided the approval). The approval stands as it was recorded."
     # The decision records who made it, and only the authenticated user can be that person.
     # This is denied, not rewritten: mutating admission is not generally available.
     - expression: >-

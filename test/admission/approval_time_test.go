@@ -17,9 +17,11 @@ limitations under the License.
 package admission
 
 import (
+	"context"
 	"testing"
 	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -27,6 +29,7 @@ import (
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	"github.com/dorgu-ai/dorgu-operator/internal/controller"
+	"github.com/dorgu-ai/dorgu-operator/internal/intake"
 	"github.com/dorgu-ai/dorgu-operator/test/admissionenv"
 )
 
@@ -86,4 +89,40 @@ func TestApprovalWrittenAt_ANewApprovalIsANewStamp(t *testing.T) {
 	secondAt, err := controller.ApprovalWrittenAt(&second)
 	require.NoError(t, err)
 	assert.True(t, secondAt.After(firstAt), "re-approval is a newer write: %s then %s", firstAt, secondAt)
+}
+
+// C2 re-review N-3, end to end: an approval written while the guard was down is voided
+// because its stamp falls in the window. The person who wrote it cannot refresh the stamp
+// after the window closed (the old policy let them rewrite the heal record's condition on an
+// Approved action, which moved the managedFields time and took the approval out of the window).
+func TestApprovalWrittenAt_APersonCannotRefreshTheStampOfAnApprovalInAWindow(t *testing.T) {
+	ns := namespace(t, "approval-time3")
+	ctx := ctxFor(t)
+	ok := intake.Check{Name: "x", Reason: intake.ReasonAdmissionPoliciesMissing, Run: func(context.Context) error { return nil }}
+	preflight := intake.NewPreflight(logr.Discard(), ok) // the startup window opens now
+
+	ra := pendingAction(t, ns, "agent-x")
+	alice := newActor(t, ns, "alice", nil, approverRules)
+	require.NoError(t, admissionenv.Approve(ctx, alice.c, ra, "alice")) // written inside the window
+	var written dorguv1.RemediationAction
+	require.NoError(t, env.Admin.Get(ctx, client.ObjectKeyFromObject(ra), &written))
+	stamp, err := controller.ApprovalWrittenAt(&written)
+	require.NoError(t, err)
+
+	preflight.Run(ctx) // the first good run closes the window after the approval
+	require.True(t, preflight.NotReadyAt(stamp), "the approval is inside the window: it is voided")
+
+	time.Sleep(intake.GuardClockMargin + 1500*time.Millisecond) // out of reach of the margin
+	conditions := append(conditionMaps(written.Status.Conditions), map[string]any{
+		"type": "WorkloadPatched", "status": "True", "reason": "CLIAppliedResourceChange", "message": "x",
+		"lastTransitionTime": nowText(),
+	})
+	requireDenied(t, admissionenv.PatchStatus(ctx, alice.c, ra, map[string]any{"conditions": conditions}), "InvalidTransition")
+
+	var after dorguv1.RemediationAction
+	require.NoError(t, env.Admin.Get(ctx, client.ObjectKeyFromObject(ra), &after))
+	stampAfter, err := controller.ApprovalWrittenAt(&after)
+	require.NoError(t, err)
+	assert.Equal(t, stamp, stampAfter, "the denied write did not move the stamp")
+	assert.True(t, preflight.NotReadyAt(stampAfter), "so the approval is still voided")
 }
