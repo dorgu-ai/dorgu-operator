@@ -18,17 +18,29 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	dorguv1 "github.com/dorgu-ai/dorgu-operator/api/v1"
 	dorguv1alpha1 "github.com/dorgu-ai/dorgu-operator/api/v1alpha1"
+	"github.com/dorgu-ai/dorgu-operator/internal/detection"
 	"github.com/dorgu-ai/dorgu-operator/internal/diagnosis"
 	"github.com/dorgu-ai/dorgu-operator/internal/harness/gate"
 	"github.com/dorgu-ai/dorgu-operator/internal/metrics"
 	"github.com/dorgu-ai/dorgu-operator/internal/remediation"
 )
+
+// EventReasonContainerMismatch is the Event reason when a CPU throttling proposal was
+// skipped because the throttled container is not the one the persona's single resources
+// block describes (remediation.SkipContainerMismatch).
+const EventReasonContainerMismatch = "DorguContainerMismatch"
+
+// containerMismatchEventInterval is how often the same incident may say it again. A
+// Kubernetes Event lives about an hour, so a fault that outlasts it is told once more.
+const containerMismatchEventInterval = time.Hour
 
 // proposeRemediation hands a recorded incident to the remediation proposer, if
 // one is configured and the incident is still open. It is the single seam
@@ -81,12 +93,30 @@ func (r *HealthCheckReconciler) proposeRemediation(
 			r.Logger.Info("the proposal intake refused Dorgu's own proposal",
 				"incident", incident.Name, "reason", result.Reason, "message", result.SkipReason)
 		}
+		r.reportContainerMismatch(incident, result)
 		// A proposal that is outstanding answers any earlier refusal.
 		if result.Stage == remediation.StageDeferred {
 			r.clearProposalRefusal(ctx, incident, dorguv1.ReasonProposalDeferred,
 				"an earlier proposal for this incident is outstanding or cooling down")
 		}
 	}
+}
+
+// reportContainerMismatch tells a person what the proposer's container-mismatch skip
+// says: the throttled container is not the one this persona's resources block describes,
+// so nothing is proposed and its limit has to be raised by hand. It is the proposer's own
+// skip and not a gate refusal, so the incident carries no condition for it and a V(1) log
+// line reaches nobody; an Event on the incident does. Once per incident per
+// containerMismatchEventInterval, like the other Events (which go out once per change).
+func (r *HealthCheckReconciler) reportContainerMismatch(incident *dorguv1.IncidentMemory, result *remediation.ProposalResult) {
+	if result.Stage != remediation.StagePropose || result.Reason != remediation.SkipContainerMismatch {
+		return
+	}
+	r.mismatchEventsOnce.Do(func() { r.mismatchEvents = detection.NewLogThrottle(containerMismatchEventInterval) })
+	if ok, _ := r.mismatchEvents.Allow(fmt.Sprintf("%s/%s", incident.Namespace, incident.Name), time.Now()); !ok {
+		return
+	}
+	emit(r.Recorder, incident, corev1.EventTypeWarning, EventReasonContainerMismatch, result.SkipReason)
 }
 
 // planRefusalsOf is every refusal a narrowed proposal answers, in order (L-5): a chain of
